@@ -33,7 +33,7 @@ import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-po
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
-import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
+import { discoverSnowLumaConnection, oneBotWsToken, persistSnowLumaEndpoint, persistToken, usesExternalOneBot } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
@@ -17447,9 +17447,11 @@ async function main() {
   }
 
   // QQ 侧（SnowLuma OneBot WebSocket 客户端）
+  const externalOneBot = usesExternalOneBot(cfg);
+  const qqGateway = externalOneBot ? 'OneBot' : 'SnowLuma';
   const bot = new SnowLumaWebSocketClient({
     url: cfg.snowluma.wsUrl,
-    accessToken: cfg.snowluma.accessToken || undefined,
+    accessToken: (externalOneBot ? oneBotWsToken(cfg) : cfg.snowluma.accessToken) || undefined,
     reconnect: true
   });
 
@@ -17517,7 +17519,7 @@ async function main() {
     const connectedUrl = bot.url ?? cfg.snowluma.wsUrl;
     snowlumaHealth.connected = true;
     snowlumaHealth.everConnected = true;
-    log(`SnowLuma 已连接：${connectedUrl}`);
+    log(`${qqGateway} 已连接：${connectedUrl}`);
     notifySendChannelUp();
     // 「已连接」只说明与 SnowLuma 的 WebSocket 通了，**不说明 QQ 侧收得到消息** ——
     // 这个区别见 startSnowlumaWatch 的说明。这里顺手把上游健康快照刷一次。
@@ -17542,7 +17544,7 @@ async function main() {
     });
     // 连接成功后顺手确认一下 token 是否已跟当前账号对齐；不一致就写回 config.json，
     // 让 MCP 工具（另一个进程）也能拿到正确的 token。
-    void syncTokenToFile();
+    if (!externalOneBot) void syncTokenToFile();
   });
 
   /**
@@ -17625,6 +17627,7 @@ async function main() {
 
   let tokenHealAt = 0;
   async function healTokenIfStale(reason) {
+    if (externalOneBot) return;
     const now = Date.now();
     if (now - tokenHealAt < 10000) return;   // 节流：close 事件会连续触发
     tokenHealAt = now;
@@ -17643,10 +17646,10 @@ async function main() {
 
   bot.on('close', (info) => {
     snowlumaHealth.connected = false;
-    log(`SnowLuma 连接断开（code=${info?.code ?? '?'}），重连中…`);
+    log(`${qqGateway} 连接断开（code=${info?.code ?? '?'}），重连中…`);
     // 1006 在每次启动/短暂抖动都会出现，重连通常几百毫秒；先给 15 秒观察窗口，
     // 窗口内重连成功就不记 L2、不弹窗（2026-10-31：用户明明连着却收到“通道断开”）。
-    snowlumaHealth.downReason = `SnowLuma 连接断开（code=${info?.code ?? '?'}）`;
+    snowlumaHealth.downReason = `${qqGateway} 连接断开（code=${info?.code ?? '?'}）`;
     if (snowlumaHealth.downTimer) clearTimeout(snowlumaHealth.downTimer);
     snowlumaHealth.downTimer = setTimeout(() => {
       snowlumaHealth.downTimer = null;
@@ -17666,7 +17669,7 @@ async function main() {
     const detail = error && typeof error === 'object'
       ? [error.code, error.message, error.reason, error.type].filter(Boolean).join(' | ') || JSON.stringify(error)
       : String(error ?? '');
-    log(`SnowLuma 错误：${detail || '(无详情)'}`);
+    log(`${qqGateway} 错误：${detail || '(无详情)'}`);
     void healTokenIfStale(`error ${detail}`.trim().slice(0, 200));
   });
 
@@ -17679,7 +17682,8 @@ async function main() {
     // → 重连成功后才是「SnowLuma 已连接」。若 homeDir 没配/被移动/读不到 SnowLuma 的
     // config/onebot_<QQ>.json，自愈就无从下手，这时才会一直连不上 —— 那种情况请查
     // 日志里的「token 自愈失败」与 config.json 的 snowluma.homeDir。
-    log(`SnowLuma 首次连接未成功（将在后台自动重连并尝试自愈 WS token）: ${error?.message ?? error}`);
+    const hint = externalOneBot ? '核对正向 WebSocket 地址和 token' : '将自动发现 WS token';
+    log(`${qqGateway} 首次连接未成功（后台重连，${hint}）：${error?.message ?? error}`);
   });
   log('桥接已启动。按 Ctrl+C 退出。');
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。

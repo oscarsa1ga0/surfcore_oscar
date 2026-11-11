@@ -4000,3 +4000,7 @@ npm run test:audit
   读写不对称（GET `/dsh/model` 已代理）导致“能显示、改不动”。
 - **修法**：补 `proxyDshFollowDefault` + 路由；新增静态契约测试，钉住前端路径 ⊆ 宿主路由。
 - **教训**：**中间代理层也是接口**；桥接新增一条路由，宿主必须同步开代理，否则前端只能 404。
+
+## macOS QQ 接入时分别配置 OneBot 的 HTTP 和正向 WebSocket
+
+Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不同的 token，桥接不能套用 SnowLuma 的账号发现或用 HTTP token 覆盖 WebSocket token。HTTP 探测确认登录接口可用，收发验收还需要正向 WebSocket 连通并从白名单账号发一条消息。见 [macOS QQ 安装指南](cases/2026-11-11-macos-qq.md)。

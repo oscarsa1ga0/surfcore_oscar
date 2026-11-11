@@ -49,21 +49,23 @@ export function buildInstallChecks(ctx) {
     allowCount ? '' : '设置 → QQ → 白名单，加入你的群号/QQ 号');
 
   const snowFilled = Boolean(ctx.snow?.wsUrl && ctx.snow?.httpUrl);
-  add('SnowLuma 配置', snowFilled ? 'ok' : 'fail',
+  const gateway = ctx.externalOneBot ? 'OneBot' : 'SnowLuma';
+  add(`${gateway} 配置`, snowFilled ? 'ok' : 'fail',
     snowFilled ? `${ctx.snow.httpUrl} / ${ctx.snow.wsUrl}` : '没填 OneBot 的 HTTP/WS 地址',
-    snowFilled ? '' : '设置 → QQ → 连接，填 SnowLuma 界面上的端口');
+    snowFilled ? '' : `设置 → QQ → 连接，填 ${gateway} 网关里的端口`);
 
   const snowStateName = String(ctx.snowState?.state ?? 'unknown');
   const snowOk = ['connected', 'ok', 'online'].includes(snowStateName);
   // 「怎么补」必须跟着状态走：桥接没跑时提示“先启动 SnowLuma”是错的，用户会去查 token。
   const snowFix = {
-    'bridge-down': '先启动 QQ 桥接（设置 → SurfCore → 概览），SnowLuma 可以后启动',
+    'bridge-down': `先启动 QQ 桥接（设置 → SurfCore → 概览），${gateway} 可以后启动`,
     'bridge-error': '桥接在跑但状态接口拒绝访问：多为 consoleToken 不一致，重启桥接',
     'needs-login': '打开 SnowLuma 控制台扫码登录',
     'not-running': '先启动 SnowLuma 并扫码登录',
     'onebot-rejected': '看 <surfcore>/state/bridge.log 的 SnowLuma 错误行，核对 accessToken 与 http/ws 端口',
+    'onebot-not-connected': '在 LLBot 登录 QQ，再核对「QQ」页的 HTTP、WebSocket 地址和 token',
   }[snowStateName] ?? '先启动 SnowLuma 并扫码登录';
-  add('SnowLuma 在线', snowOk ? 'ok' : 'warn',
+  add(`${gateway} 在线`, snowOk ? 'ok' : 'warn',
     snowOk ? '已连上' : `探测结果：${snowStateName}${ctx.snowState?.hint ? ` · ${ctx.snowState.hint}` : ''}`,
     snowOk ? '' : snowFix);
 

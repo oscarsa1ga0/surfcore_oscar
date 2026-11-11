@@ -69,7 +69,7 @@ console.log('## per-account token 解析（用临时目录造多账号场景）'
     return { ok: false, status: 401, json: async () => ({ status: 'failed', retcode: 1401, wording: 'unauthorized' }) };
   };
   try {
-    const r = await discoverSnowLumaConnection({ cfg: {}, baseUrl: 'http://127.0.0.1:3000', homeDirs: [home], timeoutMs: 500 });
+    const r = await discoverSnowLumaConnection({ platform: 'win32', cfg: {}, baseUrl: 'http://127.0.0.1:3000', homeDirs: [home], timeoutMs: 500 });
     ok(r.ok === true, '发现成功');
     ok(r.token === 'token-bbb', '选中了有效的那个 token', r.token);
     ok(r.self?.user_id === 222, '回报当前账号', String(r.self?.user_id));
@@ -78,9 +78,26 @@ console.log('## per-account token 解析（用临时目录造多账号场景）'
 
     // 全部无效时要给出可操作错误
     globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ status: 'failed', retcode: 1401 }) });
-    const bad = await discoverSnowLumaConnection({ cfg: {}, baseUrl: 'http://127.0.0.1:3000', homeDirs: [home], timeoutMs: 300 });
+    const bad = await discoverSnowLumaConnection({ platform: 'win32', cfg: {}, baseUrl: 'http://127.0.0.1:3000', homeDirs: [home], timeoutMs: 300 });
     ok(bad.ok === false, '全部失效时失败');
     ok(/401|token/.test(bad.error), '错误信息指出 token 问题', bad.error.slice(0, 40));
+
+    const config = { snowluma: {
+      httpUrl: 'http://127.0.0.1:3101',
+      wsUrl: 'ws://127.0.0.1:3102',
+      accessToken: 'llbot-http',
+      wsAccessToken: 'llbot-ws',
+    } };
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push([url, init.headers.authorization]);
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { user_id: 333 } }) };
+    };
+    const external = await discoverSnowLumaConnection({ platform: 'darwin', cfg: config, homeDirs: [home] });
+    ok(external.ok && external.wsUrl === config.snowluma.wsUrl && external.wsToken === 'llbot-ws', 'macOS 保留 OneBot WebSocket 地址和独立 token');
+    ok(requests.length === 1 && requests[0][0] === 'http://127.0.0.1:3101/get_login_info' && requests[0][1] === 'Bearer llbot-http',
+      'macOS 只用配置的 OneBot HTTP 地址和 token');
+    ok(!JSON.stringify(external.tried).includes('llbot-http'), '诊断不回显 token');
   } finally {
     globalThis.fetch = realFetch;
     fs.rmSync(home, { recursive: true, force: true });

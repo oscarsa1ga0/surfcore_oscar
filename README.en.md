@@ -55,7 +55,9 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH
 
 - Node.js >= 22.13
 - Running DeepSeek Harness Web (default `http://127.0.0.1:3080`)
-- Running SnowLuma with OneBot v11 WebSocket and HTTP API enabled
+- SnowLuma on Windows or LLBot on macOS, with OneBot 11 forward WebSocket and HTTP enabled
+
+For macOS and the DSH desktop profile, see the [macOS setup guide](docs/cases/2026-11-11-macos-qq.md).
 
 ## Quick Start
 

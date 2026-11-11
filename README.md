@@ -9,7 +9,7 @@
 | --- | --- |
 | 版本 | `0.8.9` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
-| 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
+| 平台 | Windows（SnowLuma）或 macOS（LLBot / OneBot 11） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
 | 配套仓库 | [surfvoicelocal](https://github.com/Mieksido/surfvoicelocal) · [surfvoicecloud](https://github.com/Mieksido/surfvoicecloud) · [surfpet](https://github.com/Mieksido/surfpet) |
 
@@ -17,6 +17,10 @@
 > 群号 / 群友名单 / QQ 号 / B站 mid 全部为占位符。运行时数据永远只在你自己的机器上。
 
 ---
+
+## macOS 安装
+
+macOS 通过 LLBot 接入原有的 QQ 桥接。DSH 桌面版可使用自带的 Node.js 和 pnpm。安装、配置及回退步骤见 [macOS QQ 安装指南](docs/cases/2026-11-11-macos-qq.md)。
 
 ## 让 DSH 自己装（也可以只发一条链接）
 

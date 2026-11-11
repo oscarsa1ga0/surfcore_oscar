@@ -23,6 +23,16 @@ try {
     '必须命中 DSH Desktop 安装目录里的 node',
   );
 
+  const contents = path.join(root, 'DeepSeek Harness.app', 'Contents');
+  const macNode = path.join(contents, 'Resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node');
+  fs.mkdirSync(path.dirname(macNode), { recursive: true });
+  fs.writeFileSync(macNode, '');
+  assert.equal(
+    findNodeExe({ execPath: path.join(contents, 'MacOS', 'DeepSeek Harness'), env: {}, home: root, dshHome: root }),
+    macNode,
+    'macOS 从 Contents/Resources 读取随应用安装的 Node',
+  );
+
   const cached = path.join(root, 'dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe');
   fs.mkdirSync(path.dirname(cached), { recursive: true });
   fs.writeFileSync(cached, '');

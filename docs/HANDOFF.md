@@ -5,6 +5,10 @@
 
 ---
 
+## macOS QQ 分支（2026-11-11）
+
+- `feat/macos-qq` 从 fork 的 `main`（`0ce8580`，v0.8.9）建立。QQ 使用 LLBot，B 站扫码浏览器和桌宠 Electron 按 macOS 选取。配置步骤、验收和回退见 [macOS QQ 安装指南](cases/2026-11-11-macos-qq.md)。
+
 ## 快照：2026-11-05 17:45（向量记忆 UI / 一键启动自检 / 完整重建）
 
 ### 当前事实

@@ -28,7 +28,7 @@ import {
   QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
-import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
+import { discoverSnowLumaConnection, usesExternalOneBot } from '../../../src/snowluma-conn.js';
 import { unwrapSchemaValue } from '../../../src/schema-values.js';
 import { findSnowLumaInstall as findSnowLumaInstallIn, normalizeSnowLumaInstall, snowLumaMissingReport } from './snowluma-install.js';
 import { buildInstallChecks, installOk, planDoctorFix } from './doctor.js';
@@ -59,7 +59,7 @@ import {
   syncQqToBili,
 } from './memory.js';
 import {
-  bridgeLogTail, callBridge, restart as restartBridge, start as startBridge,
+  bridgeLogTail, callBridge, missingBridgeDependencies, restart as restartBridge, start as startBridge,
   status as bridgeStatus, stop as stopBridge,
   consoleBase, consoleToken } from './bridge.js';
 import { PlatformRegistry } from './platforms.js';
@@ -781,10 +781,11 @@ export function apply(ctx) {
       scheduler: schedulerStatus,
       launch: await launchStatus(),
       snowluma: {
+        provider: usesExternalOneBot(snow) ? 'onebot' : 'snowluma',
         launcherPath: String(snow.launcherPath ?? ''),
         allowLaunch: snow.allowLaunch === true,
         downloadUrl: String(snow.downloadUrl ?? 'https://github.com/SnowLuma/SnowLuma/releases/latest'),
-        detected: findSnowLumaInstall().ok,
+        detected: !usesExternalOneBot(snow) && findSnowLumaInstall().ok,
         everConnected: bridge?.snowluma?.everConnected === true,
         diagnosis: snowDiag,
       },
@@ -1776,6 +1777,7 @@ ${body}`;
       groups: Array.isArray(qqCfg.allow?.groups) ? qqCfg.allow.groups : [],
       privates: Array.isArray(qqCfg.allow?.private) ? qqCfg.allow.private : [],
       snow,
+      externalOneBot: usesExternalOneBot(qqCfg),
       snowState,
       wakeGuard: runtimeBridge?.wakeGuard ?? null,
       bridgeSrc: fs.existsSync(bridgeSrc),
@@ -1793,9 +1795,9 @@ ${body}`;
     return step;
   }
 
-  function runCommand(cmd, args, { cwd, timeoutMs = 600_000 } = {}) {
+  function runCommand(cmd, args, { cwd, timeoutMs = 600_000, env = process.env } = {}) {
     return new Promise((resolve) => {
-      const child = spawn(cmd, args, { cwd, windowsHide: true, shell: process.platform === 'win32' });
+      const child = spawn(cmd, args, { cwd, env, windowsHide: true, shell: process.platform === 'win32' && /\.cmd$/i.test(cmd) });
       let out = '';
       const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
       child.stdout?.on('data', (d) => { out += String(d).slice(0, 4000); });
@@ -1809,32 +1811,46 @@ ${body}`;
     const done = (step, ok, detail = '') => { step.status = ok ? 'ok' : 'fail'; step.detail = String(detail).slice(0, 600); };
     try {
       // 1) 依赖
-      const depsStep = installStep('deps', '安装依赖（npm install）');
-      if (fs.existsSync(path.join(QQBOT_ROOT, 'node_modules', '.package-lock.json')) || fs.existsSync(path.join(QQBOT_ROOT, 'node_modules', 'express'))) {
-        done(depsStep, true, '已经装过，跳过');
+      const mac = process.platform === 'darwin';
+      const external = usesExternalOneBot(readQqConfig().config);
+      const node = findNodeExe();
+      const depsStep = installStep('deps', '安装 QQ 桥接依赖');
+      if (!missingBridgeDependencies().length) {
+        done(depsStep, true, '已安装');
       } else {
-        const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-        const r = await runCommand(npm, ['install', '--no-audit', '--no-fund'], { cwd: QQBOT_ROOT, timeoutMs: 900_000 });
-        done(depsStep, r.ok, r.ok ? '完成' : (r.out.slice(-400)));
-        if (!r.ok) throw new Error('依赖安装失败');
+        const pnpm = path.resolve(path.dirname(node), '../../pnpm/bin/pnpm.cjs');
+        const useBundledPnpm = mac && fs.existsSync(pnpm);
+        const command = useBundledPnpm ? node : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+        const args = useBundledPnpm
+          ? [pnpm, 'install', '--no-frozen-lockfile', '--lockfile=false']
+          : ['install', '--no-audit', '--no-fund'];
+        const env = mac ? { ...process.env, PATH: [path.dirname(node), process.env.PATH].filter(Boolean).join(path.delimiter) } : process.env;
+        const r = await runCommand(command, args, { cwd: QQBOT_ROOT, timeoutMs: 900_000, env });
+        const ok = r.ok && !missingBridgeDependencies().length;
+        done(depsStep, ok, ok ? '完成' : r.out.slice(-400));
+        if (!ok) throw new Error('依赖安装失败');
       }
 
       // 2) 装进 DSH
       const dshStep = installStep('dsh', '装进 DSH（预设 / MCP / bundle）');
-      if (dshProfileWithSurfcore()) {
+      if (!mac && dshProfileWithSurfcore()) {
         done(dshStep, true, '已注册，跳过');
       } else {
         // profile 必须跟着"当前 DSH 用的那个"走：setup-dsh 默认写 web，
         // 而用户可能是 desktop/自定义 profile —— 写错地方插件根本不会出现。
-        let profile = String(process.env.DSH_PROFILE ?? '').trim();
+        let profile = String(process.env.DSH_PROFILE || (mac && process.versions.electron ? 'desktop' : '')).trim();
         if (!profile) {
           try {
             const names = fs.readdirSync(path.join(DSH_HOME, 'profiles')).filter((n) => fs.statSync(path.join(DSH_HOME, 'profiles', n)).isDirectory() && !n.includes('.'));
             profile = names.includes('web') ? 'web' : (names[0] ?? 'web');
           } catch { profile = 'web'; }
         }
-        const r = await runCommand(process.execPath, [path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], { cwd: QQBOT_ROOT, timeoutMs: 120_000 });
-        done(dshStep, r.ok, r.ok ? '已注册（重启 DSH 生效）' : (r.out.slice(-400)));
+        const r = await runCommand(node, [path.join(QQBOT_ROOT, 'scripts', 'setup-dsh.mjs'), profile], {
+          cwd: QQBOT_ROOT, timeoutMs: 120_000,
+          env: mac ? { ...process.env, DSH_HOME, QQ_BRIDGE_SKIP_DSH_INSTALL: '1' } : process.env,
+        });
+        done(dshStep, r.ok, r.ok ? '已注册（重启 DSH 生效）' : r.out.slice(-400));
+        if (!r.ok) throw new Error('QQ 工具注册失败');
       }
 
       // 3) 配置与令牌
@@ -1843,17 +1859,17 @@ ${body}`;
       done(cfgStep, true, changed.length ? changed.join('、') : '已经齐了');
 
       // 4) SnowLuma 端点 / token
-      const snowStep = installStep('snowluma', '发现并写入 SnowLuma 连接');
+      const snowStep = installStep('snowluma', external ? '检查 OneBot HTTP 连接' : '发现并写入 SnowLuma 连接');
       try {
         const found = await discoverSnowLumaConnection({ cfg: readQqConfig().config ?? {}, timeoutMs: 4000 });
         if (found.ok) {
           const snow = { httpUrl: found.baseUrl };
           if (found.wsUrl) snow.wsUrl = found.wsUrl;
           if (found.token) snow.accessToken = found.token;
-          saveQqConfig({ snowluma: snow });
+          if (!external) saveQqConfig({ snowluma: snow });
           done(snowStep, true, `已连上 ${found.self?.nickname ?? ''}（${found.self?.user_id ?? ''}）`);
         } else {
-          done(snowStep, false, String(found.error ?? '没连上：先启动 SnowLuma 并扫码登录'));
+          done(snowStep, false, String(found.error ?? '启动已配置的 QQ 网关并登录'));
         }
       } catch (error) { done(snowStep, false, String(error?.message ?? error)); }
 
@@ -1882,10 +1898,11 @@ ${body}`;
       const bridgeStep = installStep('bridge', '启动 QQ 桥接');
       try {
         const before = await bridgeStatus().catch(() => ({ running: false }));
-        if (before.running) done(bridgeStep, true, `已在运行（端口 ${before.port}）`);
+        if (!platformStartEnabled('qq')) done(bridgeStep, true, 'QQ 启动开关关闭，按配置跳过');
+        else if (before.running) done(bridgeStep, true, `已在运行（端口 ${before.port}）`);
         else {
-          await startBridge({ dshWebUrl: currentDshUrl() });
-          done(bridgeStep, true, '已启动');
+          const result = await startBridge({ dshWebUrl: currentDshUrl() });
+          done(bridgeStep, result.ok, result.ok ? '已启动' : result.error);
         }
       } catch (error) { done(bridgeStep, false, String(error?.message ?? error)); }
     } catch (error) {
@@ -2343,11 +2360,12 @@ ${body}`;
   // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
   // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
   async function diagnoseSnowLuma(bridgeSnow = {}, { bridge = null } = {}) {
+    const external = usesExternalOneBot(readQqConfig().config);
     if (bridgeSnow.connected === true) return { state: 'ok', hint: '' };
     if (bridge && bridge.running === false) {
       return {
         state: 'bridge-down',
-        hint: 'QQ 桥接没在跑：设置 → SurfCore → 概览 → 启动 QQ 桥接（桥接起来之后才轮到 SnowLuma）',
+        hint: 'QQ 桥接没在跑：设置 → SurfCore → 概览 → 启动 QQ 桥接',
       };
     }
     if (bridge && bridge.ok === false) {
@@ -2356,6 +2374,10 @@ ${body}`;
         hint: `桥接在跑但状态接口拒绝了：${bridge.error || '检查 consoleToken'} —— 重启桥接或重新读取 state/console-token`,
       };
     }
+    if (external) return {
+      state: 'onebot-not-connected',
+      hint: '在 LLBot 中登录 QQ，开启 OneBot 11 的正向 WebSocket 和 HTTP，再核对 QQ 页的地址与 token。',
+    };
     // 只有 bridge.snowluma（运行态）才带 connected 字段；config.snowluma 没有。
     // 体检以前误把配置对象传进来，导致“端口在听”被固定判成 onebot-rejected。
     const hasRuntimeState = bridgeSnow && typeof bridgeSnow === 'object'
@@ -2430,7 +2452,19 @@ ${body}`;
     }
   }
 
+  async function launchQqGateway(options) {
+    const cfg = readQqConfig().config;
+    if (!usesExternalOneBot(cfg)) return launchSnowLuma(options);
+    const result = await discoverSnowLumaConnection({ cfg, timeoutMs: 2500 });
+    return result.ok
+      ? { ok: true, message: 'OneBot HTTP 已连通，QQ 桥接将连接正向 WebSocket' }
+      : { ok: false, code: 'ONEBOT_HTTP', error: result.error, hint: '在 LLBot 登录 QQ，开启 OneBot 11 HTTP 并核对地址和 token' };
+  }
+
   async function launchSnowLuma({ openWebui = true, hideConsoles = false } = {}) {
+    if (usesExternalOneBot(readQqConfig().config)) {
+      return { ok: false, code: 'EXTERNAL_ONEBOT', error: '此配置使用独立 OneBot 网关', hint: '在 LLBot 应用中启动网关并登录 QQ' };
+    }
     if (process.env.SURFCORE_SKIP_AUTOSTART === '1') {
       return { ok: true, skipped: true, message: '测试环境：跳过打开 SnowLuma' };
     }
@@ -3179,14 +3213,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         const status = await bridgeStatus();
         const stale = bridgeStaleReason(status);
         const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
-        const snowluma = await launchSnowLuma({ openWebui: false, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const snowluma = bridge?.ok === false ? { skipped: true } : await launchQqGateway({ openWebui: false, hideConsoles: opts.hideConsoles === true }).catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
         const bridgeOk = bridge?.ok !== false;
         const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
         return launchItem(id, bridgeOk && snowOk, {
           message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
           code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
-          error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
-          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，网关检查失败：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
+          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : (bridge?.hint || '检查桥接日志/端口；必要时重启 DSH'),
           needsAccount: snowluma?.needsAccount === true,
           webui: snowluma?.webui || null,
           detail: { bridge, snowluma },
@@ -3341,9 +3375,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         return;
       }
       const bridge = await startBridge({ dshWebUrl: currentDshUrl() });
-      const snowluma = await launchSnowLuma();
+      const snowluma = bridge?.ok === false ? { skipped: true } : await launchQqGateway();
       json(res, 200, {
-        ok: bridge?.ok !== false,
+        ok: bridge?.ok !== false && (!usesExternalOneBot(readQqConfig().config) || snowluma.ok !== false),
+        error: bridge?.error || snowluma?.error,
+        hint: bridge?.hint || snowluma?.hint,
         message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
         bridge,
         snowluma,
@@ -3384,8 +3420,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const schedulerState = starts.bili
         ? startSchedulerNow()
         : { ...idleSchedulerStatus('disabled'), message: 'B站 启动开关关闭，已跳过生物钟' };
-      const snowluma = starts.qq ? await launchSnowLuma() : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过 SnowLuma' };
-      const coreOk = (!starts.qq || bridge?.ok !== false) && (!starts.bili || schedulerState.running);
+      const snowluma = starts.qq && bridge?.ok !== false ? await launchQqGateway() : { ok: true, skipped: true, message: 'QQ 启动开关关闭，已跳过 SnowLuma' };
+      const coreOk = (!starts.qq || (bridge?.ok !== false && (!usesExternalOneBot(readQqConfig().config) || snowluma.ok !== false))) && (!starts.bili || schedulerState.running);
       const message = [
         bridge?.message,
         starts.bili ? (schedulerState.running ? 'B站生物钟在跑' : 'B站生物钟未启动') : '',
@@ -3402,6 +3438,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         platformStart: starts,
       });
       if (starts.qq || starts.bili) void watchStartupCompletion(starts);
+      return;
+    }
+    if (action === 'probe-onebot') {
+      const cfg = readQqConfig().config;
+      const result = await discoverSnowLumaConnection({ cfg, timeoutMs: 2500 });
+      json(res, 200, result.ok
+        ? { ok: true, message: 'OneBot HTTP 可用', nickname: String(result.self?.nickname || '') }
+        : { ok: false, code: 'ONEBOT_HTTP', error: result.error, hint: '保存 QQ 连接配置，然后检查 LLBot 的 HTTP 地址和 token' });
       return;
     }
     if (action === 'start-snowluma') {
