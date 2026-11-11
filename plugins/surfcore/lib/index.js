@@ -186,6 +186,10 @@ function QQ_STATE_DIR() {
   return path.join(path.dirname(QQ_CONFIG), 'state');
 }
 
+function wechatChannelStatus({ bound, enabled, online, silent, lastError }) {
+  return { bound, enabled, online, silent, connectionError: Boolean(lastError) };
+}
+
 export const name = 'surfcore';
 export const inject = ['webServer', 'connection', 'sessionController'];
 
@@ -776,7 +780,8 @@ export function apply(ctx) {
       version: VERSION,
       privacyPolicyVersion: PRIVACY_POLICY_VERSION,
       bridge,
-      bili,
+      bili: { ...bili, credentialsConfigured: fs.existsSync(BILI_CRED) },
+      wechat: wechatChannelStatus(wechat.status()),
       memory,
       memoryCard: memoryCardStatusNow(),
       vectorMemory: vectorMemoryStatusNow(),

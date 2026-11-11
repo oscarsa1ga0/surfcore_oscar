@@ -5,6 +5,10 @@
 
 ---
 
+## DSH 渠道状态与文档（2026-11-11）
+
+- 概览提供微信私聊、QQ、B站、桌宠四个状态入口，README 优先展示 Mac 安装。见 [设置页同步](cases/2026-11-11-channel-settings.md)。
+
 ## macOS QQ 接入（2026-11-11）
 
 - macOS 由 LLBot 提供 OneBot 11 正向 WebSocket 和 HTTP，复用 SurfCore 的 QQ 桥接。配置、安装、回退和验证范围见 [macOS QQ 接入](cases/2026-11-11-macos-qq.md)。

@@ -83,7 +83,12 @@ window.__ModuleLoader__.load({
 .qbw-kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--qbw-muted);margin:0 0 4px}
 .qbw-title{margin:0;font-size:19px;font-weight:600;line-height:28px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .qbw-sub{margin:4px 0 0;color:var(--qbw-muted);font-size:12px}
-.qbw-dots{display:inline-flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.qbw-channels{margin-bottom:10px}
+.qbw-channel-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px}
+.qbw-channel{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:9px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.qbw-channel:hover{background:var(--qbw-hover);border-color:var(--qbw-brand)}
+.qbw-channel:focus-visible{outline:2px solid var(--qbw-brand);outline-offset:2px}
+.qbw-channel .qbw-dot{white-space:nowrap}
 .qbw-dot{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary);background:rgba(127,127,127,.10);padding:2px 8px;border-radius:999px}
 .qbw-dot i{width:7px;height:7px;border-radius:50%;background:var(--qbw-muted);display:inline-block}
 .qbw-dot.ok i{background:var(--qbw-ok)}.qbw-dot.warn i{background:var(--qbw-warn)}.qbw-dot.bad i{background:var(--qbw-err)}
@@ -610,8 +615,37 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
       return h(Section, { title: "高级设置", note, defaultOpen: false }, children);
     }
 
-    function StatusDot({ ok, warn, children }) {
-      return h("span", { className: "qbw-dot " + (ok ? "ok" : warn ? "warn" : "bad") }, h("i"), children);
+    function StatusDot({ ok, warn, idle, children }) {
+      return h("span", { className: "qbw-dot " + (ok ? "ok" : warn ? "warn" : idle ? "" : "bad") }, h("i", { "aria-hidden": true }), children);
+    }
+
+    function wechatStatusLabel({ bound, enabled, online, silent, connectionError } = {}) {
+      if (!bound) return "待绑定";
+      if (!enabled) return "已暂停";
+      if (connectionError) return "需检查";
+      if (online) return silent ? "静默中" : "接收中";
+      return "连接中";
+    }
+
+    function ChannelOverview({ overview, goTab }) {
+      const { bridge = {}, bili = {}, platformStart = {}, scheduler = {}, launch = {}, wechat = {} } = overview;
+      const qqConnected = bridge.snowluma?.connected === true;
+      const qqLabel = platformStart.qq === false ? "已关闭"
+        : qqConnected ? "已连接" : bridge.running ? "网关未连接" : "桥接未启动";
+      const biliLabel = scheduler.running ? "生物钟运行中"
+        : !bili.credentialsConfigured ? "待登录" : platformStart.bili === false ? "已关闭" : "已配置 · 生物钟未启动";
+      const pet = launch.pet ?? {};
+      const channels = [
+        { id: "wechat", name: "微信私聊", status: wechatStatusLabel(wechat), ok: wechat.online && !wechat.silent && !wechat.connectionError, warn: wechat.enabled && (!wechat.online || wechat.connectionError) },
+        { id: "qq", name: "QQ", status: qqLabel, ok: platformStart.qq !== false && qqConnected, warn: platformStart.qq !== false && bridge.running && !qqConnected },
+        { id: "bili", name: "B站", status: biliLabel, ok: scheduler.running },
+        { id: "pet", name: "桌宠", status: pet.running ? "运行中" : pet.installed ? "未启动" : "待安装", ok: pet.running },
+      ];
+      return h("section", { className: "qbw-card qbw-channels", "aria-label": "渠道状态" },
+        h("h4", null, "渠道状态"),
+        h("div", { className: "qbw-channel-list" }, channels.map(({ id, name, status, ok, warn }) =>
+          h("button", { key: id, className: "qbw-channel", type: "button", onClick: () => goTab(id), title: `打开${name}设置` },
+            h("strong", null, name), h(StatusDot, { ok, warn, idle: true }, status)))));
     }
 
     function Btn({ children, onClick, disabled, kind = "", title, type = "button" }) {
@@ -1946,9 +1980,6 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const scheduler = overview?.scheduler ?? {};
       const snow = overview?.snowluma ?? {};
       const externalOneBot = snow.provider === "onebot";
-      const platformStart = overview?.platformStart ?? {};
-      const qqStart = platformStart.qq !== false;
-      const biliStart = platformStart.bili !== false;
       // ── 一键启动 / 停止（QQ+B站+桌宠+语音）────────────────────────────
       const launch = overview?.launch ?? {};
       const voiceKnown = launch.voice?.ok !== false;
@@ -2300,9 +2331,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
               h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("qq") }, "去调高额度")));
         })(),
-        h("div", { className: "qbw-infobox" },
-          "一个窗口管两边：QQ 仍然由原来那个桥接进程收发消息，B站仍然用同一份 bili.config.json。",
-          "合体插件不复制配置，只把参数、记忆、身份对齐和扩展接口装到一起。"),
+        h(ChannelOverview, { overview: overview ?? {}, goTab }),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
             h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok }, bridge.running ? "运行中" : "未运行")),
@@ -2337,15 +2366,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", { className: "qbw-card", style: { order: -1, gridColumn: "1 / -1" } },
             h("h4", null, "启动"),
             h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
-              "一键启动会按 QQ / B站 页里的「是否启动」开关拉起对应平台；也可以只启动一边。",
-              qqStart ? "" : " QQ 启动开关已关闭。",
-              biliStart ? "" : " B站 启动开关已关闭。"),
-            h("div", { className: "qbw-kv" },
-              h("span", null, "QQ"),
-              h("span", null, qqStart ? (bridge.running ? "启动开关开 · 运行中" : "启动开关开 · 未运行") : "启动开关关")),
-            h("div", { className: "qbw-kv" },
-              h("span", null, "B站"),
-              h("span", null, biliStart ? (scheduler.running ? "启动开关开 · 生物钟在跑" : "启动开关开 · 未运行") : "启动开关关")),
+              "QQ、B站按各自的启动开关运行。微信接收在「微信」页管理。"),
             h("div", { className: "qbw-group", style: { marginTop: "8px" } }, "一键启动 SurfCore"),
             h("div", { className: "qbw-actions", style: { marginTop: "4px" } },
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
@@ -3791,17 +3812,17 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         externalOneBot ? h("div", { className: "qbw-card" },
           h("h4", null, "QQ · OneBot 11"),
           h("p", { className: "qbw-hint" }, "在 LLBot 登录 QQ，开启正向 WebSocket 和 HTTP。保存连接设置后，启动或重启 QQ 桥接。"),
-          h(FieldGroups, {
-            cfg, set, onSave,
-            groups: [{ group: "连接", fields: [
-              F("snowluma.wsUrl", "正向 WebSocket", "ws://127.0.0.1:3001"),
-              F("snowluma.httpUrl", "HTTP API", "http://127.0.0.1:3000"),
-              F("snowluma.accessToken", "HTTP token", "与 LLBot HTTP 服务一致", "password"),
-              F("snowluma.wsAccessToken", "WebSocket token", "留空时使用 HTTP token", "password"),
-            ] }],
-          }),
+          [
+            F("snowluma.wsUrl", "正向 WebSocket", "ws://127.0.0.1:3001"),
+            F("snowluma.httpUrl", "HTTP API", "http://127.0.0.1:3000"),
+            F("snowluma.accessToken", "HTTP token", "与 LLBot HTTP 服务一致", "password"),
+            F("snowluma.wsAccessToken", "WebSocket token", "留空时使用 HTTP token", "password"),
+          ].map((field) => h(Field, {
+            key: field.path.join("."), f: field, value: getPath(cfg, field.path),
+            onChange: (value) => set(field.path, value),
+          })),
           h("div", { className: "qbw-actions" },
-            h(Btn, { kind: "qbw-btn2", disabled: !!busy || dirty, onClick: async () => {
+            h(Btn, { kind: "qbw-btn2", disabled: !!busy || dirty, title: dirty ? "保存设置后再测试" : undefined, onClick: async () => {
               setBusy("onebot-probe");
               try {
                 const result = await api("/bridge", { method: "POST", body: { action: "probe-onebot" } });
@@ -3939,10 +3960,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         setBusy("share-now");
         setShareMsg("");
         try {
-          // 先确认网关在线：SnowLuma 没起来时桥接仍会「投递成功」，但群里什么都收不到。
+          // 先确认 OneBot 网关在线，避免把桥接接受请求当成 QQ 已收到消息。
           const s = await api("/bridge");
           if (s?.status?.running && s.status.snowluma?.connected !== true) {
-            throw new Error("SnowLuma 没连上（先启动 SnowLuma，再点这里）");
+            throw new Error("QQ 网关未连接。请在「QQ」页检查网关和登录状态。");
           }
           const r = await api("/bili/share-now", { method: "POST", body: { action: "share-now" } });
           if (!r.ok) throw new Error(r.error ?? r.why ?? "桥接返回失败");
@@ -7824,7 +7845,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("h4", null, "对话",
             h("span", { className: "qbw-badge " + (st?.proactive?.online ? "ok" : "warn") }, st?.proactive?.online ? "桌宠在线" : "桌宠离线"),
             st?.proactive?.carrier === "pet" ? h("span", { className: "qbw-badge" }, "主动搭话载体") : null),
-          h("p", null, "在桌宠上右键「文本对话 / 语音对话」打开对话框；回复会用对应形式（文本或语音），气泡里始终显示文字。人设卡、记忆卡、目的状态跟 QQ / B站 共用当前角色。"),
+          h("p", null, "在桌宠上右键「文本对话 / 语音对话」打开对话框；回复会用对应形式（文本或语音），气泡里始终显示文字。人设、记忆和目的跟随当前角色。"),
           h("div", { className: "qbw-hint" },
             `角色：${st?.role?.name ?? "—"} · 模型：${st?.llm?.provider || "—"}/${st?.llm?.model || "—"} · 语音：${st?.voice?.enabled ? `${st.voice.route}（${st.voice.endpoint}）` : "未开启"} · 历史 ${st?.chat?.messages ?? 0} 条`),
           h(Row, { label: "专注模式（不主动打扰）", hint: "开 = 不主动搭话、不弹主动气泡（QQ / 桌宠载体都停）；你自己打开对话仍然正常。桌宠右键菜单里也能切" },
@@ -7851,7 +7872,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("option", { value: "high" }, "high"), h("option", { value: "max" }, "max"))),
           h("div", { className: "qbw-hint" }, "改完点底部「保存」即生效（不用重启桌宠）；用量计入 token 额度「其他」。"),
           st?.proactive?.carrier !== "pet" ? h("div", { className: "qbw-hint" },
-            "「主动搭话」目前由 QQ 载体发出：在「目的」页可以把载体切成桌宠。") : null),
+            "可在「目的」页把主动搭话的载体切换为桌宠。") : null),
         st && st.skins && st.skins.length ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
           h("h4", null, "内置形象"),
           h("div", { className: "qbw-chips" }, st.skins.map((x) => h("span", { className: "qbw-chip", key: x.id }, x.name))),
@@ -7859,7 +7880,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null);
     }
 
-    function WechatTab() {
+    function WechatTab({ characterName }) {
       const [status, setStatus] = useState(null);
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState("");
@@ -7888,8 +7909,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         pin: "请输入手机微信显示的验证码", confirmed: "扫码绑定成功" }[login?.phase];
       const pending = ["loading", "wait", "scanned", "pin"].includes(login?.phase);
       return h("div", { className: "qbw-card" },
-        h("h4", null, "微信私聊"),
-        h("p", null, status?.online ? "接收中" : (status?.bound ? "账号已绑定" : "等待绑定本人微信")),
+        h("h4", null, "微信私聊 ", h(StatusDot, { ok: status?.online && !status?.silent && !status?.lastError, idle: true },
+          status ? wechatStatusLabel({ ...status, connectionError: Boolean(status.lastError) }) : "读取中")),
+        h("p", { className: "qbw-hint" }, characterName
+          ? `绑定后可在本人微信里和「${characterName}」私聊。`
+          : "绑定后可在本人微信里和当前角色私聊。"),
         h("div", { className: "qbw-actions" },
           h(Btn, { disabled: busy || status?.enabled, onClick: () => action("login") }, status?.bound ? "重新扫码" : "获取二维码"),
           status?.enabled
@@ -7913,9 +7937,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["purpose", "目的"],
       ["wechat", "微信"],
       ["qq", "QQ"],
-      ["voice", "语音"],
-      ["pet", "桌宠"],
       ["bili", "B站"],
+      ["pet", "桌宠"],
+      ["voice", "语音"],
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
       ["memory", "记忆"],
@@ -8036,7 +8060,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setSaved(JSON.stringify({ qq: r.qq ?? {}, bili: r.bili ?? {}, unified: r.unified ?? {} }));
         } catch (e) { setErr(`读取配置失败：${e.message}`); }
       }, []);
-      useEffect(() => { loadOverview(); loadConfig(); loadBudget(); }, [loadOverview, loadConfig, loadBudget]);
+      useEffect(() => { loadConfig(); loadBudget(); }, [loadConfig, loadBudget]);
+      useEffect(() => { if (tab === "overview") void loadOverview(); }, [tab, loadOverview]);
 
       // 额度页开着时每 30 秒对一次用量；80% 提醒由服务端保证「每天只给第一次」。
       useEffect(() => {
@@ -8190,11 +8215,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { className: "qbw-foot" }, h(Btn, { onClick: reload, disabled: !!busy }, "重试")));
       }
 
-      const bridge = overview?.bridge ?? {};
-      const biliStatus = overview?.bili ?? {};
-      const platformStart = overview?.platformStart ?? {};
-      const qqStart = platformStart.qq !== false;
-      const biliStart = platformStart.bili !== false;
       const active = (id) => tab === id;
       const renderTab = () => {
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
@@ -8205,7 +8225,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath, setUnified: setUnifiedPath, qq: normalizedQq, unified });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
-        if (tab === "wechat") return h(WechatTab);
+        if (tab === "wechat") return h(WechatTab, { characterName: overview?.character?.name });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, onResource: () => setResourceOpen(true) });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
@@ -8219,12 +8239,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         h("div", { className: "qbw-head" },
           h("p", { className: "qbw-kicker" }, "DeepSeek Harness · SurfCore"),
           h("h3", { className: "qbw-title" }, "SurfCore",
-            h("span", { className: "qbw-badge" }, `v${overview?.version ?? "—"}`),
-            h("span", { className: "qbw-dots" },
-              h(StatusDot, { ok: qqStart && bridge.running && bridge.ok, warn: qqStart && bridge.running && !bridge.ok }, qqStart ? "QQ" : "QQ 关"),
-              h(StatusDot, { ok: biliStart && Boolean(biliStatus.available), warn: biliStart && Boolean(biliStatus.enabled) }, biliStart ? "B站" : "B站 关"),
-              h(StatusDot, { ok: biliStart && overview?.scheduler?.running }, biliStart ? "生物钟" : "生物钟关"))),
-          h("p", { className: "qbw-sub" }, "当前角色、微信私聊、B 站、桌宠和记忆。"),
+            h("span", { className: "qbw-badge" }, `v${overview?.version ?? "—"}`)),
+          overview?.character?.name ? h("p", { className: "qbw-sub" }, `当前角色 · ${overview.character.name}`) : null,
           h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
             h(Btn, { kind: "qbw-btn2", onClick: () => setResourceOpen(true) }, "获取网盘资源（语音、向量记忆模型）"))),
         h("div", { className: "qbw-tabs" }, TABS.map(([id, label]) => h("button", {

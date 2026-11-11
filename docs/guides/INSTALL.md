@@ -1,5 +1,7 @@
 # 手把手安装（Windows）
 
+macOS 用户可从 [Mac 快速开始](../../README.md#macos-快速开始) 配置微信私聊、QQ、B站和桌宠。
+
 > 目标：从一台干净的 Windows 电脑，到"她在群里回第一句话"。
 > 全程约 **20 分钟**，其中 10 分钟是等下载。
 >
@@ -72,8 +74,8 @@ SnowLuma 是第三方的 QQ 运行时，**本项目不打包、不代装**（EUL
 
 ```powershell
 cd D:\
-git clone https://github.com/Mieksido/surfcore.git
-cd surfcore
+git clone --branch feat/macos-wechat https://github.com/oscarsa1ga0/surfcore_oscar.git
+cd surfcore_oscar
 npm install
 ```
 

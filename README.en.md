@@ -1,33 +1,20 @@
-# SurfCore — QQ ↔ DeepSeek Harness Bridge + QQ × Bilibili plugin
+# SurfCore · One character across four channels
 
-> ℹ️ This English page is a **condensed overview**. The full, code-level documentation
-> (architecture, every module, voice / pet / Bilibili subsystems, configuration and state files,
-> capability boundaries) is written in Chinese under [`docs/guides/`](docs/guides/) —
-> start with [`ARCHITECTURE.md`](docs/guides/ARCHITECTURE.md).
+[中文 README](README.md)
 
-> Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
->
-> 🧩 The merged DSH plugin lives in **[plugins/surfcore/](plugins/surfcore/README.md)** and appears in DSH settings as **SurfCore** (QQ settings + Bilibili browsing + two-way redacted memory + identity alignment). Since 2026-10-22 the former `QQbot` and `刷B站/dsh-bili-whale` workspaces are merged into this repository.
+SurfCore runs in DeepSeek Harness (DSH). On macOS, the active character can use WeChat direct messages, QQ, Bilibili and the desktop pet. Each channel uses the same SurfCore character and follows its own memory sharing rules.
 
-> ⚠️ **Current release `0.1.0` (SurfCore merged edition; it carries the bridge code of qq-bridge `v0.2.0-r4`), verified on DSH `0.2.1-rc.2`** (run `npm run verify:adaptation` to re-check item by item against your own DSH). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
->
-> **r4 highlights**: sticker/animated-emoji pipeline (CDN first, `emoji_id` fallback, multi-address DNS failover), web search now reuses DSH's own DeepSeek search backend (Bing only as fallback), `qq_wait_for_messages` long-polling past the 300 s undici timeout, plus fixes for the mode-switch rollback, permanent "busy" turns, missing self-identity injection and a full-project audit. Details: [Release v0.2.0-r4](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.2.0-r4).
->
-> The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
+## macOS setup
 
-For the detailed Chinese guide, start with **[docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md)**
-(the 2026-10 code-level documentation set: architecture, every module, voice / pet / Bilibili subsystems,
-configuration & state files, capability boundaries).
-The documentation index (one line per doc, with "still current?" notes) is **[docs/README.md](docs/README.md)**;
-the repository/folder and script-naming conventions are in **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**.
+1. Install DSH Desktop and open it once.
+2. Clone the fork's `feat/macos-wechat` branch, install dependencies with Node.js 22.13 or newer, and run `QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup-dsh.mjs desktop`.
+3. Restart DSH and open **Settings → SurfCore**. The overview shows the active character and links to each channel's settings.
+
+The [macOS quick start](README.md#macos-快速开始) covers all four channels. QQ on macOS uses LLBot's OneBot 11 HTTP and forward WebSocket endpoints. QQ on Windows uses SnowLuma. See the [Windows installation guide](docs/guides/INSTALL.md) and [QQ on macOS](docs/cases/2026-11-11-macos-qq.md).
 
 ## Architecture
 
-```
-QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH Web API (127.0.0.1:3080/api)
-                                                    ▲                      │
-                                                    └── agent replies / questions / approvals ┘
-```
+WeChat, Bilibili and the desktop pet run through the SurfCore plugin. QQ messages go through an external OneBot 11 gateway and SurfCore’s QQ bridge into DSH sessions.
 
 - **QQ side**: `@snowluma/sdk` provides the OneBot v11 WebSocket client.
 - **DSH side**: adapted for DSH 0.1.2+ and **re-verified on 0.2.0-rc.2** — session Cookie minted from the persistent local signing key, `/api/<namespace>/<method>` slash RPC, and `/api/remote.mux` + `session/follow` event stream (the pending queue is read from `value.projections[<id>].values.inbox`, with the unary `session/projections` RPC as the primary path). The per-session model is pinned by the bridge via `session.selectModel` from `config.json`'s `dsh.model` (default `deepseek-flash` = DeepSeek-V41-Flash, multimodal).
@@ -48,16 +35,16 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH
 - **Memory cards (the character's long-term memory)**: two cards sharing one document family — the **decayed card** (`memory-card.*`) is the only one loaded into prompts (owner + emotional memories stay vivid, unimportant ones fade one level per day), while the **full archive** (`memory-card-full.*`) keeps every memory permanently vivid and is never injected; it exists for on-demand search/recall via the settings page or `/api/memory-card/full`. Capacity alerts at 80/90/100% with one-click compression apply to the decayed card only; the full archive has a soft cap and is never auto-deleted. Rules and configuration: [docs/guides/MEMORY_CARD.md](docs/guides/MEMORY_CARD.md).
 - **Character personas (multi-character)**: each character is a directory bundle (`~/.dsh/surfcore/characters/<id>/`) with its persona card, decayed/full memory cards, Bilibili behavior ledgers, and snapshots. The settings page can create/load/save/restore/delete characters; loading another character snapshots the old one, stops and restarts the QQ bridge and Bilibili scheduler with fresh sessions, and switches the current pointer with an epoch. Twelve autosave slots (before-switch + 180/90/60/30/15/10/7/5/3/2/1 days); today's actions under the old character never count toward the new one and are never replayed. See [docs/guides/CHARACTER_PERSONA.md](docs/guides/CHARACTER_PERSONA.md).
 - Sticker library integration with AI-friendly sticker usage.
-- **SurfCore plugin**: one settings window for QQ + Bilibili, two-way redacted memory, identity alignment, and the merged "fish school" protection (see below).
+- **SurfCore plugin** runs the channel settings, WeChat text messaging, Bilibili scheduler, desktop pet API and shared character memory.
 - **Fish-school protection**: QQ groups suppress autonomous participation when the recent window is dominated by other fish bots; Bilibili comments skip new top-level comments when too many fish are present, gather into a fish thread instead, and like fish comments within a low daily cap. Both sides are configurable and can be disabled independently.
 
 ## Requirements
 
 - Node.js >= 22.13
 - Running DeepSeek Harness Web (default `http://127.0.0.1:3080`)
-- Running SnowLuma with OneBot v11 WebSocket and HTTP API enabled
+- A QQ gateway with OneBot 11 HTTP and forward WebSocket enabled, when using QQ
 
-## Quick Start
+## QQ bridge setup
 
 ```bash
 npm install        # postinstall automatically patches the @snowluma/sdk ESM packaging bug

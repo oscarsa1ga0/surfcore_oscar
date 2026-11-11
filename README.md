@@ -1,16 +1,15 @@
-# SurfCore — 给 DSH agent 一个真实的身份：QQ × B站 × 桌宠
+# SurfCore · 一条肥鱼，四个入口
 
 **中文** | [English](README.en.md)
 
-> 一句话：**它不是"把大模型接进 QQ"的机器人框架，而是给模型一个身份、一套会遗忘的记忆、
-> 一份作息、两只手（QQ / B站）和一个能坐在你桌面上的分身。**
+在 DeepSeek Harness（DSH）里养同一个角色。肥鱼可以刷 B 站、在桌宠窗口跟你聊天，也能接入微信私聊和 QQ。四个入口都沿用 SurfCore 当前角色的人设、长期记忆和作息，记忆的读取和分享遵守各渠道的隐私范围。
 
 | | |
 | --- | --- |
 | 版本 | `0.8.9` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
 | 平台 | Windows（QQ / B 站 / 桌宠）、macOS（QQ / 微信私聊 / B 站 / 桌宠） |
-| 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
+| 许可 | MIT（QQ 网关和桌宠组件需单独安装） |
 | 配套仓库 | [surfvoicelocal](https://github.com/Mieksido/surfvoicelocal) · [surfvoicecloud](https://github.com/Mieksido/surfvoicecloud) · [surfpet](https://github.com/Mieksido/surfpet) |
 
 > 🔒 **本仓库不含任何真实数据**：角色卡是脱敏示例（`roles/`），记忆卡是空壳（`examples/`），
@@ -18,55 +17,41 @@
 
 ---
 
-## macOS 上的 QQ、微信、B 站与桌宠
+## macOS 快速开始
 
-使用 DSH 桌面端加载 SurfCore。在「微信」页扫码绑定本人私聊，在「B站」和「桌宠」页分别启用对应渠道。这些入口沿用 SurfCore 当前角色的身份与记忆，遵守各自的分享范围。微信、B 站和桌宠的配置见 [macOS 使用说明](docs/cases/2026-11-11-macos-wechat.md)，QQ 配置见 [macOS QQ 接入](docs/cases/2026-11-11-macos-qq.md)。
+先安装并打开一次 DSH 桌面端。退出 DSH 后，在终端运行以下命令，取本 fork 的功能分支并注册到 `desktop` 配置。
 
-## 让 DSH 自己装（也可以只发一条链接）
-
-把这句话发给 DSH：
-
-> 帮我安装 https://github.com/Mieksido/surfcore ，按 README 的步骤来。
-
-**顺序很重要**（DSH 常常先 install_bundle、后装依赖，结果激活时报 `Cannot find module '@deepseek-ai/schemastery'`）：
-
-1. `npm install`（没有 npm 就用 DSH 自带的 pnpm：`~/.dsh/dsh-runtimes/.../pnpm/bin/pnpm.cjs`）
-2. 再 `plugin_manager install_bundle`（或 `node scripts/setup-dsh.mjs`）
-3. 重启 DSH → 设置 → SurfCore → 诊断 → 一键安装
-
-> 用 junction 链接安装时，模块是从**仓库真实路径**解析的，所以仓库根必须有 `node_modules` —— 这就是第 1 步不能省的原因。
-
-两个实测踩过的点（v0.4.5）：
-
-- **必须从仓库根目录安装**：插件里有 19 处 `../../../src/xxx.js`（人设、存储、token 预算等），
-  只装 `plugins/surfcore` 会去找 `D:\src\...` 然后报模块不存在。
-- **装完要刷新页面**（F5）或重启 DSH：客户端模块图是页面加载时的快照，新 bundle 要重新拉，
-  否则设置里暂时看不到 SurfCore —— 不是装坏了。
-
-## 第一次装（4 条命令）
-
-```powershell
-git clone --depth 1 https://github.com/Mieksido/surfcore.git
-cd surfcore
-npm install
-node scripts/setup-dsh.mjs      # 自动判断 DSH 用的 profile，不用填
+```sh
+git clone --branch feat/macos-wechat https://github.com/oscarsa1ga0/surfcore_oscar.git
+cd surfcore_oscar
+npm ci
+QQ_BRIDGE_SKIP_DSH_INSTALL=1 node scripts/setup-dsh.mjs desktop
 ```
 
-重启 DSH → 设置 → SurfCore → **诊断 → 一键安装（全部）**（自动发现 SnowLuma、写白名单、起桥接）。
+需要 Node.js ≥22.13。只有 DSH 自带的 Node 时，可用 [DSH 自带运行时安装步骤](docs/cases/2026-11-11-macos-qq.md#配置) 代替上面最后两行。已经链接过此目录时，更新代码后完全退出并重开 DSH。
 
-> 不想敲命令：`powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Mieksido/surfcore/main/scripts/bootstrap.ps1 | iex"`
+进入 **设置 → SurfCore**。「概览」会显示当前角色和四个入口的状态，点入口即可打开设置。
 
-前置：Windows + Node ≥22.13 + DSH 0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归） + SnowLuma（第三方，需自己装并扫码）。详见 [INSTALL.md](docs/guides/INSTALL.md)。
+| 入口 | 第一次怎么开 |
+| --- | --- |
+| 微信私聊 | 在「微信」页获取二维码，扫码确认后点「启用接收」。从绑定的微信发来一条文本。[微信配置](docs/cases/2026-11-11-macos-wechat.md) |
+| QQ | 在 LLBot 登录 QQ，开启 OneBot 11 的 HTTP 和正向 WebSocket。在「QQ」页填地址、token 和白名单，再打开「启动 QQ」。[Mac QQ 配置](docs/cases/2026-11-11-macos-qq.md) |
+| B站 | 在「B站」页通过 Chrome 或 Edge 扫码登录，按需开启生物钟。 |
+| 桌宠 | 在「桌宠」页安装 SurfPet 和与本机架构匹配的 Electron，然后启动。 |
+
+各入口按需启用。切换「角色」后，四个入口会使用新角色的资料。想让肥鱼主动联系你，可以在「目的」页选择微信私聊、QQ 或桌宠。
+
+Windows 的 QQ 网关用 SnowLuma，安装命令见 [Windows 安装](#二windows-安装)。
 
 ---
 
 ## 目录
 
 - [一、这是什么](#一这是什么)
-- [二、安装（新用户从这里开始）](#二安装新用户从这里开始)
+- [二、Windows 安装](#二windows-安装)
 - [三、日常使用](#三日常使用)
 - [四、能力总览](#四能力总览)
-- [五、架构一图](#五架构一图)
+- [五、架构](#五架构)
 - [六、文档地图](#六文档地图)
 - [七、安全与边界](#七安全与边界摘要)
 - [八、常见问题（FAQ）](#八常见问题faq)
@@ -77,25 +62,23 @@ node scripts/setup-dsh.mjs      # 自动判断 DSH 用的 profile，不用填
 
 ## 一、这是什么
 
-一个跑在**你自己电脑上**的双进程系统：
+`surfcore` 插件在 DSH 里运行，负责角色、记忆、微信私聊、B站 生物钟和桌宠接口。启用 QQ 时，独立的 `src/bridge.js` 负责 QQ 收发、会话映射、控制台和安全闸门。
 
-- **一条腿在 DSH 里**：`surfcore` 插件 —— 设置窗口、B站 生物钟、记忆卡维护、桌宠接口。
-- **一条腿是独立进程**：`src/bridge.js` —— QQ 收发、会话映射、控制台、安全闸门。
-
-合起来，它让 agent 能：
+肥鱼可以：
 
 1. **在 QQ 里当一个群友**：自己判断要不要看、要不要说、说几条、引用谁；说完能判断"这段可以结束了"，带着"下次怎么接"潜水。
 2. **在 B站 当一个用户**：有自己的作息、偏好、每日额度；看视频会打分、会评论、会回帖、会发动态。
 3. **记得住也忘得掉**：一份会衰减的记忆卡（进提示词）+ 一份永不遗忘的全量卡（只存档）。
-4. **会主动找你**：从近期记忆里提炼"我想弄明白/想做点什么"，安静时段主动分享或索取；载体可选 QQ 或桌宠。
-5. **有一个桌面分身**：仓库外的 Electron 桌宠可以跟她文字/语音对话，也能接主动搭话的气泡。
+4. **会主动找你**。按「目的」页设定的节奏和安静时段，可经微信私聊、QQ 或桌宠主动联系你。
+5. **可以在桌面聊天**。Electron 桌宠支持文字和语音对话，也能接收主动搭话的气泡。
+6. **可以在微信私聊**。扫码绑定本人微信后，通过腾讯 iLink 接收文本，并按当前角色与私聊规则回复。
 
 > 它**不做**：不代你登录/扫码/绕过平台风控，不做多用户，不把控制台暴露到内网以外，
 > 不删除任何不可恢复的数据。完整边界见 [BOUNDARIES.md](docs/guides/BOUNDARIES.md)。
 
 ---
 
-## 二、安装（新用户从这里开始）
+## 二、Windows 安装
 
 ### 2.1 环境要求
 
@@ -117,8 +100,8 @@ node scripts/setup-dsh.mjs      # 自动判断 DSH 用的 profile，不用填
 
 ```bash
 # 1) 取代码
-git clone https://github.com/Mieksido/surfcore.git
-cd surfcore
+git clone --branch feat/macos-wechat https://github.com/oscarsa1ga0/surfcore_oscar.git
+cd surfcore_oscar
 
 # 2) 装依赖（postinstall 会自动修补 @snowluma/sdk 的 ESM bug）
 npm install
@@ -196,7 +179,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 ### 3.1 设置页（DSH → 设置 → SurfCore）
 
-14 个标签：概览 / 角色 / 目的 / QQ / 语音 / 桌宠 / B站 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断。
+概览显示当前角色和四个入口的状态。点击「微信私聊」「QQ」「B站」或「桌宠」可直接打开对应设置。
 逐个说明见 [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md)。
 
 ### 3.2 四种运行模式
@@ -210,7 +193,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 ### 3.3 让她主动找你（可选）
 
-设置页「目的」：选载体（QQ / 桌宠）、节奏、安静时段；先点**预览**（零副作用）再"试一次"。
+设置页「目的」：选载体（微信私聊 / QQ / 桌宠）、节奏、安静时段；先点**预览**（零副作用）再"试一次"。
 硬闸门：安静时段 / 每日上限 / 主人在聊 / token 额度 / 专注模式。
 
 ### 3.4 可选装语音
@@ -272,36 +255,26 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 | **B站** | 扫码登录、看视频/打分/收藏、评论与回帖、发动态、分享到 QQ、私信、直播间监听、34 个 CLI 命令 | [SUBSYSTEM-BILI.md](docs/guides/SUBSYSTEM-BILI.md) |
 | **记忆** | 衰减卡（清晰度/遗忘/容量告警/压缩）、全量卡（append-only）、三场景共享、隐私 scope、双向记忆 | [MEMORY_CARD.md](docs/guides/MEMORY_CARD.md) |
 | **人格** | 多角色整包切换、自动存档/回档、管理员双身份、身份对齐 | [CHARACTER_PERSONA.md](docs/guides/CHARACTER_PERSONA.md) |
-| **主动** | 目的机制（目标假设/载体 QQ·桌宠/互斥回落）、对话收尾、二代 proactive | [PURPOSE_OUTREACH.md](docs/guides/PURPOSE_OUTREACH.md) |
+| **微信** | 扫码绑定本人微信、文本私聊、暂停接收、主动搭话 | [微信配置](docs/cases/2026-11-11-macos-wechat.md) |
+| **主动** | 目的机制、微信私聊 / QQ / 桌宠载体、对话收尾 | [PURPOSE_OUTREACH.md](docs/guides/PURPOSE_OUTREACH.md) |
 | **语音** | 语音库发送、本地/云端 TTS 现场合成、语音包安装启停、音量/响度、频率上限；`qq_send_voice` / `qq_list_voices`（**AI 发语音默认关闭**） | [SUBSYSTEM-VOICE.md](docs/guides/SUBSYSTEM-VOICE.md) |
 | **桌宠** | 文本/语音对话、气泡与回复按钮、专注模式、目的载体、断线重连 | [SUBSYSTEM-PET.md](docs/guides/SUBSYSTEM-PET.md) |
 | **额度** | 每日 token 额度（QQ/B站/其他/总额，双单位，80% 提醒、100% 停）、消费看板 | [DATA-AND-CONFIG.md](docs/guides/DATA-AND-CONFIG.md) |
 | **工具面** | 39 个 `qq_*` 工具、三个 MCP server、两代 preset、fail-closed 工具守卫 | [AGENT-TOOLS-AND-PRESETS.md](docs/guides/AGENT-TOOLS-AND-PRESETS.md) |
-| **界面** | 设置页 14 个标签、控制台 10 个页面 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) |
+| **界面** | DSH 设置页、QQ 控制台 | [UI-AND-CONSOLE.md](docs/guides/UI-AND-CONSOLE.md) |
 
 ---
 
-## 五、架构一图
+## 五、架构
 
-```
-┌──────────────── 用户可见 ────────────────┐
-│ DSH Web GUI    控制台 :3100    桌宠窗口   │
-└──────┬──────────────┬─────────────┬──────┘
-┌──────▼──────────────▼─────────────▼──────────────────────────┐
-│ DSH 宿主  └─ surfcore 插件（bundle）                            │
-│     设置页 · 设置页 API · 桌宠 API · B站调度 · 记忆卡 · 额度    │
-└──────┬───────────────────────────────────────────────────────┘
-       │ HTTP（会话 Cookie） + 子进程管理
-┌──────▼───────────────────────────────────────────────────────┐
-│ QQ 桥接进程（node src/bridge.js，单实例）                       │
-│   OneBot WS · DSH 客户端 · 控制台 :3100 · 三个 MCP server       │
-└──┬────────────┬──────────────┬───────────────────────────────┘
-   │ WS         │ stdio        │ HTTP
-┌──▼────────┐ ┌─▼──────────┐ ┌─▼─────────────────┐
-│ SnowLuma2 │ │ DSH MCP    │ │ 语音引擎 8765/8767 │
-│（第三方）  │ │ 客户端      │ │（surfvoice*）      │
-└───────────┘ └────────────┘ └───────────────────┘
-```
+| 入口 | 连接路径 |
+| --- | --- |
+| 微信私聊 | 腾讯 iLink → SurfCore 插件 → 当前角色 |
+| QQ | OneBot 11 网关 → SurfCore QQ 桥接 → DSH 会话与当前角色 |
+| B站 | SurfCore 生物钟与 B站 工具 → 当前角色的行为与记忆 |
+| 桌宠 | SurfPet → SurfCore 桌宠接口 → 当前角色 |
+
+macOS 用 LLBot 提供 QQ 网关，Windows 用 SnowLuma。角色切换与记忆维护仍由 SurfCore 管理。
 
 - **两套状态根**：桥接数据在 `<仓库根>/state/`，插件数据在 `~/.dsh/surfcore/`。
 - **三份配置**：`config.json`（QQ）、`~/.dsh/surfcore/config.json`（合体层）、`~/.dsh/surfcore/bili.config.json`（B站）。
@@ -358,13 +331,13 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 
 | 问题 | 回答 |
 | --- | --- |
-| 能不装 SnowLuma 吗？ | QQ 部分不能（它负责登录与收发）。只要 B站/记忆/桌宠可以。 |
+| QQ 要装什么？ | macOS 用 LLBot，Windows 用 SnowLuma。只用微信、B站或桌宠时，可保持 QQ 关闭。 |
 | 能不用 DSH 吗？ | 不能，插件与 preset 都跑在 DSH 里。 |
 | 会自己发消息吗？ | 默认不会。主动搭话要显式开「目的」；二代下发言必须调工具。 |
 | 数据会上传吗？ | 只有拼进提示词的文本会发给模型 API；不想让黑话词条出机就关 `slang.autoResearch`。 |
 | 支持 Linux/macOS 吗？ | macOS 可通过 LLBot 的 OneBot 11 接入 QQ，并支持微信私聊、B 站与桌宠。Linux 暂无安装说明。 |
 | 能多用户/远程吗？ | 不做。控制台只接受回环。 |
-| 语音包/桌宠必须装吗？ | 不必须。不装则语音不可用、目的机制走 QQ。 |
+| 语音包和桌宠是必装项吗？ | 两个都可以按需安装。「目的」页可以另选微信私聊或 QQ。 |
 | 改名/换角色会丢记忆吗？ | 不会。角色包整包隔离，切换带快照，可回档。 |
 
 ---
