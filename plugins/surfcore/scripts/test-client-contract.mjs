@@ -378,10 +378,12 @@ assert.ok(source.includes('h(VoiceTab, {') && source.includes('onResource: () =>
 // ── 语音页网盘离线包入口（2026-11-06：统一到顶部资源按钮）──
 assert.ok(source.includes('网络不稳定装不上？用网盘下载离线包（本地包 / 云端包都适用）'), '必须说明本地包/云端包都适用');
 assert.ok(source.includes('获取网盘资源（语音、向量记忆模型）'), '语音页必须有统一的网盘资源按钮');
-assert.ok(source.includes('https://pan.quark.cn/s/2f49b5496874?pwd=jXqr'), '必须包含夸克网盘链接');
-assert.ok(source.includes('https://pan.xunlei.com/s/VP5iWnY5xJ1D8KpL-gFpAsj9A1?pwd=tqi7'), '必须包含迅雷网盘链接');
+assert.ok(pluginIndexSource.includes('https://pan.quark.cn/s/'), '宿主必须提供夸克网盘链接');
+assert.ok(pluginIndexSource.includes('https://pan.xunlei.com/s/'), '宿主必须提供迅雷网盘链接');
+assert.ok(source.includes('api("/resources/open"'), '网盘按钮应从宿主获取链接');
+assert.doesNotMatch(source + pluginIndexSource, /[?&]pwd=[a-z0-9_-]+/i, '网盘提取码应从本地配置读取');
 assert.ok(source.includes('（待补链）'), '百度/UC 必须标待补链');
-assert.ok(!source.includes('打开网盘下载（提取码 sxUZ）'), '旧的「打开网盘下载」按钮应移除');
+assert.ok(!source.includes('打开网盘下载（提取码'), '旧的「打开网盘下载」按钮应移除');
 assert.ok(!source.includes('api("/voice/packs/netdisk"'), '旧的 netdisk 打开逻辑应移除');
 
 // ── 桌宠安装：表单必须随请求提交（2026-10-30 用户反馈：填了也不生效）──

@@ -16,6 +16,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export function usesExternalOneBot(cfg, platform = process.platform) {
+  return platform === 'darwin' || (cfg?.snowluma ?? cfg)?.provider === 'onebot';
+}
+
+export function oneBotWsToken(cfg) {
+  const sl = cfg?.snowluma ?? cfg ?? {};
+  return String(sl.wsAccessToken || sl.accessToken || '');
+}
+
 /**
  * SnowLuma 主目录的常见位置。
  *
@@ -126,9 +135,12 @@ export async function discoverSnowLumaConnection({
   timeoutMs = 6000
 } = {}) {
   const sl = cfg?.snowluma ?? cfg ?? {};
-  const base = String(baseUrl || process.env.SNOWLUMA_HTTP_URL || sl.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-  const homes = homeDirs ?? snowLumaHomeCandidates({ cfg });
-  const explicit = token || process.env.SNOWLUMA_TOKEN || sl.accessToken || '';
+  const external = usesExternalOneBot(cfg);
+  const base = String(baseUrl || (!external && process.env.SNOWLUMA_HTTP_URL) || sl.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const homes = external ? [] : (homeDirs ?? snowLumaHomeCandidates({ cfg }));
+  const explicit = external
+    ? (token ?? sl.accessToken ?? '')
+    : (token || process.env.SNOWLUMA_TOKEN || sl.accessToken || '');
 
   // 候选顺序：显式配置优先（尊重用户选择），然后才是 per-account 文件里的其它账号
   const candidates = [];
@@ -154,7 +166,7 @@ export async function discoverSnowLumaConnection({
   const tried = [];
   for (const c of candidates) {
     const r = await probe(c.url, c.token, timeoutMs);
-    tried.push({ source: c.source, url: c.url, token: c.token ? c.token.slice(0, 4) + '…' : '(空)', ok: r.ok, status: r.status, wording: r.wording });
+    tried.push({ source: c.source, url: c.url, token: c.token ? (external ? '********' : c.token.slice(0, 4) + '…') : '(空)', ok: r.ok, status: r.status, wording: r.wording ?? r.error });
     if (r.ok) {
       // 找到有效 HTTP token 后，把**同一个账号**的 WS 信息也带回去：
       // 桥接走 WebSocket，用另一个 token、另一个端口 —— 只修 HTTP 的话桥接仍然 1006 重连。
@@ -166,8 +178,8 @@ export async function discoverSnowLumaConnection({
         baseUrl: c.url,
         self: r.data,
         source: c.source,
-        wsToken: w?.token ?? null,
-        wsUrl: w?.url ?? null,
+        wsToken: external ? oneBotWsToken({ ...sl, accessToken: c.token }) : w?.token ?? null,
+        wsUrl: external ? sl.wsUrl || 'ws://127.0.0.1:3001' : w?.url ?? null,
         tried
       };
     }
@@ -178,7 +190,7 @@ export async function discoverSnowLumaConnection({
     tried,
     baseUrl: base,
     error: last?.status === 401
-      ? `所有候选 token 都被拒绝（401）。当前账号的 token 可能还没写进 SnowLuma 的 config：请确认 SnowLuma 已登录目标 QQ，且 OneBot HTTP 服务已开启。`
+      ? (external ? 'OneBot HTTP token 被拒绝（401），请核对网关中 HTTP 服务的 token。' : '所有候选 token 都被拒绝（401）。请确认 SnowLuma 已登录目标 QQ，且 OneBot HTTP 服务已开启。')
       : `连不上 OneBot HTTP API（${base}）：${last?.wording ?? last?.status ?? '未知错误'}`
   };
 }

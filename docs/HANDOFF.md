@@ -5,6 +5,10 @@
 
 ---
 
+## macOS QQ 接入（2026-11-11）
+
+- macOS 由 LLBot 提供 OneBot 11 正向 WebSocket 和 HTTP，复用 SurfCore 的 QQ 桥接。配置、安装、回退和验证范围见 [macOS QQ 接入](cases/2026-11-11-macos-qq.md)。
+
 ## 快照：2026-11-05 17:45（向量记忆 UI / 一键启动自检 / 完整重建）
 
 ### 当前事实

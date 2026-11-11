@@ -9,7 +9,7 @@
 | --- | --- |
 | 版本 | `0.8.9` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
-| 平台 | Windows（QQ）、macOS（微信私聊 / B 站 / 桌宠） |
+| 平台 | Windows（QQ / B 站 / 桌宠）、macOS（QQ / 微信私聊 / B 站 / 桌宠） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
 | 配套仓库 | [surfvoicelocal](https://github.com/Mieksido/surfvoicelocal) · [surfvoicecloud](https://github.com/Mieksido/surfvoicecloud) · [surfpet](https://github.com/Mieksido/surfpet) |
 
@@ -18,9 +18,9 @@
 
 ---
 
-## macOS 上的微信、B 站与桌宠
+## macOS 上的 QQ、微信、B 站与桌宠
 
-使用 DSH 桌面端加载 SurfCore。在「微信」页扫码绑定本人私聊，在「B站」和「桌宠」页分别启用对应渠道。三边沿用当前角色的身份和长期记忆。安装、隐私范围和暂停方式见 [macOS 使用说明](docs/cases/2026-11-11-macos-wechat.md)。
+使用 DSH 桌面端加载 SurfCore。在「微信」页扫码绑定本人私聊，在「B站」和「桌宠」页分别启用对应渠道。这些入口沿用 SurfCore 当前角色的身份与记忆，遵守各自的分享范围。微信、B 站和桌宠的配置见 [macOS 使用说明](docs/cases/2026-11-11-macos-wechat.md)，QQ 配置见 [macOS QQ 接入](docs/cases/2026-11-11-macos-qq.md)。
 
 ## 让 DSH 自己装（也可以只发一条链接）
 
@@ -362,7 +362,7 @@ node scripts/verify-dsh-020-adaptation.mjs      # 对本机 DSH 版本逐项复�
 | 能不用 DSH 吗？ | 不能，插件与 preset 都跑在 DSH 里。 |
 | 会自己发消息吗？ | 默认不会。主动搭话要显式开「目的」；二代下发言必须调工具。 |
 | 数据会上传吗？ | 只有拼进提示词的文本会发给模型 API；不想让黑话词条出机就关 `slang.autoResearch`。 |
-| 支持 Linux/macOS 吗？ | macOS 支持微信私聊、B 站与桌宠，QQ 桥接依赖 Windows。Linux 暂无安装说明。 |
+| 支持 Linux/macOS 吗？ | macOS 可通过 LLBot 的 OneBot 11 接入 QQ，并支持微信私聊、B 站与桌宠。Linux 暂无安装说明。 |
 | 能多用户/远程吗？ | 不做。控制台只接受回环。 |
 | 语音包/桌宠必须装吗？ | 不必须。不装则语音不可用、目的机制走 QQ。 |
 | 改名/换角色会丢记忆吗？ | 不会。角色包整包隔离，切换带快照，可回档。 |

@@ -43,7 +43,7 @@
 
 ### 1.3 可接受的妥协（明确写下来，避免越做越大）
 
-- Windows 继续承载 QQ 桥接。此 fork 的 macOS 范围为 SurfCore 宿主、B 站、桌宠与微信本人文本私聊，详细范围见 [macOS 接入](cases/2026-11-11-macos-wechat.md)。
+- Windows 的 QQ 接入使用 SnowLuma。macOS 通过 LLBot 的 OneBot 11 接入同一个 QQ 桥接，沿用 SurfCore 的会话、规则与当前角色。微信本人文本私聊、B 站与桌宠的范围见 [macOS 接入](cases/2026-11-11-macos-wechat.md)，QQ 配置见 [macOS QQ 接入](cases/2026-11-11-macos-qq.md)。
 - 控制台是单机回环 Web UI，不做多用户/远程管理。
 - 人格/黑话等「软能力」允许启发式，不追求 100% 准确；边界靠硬规则（工具面/白名单/审计）而不是靠提示词。
 - 探针脚本允许留在仓库里，但**默认不跑**，且必须能只读运行。

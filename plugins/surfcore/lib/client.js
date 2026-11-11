@@ -1945,6 +1945,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const align = overview?.alignment ?? {};
       const scheduler = overview?.scheduler ?? {};
       const snow = overview?.snowluma ?? {};
+      const externalOneBot = snow.provider === "onebot";
       const platformStart = overview?.platformStart ?? {};
       const qqStart = platformStart.qq !== false;
       const biliStart = platformStart.bili !== false;
@@ -2349,7 +2350,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h("div", { className: "qbw-actions", style: { marginTop: "4px" } },
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
                 h("input", { type: "checkbox", checked: launchSel.qq, onChange: (e) => setLaunchSel((v) => ({ ...v, qq: e.target.checked })) }),
-                h("span", null, `QQ（含 SnowLuma）${launch.qq?.running ? " · 运行中" : " · 未运行"}`)),
+                h("span", null, `${externalOneBot ? "QQ（OneBot）" : "QQ（含 SnowLuma）"}${launch.qq?.running ? " · 运行中" : " · 未运行"}`)),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
                 h("input", { type: "checkbox", checked: launchSel.bili, onChange: (e) => setLaunchSel((v) => ({ ...v, bili: e.target.checked })) }),
                 h("span", null, `B站${launch.bili?.running ? " · 运行中" : " · 未运行"}`)),
@@ -2368,7 +2369,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 onChange: (e) => { setHideConsoles(e.target.checked); setUnified?.(["platforms", "hideConsoles"], e.target.checked); },
               }),
               h("span", null, "隐藏启动后的命令行黑框"),
-              h("span", { className: "qbw-hint" }, "勾选后一键启动不再弹 cmd / SnowLuma 控制台窗口")),
+              h("span", { className: "qbw-hint" }, externalOneBot ? "应用于可隐藏控制台的组件" : "勾选后一键启动不再弹 cmd / SnowLuma 控制台窗口")),
             launchSel.voice ? h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0 } },
               h("span", { className: "qbw-hint" }, "语音分支："),
               h("label", { className: "qbw-row", style: { alignItems: "center", gap: "4px" } },
@@ -2414,7 +2415,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 checked: unified?.bridge?.startupNotify !== false,
                 onChange: (e) => setUnified(["bridge", "startupNotify"], e.target.checked),
               })),
-            h("div", { className: "qbw-hint" }, "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事。不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
+            h("div", { className: "qbw-hint" }, externalOneBot ? "先在 LLBot 登录 QQ，并在「QQ」页配置 OneBot。启动 QQ 会拉起 SurfCore 桥接。人格卡在「角色」页维护。" : "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事。不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
           h("div", { className: "qbw-card" },
             h("h4", null, "更新 ", (() => {
               const rows = updates.results ?? [];
@@ -2590,8 +2591,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h(Btn, { kind: "qbw-btn2", onClick: () => ackGate(null), disabled: !(gateData?.counts?.unacked > 0) }, "全部确认"),
                 h(Btn, { kind: "qbw-btn2", onClick: loadGateEvents }, "刷新")))
             : null,
-          h(AdvancedSettings, { note: "SnowLuma 安装 / 扩展与平台：装好后很少改" },
-            h("div", { className: "qbw-card" },
+          h(AdvancedSettings, { note: "QQ 网关 / 扩展与平台" },
+            externalOneBot ? null : h("div", { className: "qbw-card" },
               h("h4", null, "SnowLuma 安装"),
               (bridge.running && snow.everConnected === true && snow.diagnosis?.state && snow.diagnosis.state !== "ok")
                 ? h("div", { className: "qbw-err", style: { margin: "6px 0" } },
@@ -3729,7 +3730,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext, dirty }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
-      const groups = [...QQ_FIELDS];
+      const externalOneBot = overview?.snowluma?.provider === "onebot";
+      const groups = externalOneBot ? QQ_FIELDS.filter((group) => group.group !== "SnowLuma") : [...QQ_FIELDS];
       if (tools.length) {
         groups.push({ group: "二代 · 工具开关", note: "关掉即从模型工具面移除", fields: tools.map((key) => F(`socialV2.tools.${key}`, TOOL_LABELS[key] ?? key, key, "switch")) });
       }
@@ -3786,6 +3788,29 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.bridge?.running || overview?.bridge?.ok),
           overview,
         }),
+        externalOneBot ? h("div", { className: "qbw-card" },
+          h("h4", null, "QQ · OneBot 11"),
+          h("p", { className: "qbw-hint" }, "在 LLBot 登录 QQ，开启正向 WebSocket 和 HTTP。保存连接设置后，启动或重启 QQ 桥接。"),
+          h(FieldGroups, {
+            cfg, set, onSave,
+            groups: [{ group: "连接", fields: [
+              F("snowluma.wsUrl", "正向 WebSocket", "ws://127.0.0.1:3001"),
+              F("snowluma.httpUrl", "HTTP API", "http://127.0.0.1:3000"),
+              F("snowluma.accessToken", "HTTP token", "与 LLBot HTTP 服务一致", "password"),
+              F("snowluma.wsAccessToken", "WebSocket token", "留空时使用 HTTP token", "password"),
+            ] }],
+          }),
+          h("div", { className: "qbw-actions" },
+            h(Btn, { kind: "qbw-btn2", disabled: !!busy || dirty, onClick: async () => {
+              setBusy("onebot-probe");
+              try {
+                const result = await api("/bridge", { method: "POST", body: { action: "probe-onebot" } });
+                toast(result.ok ? `✓ ${result.message}${result.nickname ? " · " + result.nickname : ""}` : [result.error, result.hint].filter(Boolean).join(" · "));
+              } catch (error) { toast(error.message); }
+              finally { setBusy(""); }
+            } }, "测试 HTTP 连接"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => window.open("https://luckylillia.com/guide/choice_install", "_blank", "noopener") }, "LLBot 安装指南")),
+          h("p", { className: "qbw-hint" }, overview?.bridge?.snowluma?.connected ? "QQ WebSocket 已连接" : (overview?.snowluma?.diagnosis?.hint || "等待桥接连接 WebSocket"))) : null,
         h(ModelSettingsCard, { busy, toast, reload }),
         h(CostCard, { toast, set }),
         h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
@@ -7035,7 +7060,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     // ── 诊断 ────────────────────────────────────────────────────────────────
-    function DiagnosticsTab({ busy, setBusy, toast, reload }) {
+    function DiagnosticsTab({ busy, setBusy, toast, reload, externalOneBot }) {
+      const gateway = externalOneBot ? "OneBot" : "SnowLuma";
       const [diag, setDiag] = useState(null);
       const [logs, setLogs] = useState(null);
       const [err, setErr] = useState("");
@@ -7071,8 +7097,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             phase: "form",
             snow: scan.snow ?? {},
             groups,
-            selected: groups.map((g) => g.id),
-            owner: scan.snow?.uin || "",
+            selected: externalOneBot ? [] : groups.map((g) => g.id),
+            owner: externalOneBot ? "" : (scan.snow?.uin || ""),
             steps: [],
             error: scan.error || "",
           });
@@ -7191,14 +7217,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         },
           h("h3", { style: { margin: "0 0 10px" } }, flow.phase === "done" ? "安装完成" : flow.phase === "error" ? "安装中断" : "一键安装"),
 
-          flow.phase === "scan" ? h("div", { className: "qbw-hint" }, "正在探测 SnowLuma（端口 / token / 群列表）…") : null,
+          flow.phase === "scan" ? h("div", { className: "qbw-hint" }, `正在探测 ${gateway}（HTTP 连接 / 群列表）…`) : null,
           flow.phase === "error" ? h("div", null,
             h("div", { className: "qbw-err" }, flow.error || "未知错误"),
-            h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "常见原因：DSH 里跑的还是旧版本（关掉 DSH 再开一次），或 SnowLuma 没登录。")) : null,
+            h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, `确认 ${gateway} 已启动并登录 QQ。若 DSH 仍显示旧界面，完全退出后重开。`)) : null,
 
           flow.phase === "form" ? h("div", null,
             h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
-              flow.snow?.online ? `已连上 SnowLuma：${flow.snow.nickname || ""}（${flow.snow.uin || "?"}）` : `没连上 SnowLuma：${flow.error || "先启动并扫码登录"}`),
+              flow.snow?.online ? `已连上 ${gateway}：${flow.snow.nickname || ""}（${flow.snow.uin || "?"}）` : `没连上 ${gateway}：${flow.error || "先启动并扫码登录"}`),
             h("div", { className: "qbw-group" }, "主人 QQ（你的号，不是机器人号）"),
             h("input", { className: "qbw-input", value: flow.owner, onChange: (e) => setFlow({ ...flow, owner: e.target.value }), style: { width: "100%" } }),
             h("div", { className: "qbw-group", style: { marginTop: "10px" } }, `把哪些群加进白名单（${flow.groups.length} 个）`),
@@ -7936,23 +7962,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       };
       // 让深层组件（如泛用 Field 的「浏览…」）也能弹提示，而不是静默失败。
       useEffect(() => { window.__surfcoreToast = notify; return () => { delete window.__surfcoreToast; }; }, []);
-      // 网盘资源入口：语音包 + 向量记忆模型。百度和 UC 待补链。
-      const RESOURCE_LINKS = {
-        quark: "https://pan.quark.cn/s/2f49b5496874?pwd=jXqr",
-        uc: "",
-        xunlei: "https://pan.xunlei.com/s/VP5iWnY5xJ1D8KpL-gFpAsj9A1?pwd=tqi7",
-        baidu: "",
-      };
       const RESOURCE_NAMES = { quark: "夸克网盘", uc: "UC网盘", xunlei: "迅雷网盘", baidu: "百度网盘" };
       const openResource = async (kind) => {
-        const url = RESOURCE_LINKS[kind];
-        if (!url) { notify("这个网盘的链接还没配置，等管理员补上"); return; }
-        // 先用宿主 cmd start 调系统默认浏览器；Electron/新窗口策略拦住 window.open 时也能开。
         try {
-          const r = await api("/resources/open", { method: "POST", body: { url } });
+          const r = await api("/resources/open", { method: "POST", body: { kind } });
           if (r.ok) { notify(`✓ 已用默认浏览器打开${RESOURCE_NAMES[kind]}`); return; }
-        } catch {}
-        try {
+          const url = r.url;
           const opened = window.open(url, "_blank", "noopener");
           if (!opened) notify(`⚠️ 浏览器拦截了新窗口；请点右侧「复制链接」，粘贴到浏览器打开${RESOURCE_NAMES[kind]}`);
         } catch (e) {
@@ -7960,8 +7975,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
       };
       const copyResourceLink = async (kind) => {
-        const url = RESOURCE_LINKS[kind];
-        if (!url) { notify("这个网盘的链接还没配置，等管理员补上"); return; }
+        let url;
+        try {
+          ({ url } = await api("/resources/open", { method: "POST", body: { kind, copy: true } }));
+        } catch (e) {
+          notify(`✗ 无法获取网盘链接：${e.message}`);
+          return;
+        }
         try {
           if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
           else throw new Error("clipboard unavailable");
@@ -8191,7 +8211,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
       if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });
-        if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
+        if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload, externalOneBot: overview?.snowluma?.provider === "onebot" });
         return null;
       };
 
@@ -8231,9 +8251,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("h3", null, "获取网盘资源"),
             h("p", { className: "qbw-hint" }, "语音包、向量记忆模型（runtime + 三个模型）都在网盘；选择你常用的网盘打开。"),
             h("div", { style: { display: "grid", gridTemplateColumns: "1fr", gap: "10px", marginTop: "10px" } },
-              [["quark", "夸克网盘"], ["uc", "UC网盘"], ["xunlei", "迅雷网盘"], ["baidu", "百度网盘"]]
-                .map(([key, label]) => {
-                  const url = RESOURCE_LINKS[key];
+              Object.entries(RESOURCE_NAMES).map(([key, label]) => {
+                  const available = key === "quark" || key === "xunlei";
                   return h("div", {
                     key,
                     style: {
@@ -8247,18 +8266,17 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                     },
                   },
                     h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
-                      h("div", { style: { fontWeight: 600 } }, url ? label : `${label}（待补链）`),
-                      h("div", { className: "qbw-hint", style: { marginTop: "2px", wordBreak: "break-all" } }, url || "链接待补")),
+                      h("div", { style: { fontWeight: 600 } }, available ? label : `${label}（待补链）`)),
                     h(Btn, {
                       kind: "qbw-btn2",
-                      disabled: !url,
-                      title: url ? `用默认浏览器打开${label}` : "链接待补",
+                      disabled: !available,
+                      title: available ? `用默认浏览器打开${label}` : "链接待补",
                       onClick: () => openResource(key),
                     }, "打开"),
                     h(Btn, {
                       kind: "qbw-btn3",
-                      disabled: !url,
-                      title: url ? `复制${label}链接` : "链接待补",
+                      disabled: !available,
+                      title: available ? `复制${label}链接` : "链接待补",
                       onClick: () => copyResourceLink(key),
                     }, "复制链接"));
                 })),

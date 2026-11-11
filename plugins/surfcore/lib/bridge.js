@@ -14,6 +14,7 @@ import {
   findNodeExe,
 } from './paths.js';
 import { readJson } from './store.js';
+import { usesExternalOneBot } from '../../../src/snowluma-conn.js';
 
 function consolePort() {
   const cfg = readJson(QQ_CONFIG, {}) ?? {};
@@ -167,8 +168,21 @@ function appendSupervisorLog(text) {
   } catch {}
 }
 
+export function missingBridgeDependencies() {
+  return ['@snowluma/sdk', '@deepseek-ai/dsh-host-apiproxy', '@modelcontextprotocol/sdk']
+    .filter((name) => !fs.existsSync(path.join(QQBOT_ROOT, 'node_modules', name, 'package.json')));
+}
+
 export async function start({ dshWebUrl = '' } = {}) {
   if (await portOpen()) return { ok: true, already: true, message: '桥接已经在跑' };
+  if (usesExternalOneBot(readJson(QQ_CONFIG, {}))) {
+    const missing = missingBridgeDependencies();
+    if (missing.length) return {
+      ok: false, code: 'QQ_BRIDGE_DEPENDENCIES',
+      error: `QQ 桥接缺少依赖：${missing.join('、')}`,
+      hint: '在 SurfCore 仓库根安装依赖，并运行 scripts/setup-dsh.mjs 注册 QQ 工具',
+    };
+  }
   const env = { ...process.env };
   if (dshWebUrl) env.DSH_WEB_URL = String(dshWebUrl);
   // 直接 spawn node.exe，不经过 cmd/start.bat：
@@ -178,7 +192,7 @@ export async function start({ dshWebUrl = '' } = {}) {
   // 手动双击 start.bat 仍然保留（可见日志 + 崩溃循环）。
   const nodeExe = findNodeExe();
   if (!/^node(\.exe)?$/i.test(path.basename(String(nodeExe)))) {
-    return { ok: false, error: `找不到真正的 node.exe（当前解析到 ${nodeExe}）` };
+    return { ok: false, error: `找不到 Node.js 可执行文件（当前解析到 ${nodeExe}）` };
   }
   const child = spawn(nodeExe, [path.join(QQBOT_ROOT, 'src', 'bridge.js')], {
     cwd: QQBOT_ROOT,
@@ -187,12 +201,16 @@ export async function start({ dshWebUrl = '' } = {}) {
     stdio: 'ignore',
     windowsHide: true,
   });
+  let startError = '';
+  child.once('error', (error) => { startError = error.code || error.message; });
+  child.once('exit', (code, signal) => { startError = signal || `exit ${code}`; });
   child.unref();
   appendSupervisorLog(`已请求启动 bridge.js（无窗口，pid ${child.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`);
   // 等最多 30 秒（首次启动可能要先做 ACL/状态初始化；12 秒会误报失败）
   for (let i = 0; i < 60; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     if (await portOpen()) return { ok: true, started: true, message: '桥接已启动' };
+    if (startError) return { ok: false, code: 'QQ_BRIDGE_START', error: `QQ 桥接启动失败（${startError}）`, hint: '检查 SurfCore 仓库的依赖和 state/bridge.log' };
   }
   return { ok: false, error: '启动后 30 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
 }
