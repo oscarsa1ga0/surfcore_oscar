@@ -2861,7 +2861,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", null,
             h("h4", { style: { margin: 0 } }, "主动找主人 · 目的机制",
               status ? h("span", { className: "qbw-badge " + (status.enabled ? "ok" : "warn") }, status.enabled ? "开" : "关") : null,
-              status?.carrier ? h("span", { className: "qbw-badge" }, status.carrier === "pet" ? "载体：桌宠" : "载体：QQ") : null,
+              status?.carrier ? h("span", { className: "qbw-badge" }, `载体：${({ pet: '桌宠', wechat: '微信私聊', qq: 'QQ' })[status.carrier] || status.carrier}`) : null,
               status?.focus ? h("span", { className: "qbw-badge warn" }, "专注中 · 自动停") : null),
             h("p", { style: { marginTop: "4px" } },
               "不是关键词触发器：从 QQ + B站 + 人格卡 + 记忆卡里形成「目标假设」，带归属 / 置信度 / 风险，再决定分享、索取、邀请还是倾诉。",
@@ -2950,7 +2950,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     // 未安装桌宠的用户默认 QQ。同一时刻只有一个载体在发，避免两边同时收到。
     function PurposeCarrierCard({ cfg, set, busy, toast }) {
       const P = cfg?.purpose && typeof cfg.purpose === "object" ? cfg.purpose : {};
-      const carrier = P.carrier === "pet" ? "pet" : "qq";
+      const carrier = ["pet", "wechat"].includes(P.carrier) ? P.carrier : "qq";
       const modality = P.petModality === "voice" ? "voice" : "text";
       const [status, setStatus] = useState(null);
       useEffect(() => {
@@ -2958,9 +2958,11 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       }, []);
       const pet = status?.availability?.pet ?? {};
       const qq = status?.availability?.qq ?? {};
+      const wx = status?.availability?.wechat ?? {};
+      const names = { pet: "桌宠", wechat: "微信私聊", qq: "QQ" };
       const choose = (value) => {
         set(["purpose", "carrier"], value);
-        toast(`✓ 载体改为「${value === "pet" ? "桌宠" : "QQ"}」，记得点底部保存`);
+        toast(`✓ 载体改为「${names[value]}」，记得点底部保存`);
       };
       const seg = (options, value, onChange) => h("div", { style: { display: "inline-flex", gap: "4px", padding: "2px", borderRadius: "999px", background: "var(--qbw-surface)", border: "1px solid var(--qbw-line)" } },
         options.map(([val, label]) => h("button", {
@@ -2998,7 +3000,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         : "桥接没在运行：选了也要先在「QQ」页启动";
       return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
         h("h4", null, "触发载体",
-          h("span", { className: "qbw-badge" }, carrier === "pet" ? "桌宠" : "QQ"),
+          h("span", { className: "qbw-badge" }, names[carrier]),
           status?.ok === false ? h("span", { className: "qbw-badge warn" }, "状态读不到") : null),
         h("p", null, "目的机制只有一套（素材 → 驱动 → 目标假设 → 选择 → 回执）；这里决定这一句从哪个载体发出去。同一时刻只有一个执行者，不会桌宠和 QQ 同时收到。"),
         h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" } },
@@ -3009,7 +3011,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", { style: cardStyle(carrier === "pet"), onClick: () => choose("pet"), role: "button" },
             h("div", { style: { fontWeight: 600, fontSize: "13px" } }, "桌宠气泡 / 语音"),
             h("div", { className: "qbw-hint" }, petText),
-            h("div", { className: "qbw-hint" }, "在桌面上说话：语音会念出来，气泡里始终显示文字。"))),
+            h("div", { className: "qbw-hint" }, "在桌面上说话：语音会念出来，气泡里始终显示文字。")),
+          h("div", { style: cardStyle(carrier === "wechat"), onClick: () => choose("wechat"), role: "button" },
+            h("div", { style: { fontWeight: 600, fontSize: "13px" } }, "微信私聊"),
+            h("div", { className: "qbw-hint" }, wx.canSend ? "已获得私聊上下文" : "先在微信页绑定并发来一条消息"))),
         h("div", { style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "10px" } },
           h("span", { style: { fontSize: "12px", opacity: 0.75 } }, "桌宠主动搭话形式"),
           seg([["text", "文本"], ["voice", "语音"]], modality, (value) => {
@@ -4587,7 +4592,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("div", { className: "qbw-kv" }, h("span", null, "生成时间"), h("span", null, fmtTime(bili.generatedAt))),
               h("div", { className: "qbw-actions" }, h(Btn, { kind: "qbw-btn2", onClick: runDeps, disabled: !!busy }, "依赖体检"))),
             h("div", { className: "qbw-card" }, h("h4", null, "手动粘贴凭据（备用）"),
-              h("p", null, "只在 Edge 不可用 / 扫码失败时用；平时优先上面的扫码登录。"),
+              h("p", null, "只在扫码浏览器不可用或扫码失败时用；平时优先上面的扫码登录。"),
               h("div", { className: "qbw-list" },
                 h("input", { className: "qbw-input", placeholder: "SESSDATA", value: cookie.sessdata, onChange: (e) => setCookie((s) => ({ ...s, sessdata: e.target.value })) }),
                 h("input", { className: "qbw-input", placeholder: "bili_jct", value: cookie.bili_jct, onChange: (e) => setCookie((s) => ({ ...s, bili_jct: e.target.value })) }),
@@ -7752,13 +7757,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             st && st.installed ? h(Btn, { kind: "qbw-btn2", onClick: () => act("remove"), disabled: !!busy }, "卸载") : null)),
         h("div", { className: "qbw-card", style: { marginTop: "10px" } },
           h("h4", null, "安装设置"),
-          h("div", { className: "qbw-hint", style: { margin: "4px 0 8px" } }, "安装包：zip 的本地路径或 http(s) 链接；Electron：本机 electron.exe 的完整路径（安装包不带运行时）。"),
+          h("div", { className: "qbw-hint", style: { margin: "4px 0 8px" } }, "安装包：zip 的本地路径或 http(s) 链接；Electron：本机 Electron 可执行文件的完整路径（安装包不带运行时）。"),
           h("div", { className: "qbw-row" }, h("span", { className: "qbw-label" }, "安装包地址"),
             h("input", { className: "qbw-input", value: form.source, placeholder: "D:/tools/pet-pack.zip 或 https://…", onChange: (e) => setForm((f) => ({ ...f, source: e.target.value })) }),
             h(Browse, { mode: "file", title: "选择安装包 zip", onPick: (v) => setForm((f) => ({ ...f, source: v })) })),
           h("div", { className: "qbw-row" }, h("span", { className: "qbw-label" }, "Electron 路径"),
-            h("input", { className: "qbw-input", value: form.electronPath, placeholder: "D:/tools/electron/electron.exe", onChange: (e) => setForm((f) => ({ ...f, electronPath: e.target.value })) }),
-            h(Browse, { mode: "file", title: "选择 electron.exe", onPick: (v) => setForm((f) => ({ ...f, electronPath: v })) })),
+            h("input", { className: "qbw-input", value: form.electronPath, placeholder: "Electron.app/Contents/MacOS/Electron 或 electron.exe", onChange: (e) => setForm((f) => ({ ...f, electronPath: e.target.value })) }),
+            h(Browse, { mode: "file", title: "选择 Electron 可执行文件", onPick: (v) => setForm((f) => ({ ...f, electronPath: v })) })),
           h("div", { className: "qbw-row" }, h("span", { className: "qbw-label" }, "安装目录（可选）"),
             h("input", { className: "qbw-input", value: form.appDir, placeholder: "留空 = ~/.dsh/surfcore/pet/app", onChange: (e) => setForm((f) => ({ ...f, appDir: e.target.value })) }),
             h(Browse, { mode: "dir", title: "选择桌宠安装目录", onPick: (v) => setForm((f) => ({ ...f, appDir: v })) })),
@@ -7828,11 +7833,59 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null);
     }
 
+    function WechatTab() {
+      const [status, setStatus] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState("");
+      const [pin, setPin] = useState("");
+      const refresh = () => api("/wechat").then(setStatus).catch((err) => setError(err.message));
+      useEffect(() => {
+        void refresh();
+        const timer = setInterval(refresh, 1800);
+        return () => clearInterval(timer);
+      }, []);
+      async function action(name) {
+        setError("");
+        setBusy(true);
+        try {
+          setStatus(await api("/wechat", { method: "POST", body: { action: name, ...(name === "verify" ? { pin } : {}) } }));
+        } catch (err) {
+          setError([err.message, err.hint].filter(Boolean).join(" · "));
+        } finally {
+          setPin("");
+          setBusy(false);
+        }
+      }
+      const login = status?.login;
+      const message = login?.error || status?.lastError;
+      const phase = { loading: "正在获取二维码", wait: "等待扫码", scanned: "请在手机微信上确认",
+        pin: "请输入手机微信显示的验证码", confirmed: "扫码绑定成功" }[login?.phase];
+      const pending = ["loading", "wait", "scanned", "pin"].includes(login?.phase);
+      return h("div", { className: "qbw-card" },
+        h("h4", null, "微信私聊"),
+        h("p", null, status?.online ? "接收中" : (status?.bound ? "账号已绑定" : "等待绑定本人微信")),
+        h("div", { className: "qbw-actions" },
+          h(Btn, { disabled: busy || status?.enabled, onClick: () => action("login") }, status?.bound ? "重新扫码" : "获取二维码"),
+          status?.enabled
+            ? h(Btn, { disabled: busy, onClick: () => action("pause") }, "暂停接收")
+            : h(Btn, { disabled: busy || pending || !status?.bound, onClick: () => action("enable") }, "启用接收")),
+        phase ? h("p", { className: "qbw-hint" }, phase) : null,
+        login?.image ? h("img", { src: login.image, width: 196, height: 196, alt: "微信绑定二维码" }) : null,
+        login?.phase === "pin" ? h("div", { className: "qbw-actions" },
+          h("input", { value: pin, maxLength: 8, inputMode: "numeric", autoComplete: "off", "aria-label": "微信验证码",
+            onChange: (event) => setPin(event.target.value.replace(/[^0-9]/g, "")) }),
+          h(Btn, { disabled: busy || pin.length < 4, onClick: () => action("verify") }, "确认验证码")) : null,
+        status?.enabled && !status.canSend ? h("p", { className: "qbw-hint" }, "启用后，从绑定的微信向机器人发一条文本消息。") : null,
+        status?.silent ? h("p", { className: "qbw-hint" }, "当前静默。在微信发送 /active 恢复回复。") : null,
+        error || message ? h("p", { className: "qbw-err" }, error || [message.error, message.hint].filter(Boolean).join(" · ")) : null);
+    }
+
     // ── 主组件 ──────────────────────────────────────────────────────────────
     const TABS = [
       ["overview", "概览"],
       ["characters", "角色"],
       ["purpose", "目的"],
+      ["wechat", "微信"],
       ["qq", "QQ"],
       ["voice", "语音"],
       ["pet", "桌宠"],
@@ -8132,6 +8185,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath, setUnified: setUnifiedPath, qq: normalizedQq, unified });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
+        if (tab === "wechat") return h(WechatTab);
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, onResource: () => setResourceOpen(true) });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
@@ -8150,7 +8204,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h(StatusDot, { ok: qqStart && bridge.running && bridge.ok, warn: qqStart && bridge.running && !bridge.ok }, qqStart ? "QQ" : "QQ 关"),
               h(StatusDot, { ok: biliStart && Boolean(biliStatus.available), warn: biliStart && Boolean(biliStatus.enabled) }, biliStart ? "B站" : "B站 关"),
               h(StatusDot, { ok: biliStart && overview?.scheduler?.running }, biliStart ? "生物钟" : "生物钟关"))),
-          h("p", { className: "qbw-sub" }, "SurfCore 一个窗口管两边：QQ 的桥接与参数、B站养鱼参数、记忆卡、双向脱敏记忆、身份对齐，以及后续扩展接口。"),
+          h("p", { className: "qbw-sub" }, "当前角色、微信私聊、B 站、桌宠和记忆。"),
           h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
             h(Btn, { kind: "qbw-btn2", onClick: () => setResourceOpen(true) }, "获取网盘资源（语音、向量记忆模型）"))),
         h("div", { className: "qbw-tabs" }, TABS.map(([id, label]) => h("button", {

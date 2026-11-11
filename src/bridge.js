@@ -1900,7 +1900,7 @@ async function main() {
     let carrier = 'qq';
     try {
       const raw = readJsonSafe(PURPOSE_CONFIG_FILE, null);
-      if (raw?.purpose?.carrier === 'pet') carrier = 'pet';
+      if (['pet', 'wechat'].includes(raw?.purpose?.carrier)) carrier = raw.purpose.carrier;
     } catch {}
     purposeCarrierCache = { at: Date.now(), carrier };
     return carrier;
@@ -12880,7 +12880,7 @@ async function main() {
     // 机器模式没有主动性；峰时把主动搭话顺延到谷时（用户可关）。
     if (!backgroundTasksAllowed()) return;
     // 载体切到桌宠后，桥接不再自动出发（手动「立即试一次」/ 桌宠离线回落仍可走 runPurpose）。
-    if (purposeCarrierNow() === 'pet') return;
+    if (purposeCarrierNow() !== 'qq') return;
     // 桌宠专注模式：连 QQ 载体的自动主动搭话也一起停，避免用户开着专注还被私聊。
     if (petFocusEnabled()) { logPetFocusSkip(); return; }
     try {
@@ -12898,7 +12898,7 @@ async function main() {
   async function warmPurposeState() {
     if (purposeWarming) return;
     if (currentMode !== 'reserved2') return;
-    if (purposeCarrierNow() === 'pet') return;
+    if (purposeCarrierNow() !== 'qq') return;
     if (petFocusEnabled()) return;
     const owner = purposeOwnerId();
     if (!owner) return;

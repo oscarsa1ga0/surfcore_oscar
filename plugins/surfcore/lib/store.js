@@ -146,7 +146,7 @@ export const DEFAULT_UNIFIED = {
     // 这是「是否启动」的唯一真相：关掉后插件不会自动拉起该平台，也不会把它带进
     // 「一键启动」；正在跑的那一边由宿主在保存配置时停掉（见 lib/index.js）。
     // QQ 的旧开关 bridge.autoStart 只用于升级迁移，保存时会镜像回这个值。
-    start: { qq: true, bili: true },
+    start: { qq: process.platform !== 'darwin', bili: true },
     // 一键启动默认隐藏命令行窗口（SnowLuma/批处理的黑框）；用户可取消勾选恢复旧行为。
     hideConsoles: true,
   },
@@ -364,7 +364,7 @@ export function platformStartsFrom(user = {}) {
   return {
     qq: typeof explicit.qq === 'boolean'
       ? explicit.qq
-      : (legacyAutoStart !== null ? legacyAutoStart : fromEnabled('qq', true)),
+      : (legacyAutoStart !== null ? legacyAutoStart : fromEnabled('qq', DEFAULT_UNIFIED.platforms.start.qq)),
     bili: typeof explicit.bili === 'boolean' ? explicit.bili : fromEnabled('bili', true),
   };
 }

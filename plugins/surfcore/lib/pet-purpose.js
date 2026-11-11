@@ -39,7 +39,8 @@ import {
   selectPurpose,
   summarizePurposeState,
 } from '../../../src/purpose-engine.js';
-import { activeBiliDir, activeMemoryPaths } from '../../../src/character-persona.js';
+import { activeMemoryPaths } from '../../../src/character-persona.js';
+import { readBiliMemoryEntries } from './bili-memory-entries.js';
 import { QQ_STATE_DIR } from './paths.js';
 import { readQqConfig, readUnified, writeJsonAtomic } from './store.js';
 
@@ -69,7 +70,7 @@ function clip(text, max = 120) {
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  * @param {(path:string, opts?:object)=>Promise<{ok:boolean,status?:number,data?:any,error?:string}>} [opts.callBridge]
  */
-export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null } = {}) {
+export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null, wechat = null } = {}) {
   let stateCache = null;
   let stateFile = '';
   let running = false;
@@ -93,13 +94,14 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       // 桌宠载体不需要 QQ 白名单/模式；但 quiet/daily/gap 这些节奏沿用同一份配置。
       enabled: raw.enabled !== false,
     }, { ownerQQ: qq?.ownerQQ || '' });
+    const carrier = ['pet', 'wechat'].includes(raw.carrier) ? raw.carrier : 'qq';
     return {
       config: normalized,
-      carrier: raw.carrier === 'pet' ? 'pet' : 'qq',
-      modality: raw.petModality === 'voice' ? 'voice' : 'text',
-      fallbackToQQ: raw.petFallbackToQQ !== false,
+      carrier,
+      modality: carrier === 'pet' && raw.petModality === 'voice' ? 'voice' : 'text',
+      fallbackToQQ: unified.platforms?.start?.qq !== false && raw.petFallbackToQQ !== false,
       ownerUin: String(normalized.ownerUin || qq?.ownerQQ || '').replace(/[^\d]/g, ''),
-      chatEnabled: unified?.pet?.chat?.enabled !== false,
+      chatEnabled: carrier === 'wechat' ? Boolean(wechat?.status().enabled) : unified?.pet?.chat?.enabled !== false,
     };
   }
 
@@ -125,11 +127,11 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     return state;
   }
 
-  function saveState(state) {
-    stateCache = state;
+  function saveState(state, file = stateFile) {
+    if (file === stateFile) stateCache = state;
     try {
-      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-      writeJsonAtomic(stateFile, state);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      writeJsonAtomic(file, state);
     } catch (error) {
       lastError = `写目的状态失败：${String(error?.message ?? error).slice(0, 120)}`;
       pluginLog('[pet-purpose]', lastError);
@@ -148,14 +150,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       pendingThoughts: Array.isArray(value?.pendingThoughts) ? value.pendingThoughts : [],
       lastIncomingAt: Number(value?.lastIncomingAt) || 0,
     }));
-  }
-
-  function biliEntries() {
-    try {
-      const dir = activeBiliDir();
-      const raw = readJson(path.join(dir, 'bili-memory.json'), null);
-      return Array.isArray(raw?.entries) ? raw.entries : [];
-    } catch { return []; }
   }
 
   function memoryRecords() {
@@ -179,7 +173,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     const lastQq = Number(conv?.lastIncomingAt) || 0;
     let lastChat = 0;
     try { lastChat = Number(chat.status()?.chat?.lastUserAt) || 0; } catch {}
-    const last = Math.max(lastQq, lastChat);
+    const last = Math.max(lastQq, lastChat, wechat?.status().lastIncomingAt || 0);
     return last > 0 ? Math.max(0, now - last) : Number.POSITIVE_INFINITY;
   }
 
@@ -191,9 +185,14 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       config,
       ownerUin: p.ownerUin,
       roleName: roleName(),
-      conversations: conversationsFromDisk(),
-      biliEntries: biliEntries(),
-      memoryRecords: memoryRecords(),
+      conversations: p.carrier === 'wechat' ? [] : conversationsFromDisk(),
+      biliEntries: readBiliMemoryEntries(),
+      memoryRecords: p.carrier === 'wechat'
+        ? memoryRecords().filter((record) => !record.sensitive && (
+          ['bili', 'shared', 'pet'].includes(record.scope) ||
+          (record.scope === 'wechat' && record.conversationKey === wechat?.conversationKey())
+        ))
+        : memoryRecords(),
     });
     const materials = packet.items;
     const pending = Array.isArray(state.pending) ? state.pending : [];
@@ -206,7 +205,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }
     const fresh = materials.filter((m) => !m.id || !seen.has(String(m.id)));
     const ownerConv = conversationsFromDisk().find((c) => c.key === `private:${p.ownerUin}`);
-    const lastMasterAt = Number(ownerConv?.lastIncomingAt) || 0;
+    const lastMasterAt = Math.max(p.carrier === 'wechat' ? 0 : Number(ownerConv?.lastIncomingAt) || 0, wechat?.status().lastIncomingAt || 0);
     const derived = deriveDrives({
       drives: state.drives,
       drivesAt: state.drivesAt,
@@ -263,19 +262,20 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
   }
 
   // ── 提示词 ──────────────────────────────────────────────────────────────
-  function buildPrompt({ prepared, selection, modality = 'text' }) {
+  async function buildPrompt({ prepared, selection, modality = 'text' }) {
     const p = purposeConfig();
     const config = prepared.config;
-    const role = chat.roleInfo();
+    const scene = p.carrier === 'wechat' ? 'wechat' : 'pet';
+    const role = chat.roleInfo(scene);
     const owner = chat.ownerInfo();
-    const memory = chat.memoryBlock();
+    const memory = await chat.recallMemory(scene, selection.purpose?.text || '', { conversationKey: wechat?.conversationKey() });
     const background = chat.purposeBackground();
     const voiceMax = 90;
     const textMax = 120;
     const maxChars = modality === 'voice' ? voiceMax : textMax;
 
     const systemLines = [
-      `你是「${role.name}」，此刻待在${owner.name}自己的电脑桌面上——一只透明的桌宠，不是 QQ 群里的群友，也不是 B站 的账号。`,
+      `你是「${role.name}」，此刻在${scene === 'wechat' ? '微信私聊' : '桌面'}里和${owner.name}说话。`,
       '现在没有人叫你，是你自己想找他说一句话。',
       '',
     ];
@@ -334,6 +334,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       maxChars,
       modality,
       config,
+      characterId: role.id,
     };
   }
 
@@ -352,7 +353,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       fallbackToQQ: p.fallbackToQQ,
       ownerUin: p.ownerUin,
       ownerName: chat.ownerInfo().name,
-      online: chat.online().online,
+      online: p.carrier === 'wechat' ? Boolean(wechat?.status().canSend) : chat.online().online,
       lastPollAt: chat.online().lastSeenAt,
       focus: focusNow(),
       running,
@@ -374,12 +375,12 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     const prepared = prepare(now, state);
     const selection = select(prepared, state, now);
     const prompt = selection.purpose
-      ? buildPrompt({ prepared, selection, modality: p.modality })
+      ? await buildPrompt({ prepared, selection, modality: p.modality })
       : null;
     return {
       ok: Boolean(selection.purpose),
       preview: true,
-      carrier: 'pet',
+      carrier: p.carrier,
       reason: selection.purpose ? '' : 'no-purpose',
       selected: selection.purpose,
       candidates: selection.candidates,
@@ -402,19 +403,22 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
   async function runOnce({ force = false, previewOnly = false } = {}) {
     if (running) return { ok: false, reason: 'busy' };
     const p = purposeConfig();
-    if (!p.chatEnabled) return { ok: false, reason: 'chat-disabled', error: '桌宠对话已关闭' };
-    if (p.carrier !== 'pet') return { ok: false, reason: 'carrier-qq', error: '当前载体是 QQ，请用 QQ 那边的目的机制' };
+    if (!p.chatEnabled) return { ok: false, reason: 'chat-disabled', error: '当前载体的对话已关闭' };
+    if (p.carrier === 'qq') return { ok: false, reason: 'carrier-qq', error: '当前载体是 QQ，请用 QQ 那边的目的机制' };
     if (force !== true && p.config.enabled === false) return { ok: false, reason: 'disabled' };
     // 专注模式：自动轮次完全不出声（手动「试一次」仍可，用户自己点的）。
     if (force !== true && !previewOnly && focusNow()) {
       return { ok: false, reason: 'focus', error: '专注模式开着：不会主动打扰' };
     }
     if (!chat.llmReady()) return { ok: false, reason: 'llm', error: 'DSH 模型服务还没就绪' };
-    if (!previewOnly && !chat.online().online) {
-      return { ok: false, reason: 'pet-offline', error: '桌宠没在运行（先在「桌宠」页启动，或把载体切回 QQ）' };
+    const online = p.carrier === 'wechat' ? wechat?.status().canSend : chat.online().online;
+    if (!previewOnly && !online) {
+      const error = p.carrier === 'wechat' ? '请启用微信接收并从本人微信发来一条消息' : '请先在「桌宠」页启动桌宠';
+      return { ok: false, reason: 'carrier-offline', error };
     }
 
     running = true;
+    const runFile = resolveStateFile();
     const now = Date.now();
     try {
       const state = loadState();
@@ -434,7 +438,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
             dshReady: true,
             paused: false,
             ownerAllowed: true,
-            busy: running,
+            busy: false, // The entry guard already excludes concurrent purpose runs.
             ownerIdleMs: ownerIdleMs(now),
             friendOk: true,
             budgetBlocked,
@@ -443,13 +447,14 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
         if (decision.action !== 'run') {
           if (decision.reason !== 'waiting') {
             markPurposeSkip(state, { now, reason: decision.reason, nextFireAt: decision.nextFireAt });
-            saveState(state);
+            saveState(state, runFile);
             pluginLog(`[pet-purpose] 暂不出发：${decision.reason}`);
           }
           return { ok: false, reason: decision.reason, nextFireAt: decision.nextFireAt };
         }
       }
 
+      if (runFile !== resolveStateFile()) return { ok: false, reason: 'character-switched' };
       const prepared = prepare(now, state);
       state.drives = prepared.drives;
       state.drivesAt = prepared.derived.drivesAt;
@@ -463,7 +468,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
           now, config: p.config, lastRunAt: state.lastRunAt, countToday: state.countToday,
         });
         markPurposeSkip(state, { now, reason: `no-material(${prepared.materials.length})`, nextFireAt: next });
-        saveState(state);
+        saveState(state, runFile);
         return { ok: false, reason: 'no-material', materials: prepared.materials.length };
       }
 
@@ -474,10 +479,10 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
           now, config: p.config, lastRunAt: state.lastRunAt, countToday: state.countToday,
         });
         markPurposeSkip(state, { now, reason: 'no-purpose', nextFireAt: next });
-        saveState(state);
+        saveState(state, runFile);
         return { ok: false, reason: 'no-purpose' };
       }
-      const prompt = buildPrompt({ prepared, selection, modality: p.modality });
+      const prompt = await buildPrompt({ prepared, selection, modality: p.modality });
       if (previewOnly) {
         return {
           ok: true,
@@ -489,9 +494,10 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
         };
       }
 
+      if (runFile !== resolveStateFile()) return { ok: false, reason: 'character-switched' };
       markPurposeDelivered(state, { now, planned: selection.purpose });
       state.nextFireAt = 0;
-      saveState(state);
+      saveState(state, runFile);
 
       let text = '';
       try {
@@ -501,7 +507,8 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
           maxTokens: p.modality === 'voice' ? 400 : 600,
           temperature: 1,
         });
-        chat.recordUsage(result.usage, result.model);
+        chat.recordUsage(result.usage, result.model, p.carrier === 'wechat'
+          ? { sessionId: 'wechat-purpose', label: '微信主动搭话' } : undefined);
         text = String(result.text || '').trim();
       } catch (error) {
         const message = String(error?.message ?? error).slice(0, 200);
@@ -509,7 +516,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
         applyPurposeOutcome(state, {
           now: Date.now(), config: p.config, outcome: 'failed', text: '', planned: selection.purpose,
         });
-        saveState(state);
+        saveState(state, runFile);
         return { ok: false, reason: 'llm-failed', error: message, selected: selection.purpose };
       }
       // 模型偶尔会带引号/名字前缀/半句解释；气泡和语音都只要那句话。
@@ -519,27 +526,31 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
         applyPurposeOutcome(state, {
           now: Date.now(), config: p.config, outcome: 'silent', text: '', planned: selection.purpose,
         });
-        saveState(state);
+        saveState(state, runFile);
         return { ok: false, reason: 'silent', selected: selection.purpose };
       }
 
-      const delivered = await chat.proactive({ text, modality: p.modality, purpose: selection.purpose });
+      const delivered = purposeConfig().carrier !== p.carrier || runFile !== resolveStateFile()
+        ? { ok: false, error: '主动搭话载体已切换' }
+        : (p.carrier === 'wechat'
+          ? await wechat.proactive({ text, characterId: prompt.characterId })
+          : await chat.proactive({ text, modality: p.modality, purpose: selection.purpose }));
       if (!delivered.ok) {
         applyPurposeOutcome(state, {
           now: Date.now(), config: p.config, outcome: 'failed', text: '', planned: selection.purpose,
         });
-        saveState(state);
+        saveState(state, runFile);
         return { ok: false, reason: 'deliver-failed', error: delivered.error, selected: selection.purpose };
       }
       applyPurposeOutcome(state, {
         now: Date.now(), config: p.config, outcome: 'sent', text: delivered.message.text, planned: selection.purpose,
       });
-      saveState(state);
+      saveState(state, runFile);
       lastError = '';
-      pluginLog(`[pet-purpose] 桌宠主动搭话（${p.modality}）：${delivered.message.text.slice(0, 60)}`);
+      pluginLog(`[pet-purpose] 主动搭话已投递（${p.carrier}/${p.modality}）`);
       return {
         ok: true,
-        carrier: 'pet',
+        carrier: p.carrier,
         delivered: true,
         selected: selection.purpose,
         message: delivered.message,
@@ -577,7 +588,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
   async function tick() {
     const p = purposeConfig();
-    if (p.carrier !== 'pet' || p.config.enabled === false || !p.chatEnabled) return;
+    if (p.carrier === 'qq' || p.config.enabled === false || !p.chatEnabled) return;
     if (focusNow()) {
       // 不刷屏：专注期间每 10 分钟最多记一条。
       if (Date.now() - lastFocusLogAt > 10 * 60 * 1000) {
@@ -587,7 +598,8 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       return;
     }
     lastTickAt = Date.now();
-    if (!chat.online().online) {
+    if (p.carrier === 'wechat' && (!wechat?.status().canSend || wechat.status().silent)) return;
+    if (p.carrier === 'pet' && !chat.online().online) {
       await fallbackToQQ();
       return;
     }

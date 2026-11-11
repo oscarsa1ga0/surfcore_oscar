@@ -24,6 +24,9 @@ export function findNodeExe({
   const exeDir = path.dirname(String(execPath || process.execPath));
   const candidates = [
     env.DSH_NODE,
+    // macOS: Contents/MacOS/Harness and Contents/Resources are siblings.
+    path.join(exeDir, '..', 'Resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node'),
+    path.join(exeDir, '..', 'Resources', 'runtime', 'bin', 'node'),
     // DSH Desktop 安装目录布局（PR #3）；Windows 和类 Unix 各一份，按存在性选。
     path.join(exeDir, 'resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
     path.join(exeDir, 'resources', 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin', 'node'),

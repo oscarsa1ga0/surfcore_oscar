@@ -197,8 +197,8 @@ function makeRecordId(parts) {
 }
 
 function importanceForSource(source, { isOwner = false, direct = false } = {}) {
-  if (source === 'qq-owner' || source === 'pet-owner') return 75;
-  if (source === 'qq-self' || source === 'pet-self') return 20;
+  if (['qq-owner', 'pet-owner', 'wechat-owner'].includes(source)) return 75;
+  if (['qq-self', 'pet-self', 'wechat-self'].includes(source)) return 20;
   return direct || isOwner ? 55 : 30;
 }
 
@@ -214,17 +214,15 @@ export function recordsFromInboxLines(lines, { now = Date.now() } = {}) {
     const text = redactVectorText(item.text, { maxChars: 1200 });
     if (!text || text.startsWith('/') || PLACEHOLDER_RE.test(text)) continue;
     const at = timeOf(item.at, now);
-    const isPet = String(item.platform ?? '').toLowerCase() === 'pet';
+    const platform = ['pet', 'wechat'].includes(item.platform) ? item.platform : 'qq';
     const isSelf = item.isSelf === true;
     const isOwner = item.isOwner === true;
     const isPrivate = item.private === true || item.kind === 'private';
-    const source = isPet
-      ? (isSelf ? 'pet-self' : 'pet-owner')
-      : (isSelf ? 'qq-self' : (isOwner ? 'qq-owner' : 'qq-group'));
-    const platform = isPet ? 'pet' : 'qq';
-    const scope = isPet ? 'pet' : 'qq';
+    if (platform === 'wechat' && (!isPrivate || (!isOwner && !isSelf) || !String(item.conversationKey).startsWith('wechat:'))) continue;
+    const source = `${platform}-${isSelf ? 'self' : (isOwner || platform !== 'qq' ? 'owner' : 'group')}`;
+    const scope = platform;
     const speaker = short(item.sender ?? (isSelf ? '角色' : (isOwner ? '主人' : '群友')), 40);
-    const prefix = isPet ? '桌宠' : (isPrivate ? '私聊' : '群聊');
+    const prefix = { pet: '桌宠', wechat: '微信' }[platform] || (isPrivate ? '私聊' : '群聊');
     const title = isOwner
       ? `${prefix} · 和主人：${short(text, 22)}`
       : (isSelf ? `${prefix} · ${speaker}说：${short(text, 22)}` : `${prefix} · ${speaker}：${short(text, 22)}`);
@@ -497,7 +495,7 @@ export function cosine(a, b) {
  * platform='bili' 只允许 bili/shared；完整卡（QQ）允许其他平台，但排除 sensitive。
  */
 export function rankVectorMemories({
-  query = '', queryVector, index, config = {}, platform = 'qq', now = Date.now(), entryFilter = null,
+  query = '', queryVector, index, config = {}, platform = 'qq', now = Date.now(), entryFilter = null, conversationKey = '',
 } = {}) {
   const cfg = normalizeVectorMemoryConfig(config);
   if (!index || !index.manifest || !index.vectors) return [];
@@ -509,7 +507,10 @@ export function rankVectorMemories({
     if (entry.sensitive) continue;
     if (typeof entryFilter === 'function' && !entryFilter(entry)) continue;
     if (platform === 'bili' && entry.scope !== 'bili' && entry.scope !== 'shared') continue;
-    if (platform === 'pet' && entry.scope !== 'pet' && entry.scope !== 'qq' && entry.scope !== 'shared') continue;
+    if (platform === 'qq' && entry.scope === 'wechat') continue;
+    if (platform === 'pet' && !['pet', 'qq', 'wechat', 'bili', 'shared'].includes(entry.scope)) continue;
+    if (platform === 'wechat' && !['pet', 'wechat', 'bili', 'shared'].includes(entry.scope)) continue;
+    if (platform === 'wechat' && entry.scope === 'wechat' && entry.conversationKey !== conversationKey) continue;
     const offset = Number(entry.offset);
     const vector = index.vectors.subarray(offset * index.manifest.dimension, (offset + 1) * index.manifest.dimension);
     const cos = cosine(q, vector);

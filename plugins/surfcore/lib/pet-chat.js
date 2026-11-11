@@ -25,6 +25,10 @@ import { resolvePersonaFile } from './persona.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js';
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js';
+import {
+  effectiveVectorMemoryConfig, embedTexts, rankVectorMemories, readVectorIndex,
+  renderVectorRecallBlock, resolveVectorMemoryPaths,
+} from '../../../src/vector-memory.js';
 import { composePersonaLayers } from '../../../src/persona-layers.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
 import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
@@ -247,7 +251,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
           : 'low',
       },
       proactive: {
-        carrier: purpose.carrier === 'pet' ? 'pet' : 'qq',
+        carrier: ['pet', 'wechat'].includes(purpose.carrier) ? purpose.carrier : 'qq',
         modality: purpose.petModality === 'voice' ? 'voice' : 'text',
         fallbackToQQ: purpose.petFallbackToQQ !== false,
       },
@@ -257,7 +261,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   }
 
   // ── 角色 / 身份 / 记忆 ──────────────────────────────────────────────────
-  function roleInfo() {
+  function roleInfo(scene = 'pet') {
     let cur = null;
     try { cur = readCurrentCharacter(); } catch {}
     let personaFile = '';
@@ -271,12 +275,12 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       identity: buildPersonaIdentity({ name: personaNameFromCard(fullPersona, cur?.name || '这个角色'), owner: ownerInfo().name }),
       // 拆分模式才带语气/场景/日常；整卡模式只注入整卡。
       tone: split ? readPersonaLayerText('tone') : '',
-      scene: split ? readPersonaLayerText('scene', 'pet') : '',
+      scene: split ? readPersonaLayerText('scene', scene) : '',
       daily: split ? readPersonaLayerText('daily') : '',
       personaMode: split ? 'tone' : 'full',
       mode: 'v2',
       maxChars: 4200,
-      sceneId: 'pet',
+      sceneId: scene,
     }).text || fullPersona;
     let name = String(cur?.name || '').trim();
     if (!name) {
@@ -286,10 +290,27 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     return { id: cur?.id || '', name, persona, personaFile, hasPersona: Boolean(persona) };
   }
 
-  function memoryBlock() {
+  function memoryBlock(platform = 'pet', { conversationKey = '' } = {}) {
+    if (unifiedConfig()?.memoryCard?.enabled === false) return '';
+    try { return memoryCardPromptBlock(platform, { conversationKey }); } catch { return ''; }
+  }
+
+  async function recallMemory(platform, text, { conversationKey = '' } = {}) {
     const unified = unifiedConfig();
-    if (unified?.memoryCard?.enabled === false) return '';
-    try { return String(memoryCardPromptBlock('qq') || '').trim(); } catch { return ''; }
+    if (unified?.memory?.mode !== 'vector') return memoryBlock(platform, { conversationKey });
+    const config = effectiveVectorMemoryConfig(unified.vectorMemory);
+    const query = sliceHead(String(text || '').trim(), 300);
+    if (!config.enabled || !query) return '';
+    try {
+      const paths = resolveVectorMemoryPaths(activeMemoryPaths().dir);
+      const index = readVectorIndex(paths, config.modelSpace);
+      if (!index) return '';
+      const { vectors } = await embedTexts({ config, texts: [query] });
+      const hits = rankVectorMemories({ query, queryVector: vectors[0], index, config, platform, conversationKey });
+      return renderVectorRecallBlock(hits, { maxChars: config.injectMaxChars });
+    } catch {
+      return '';
+    }
   }
 
   function purposeStateFile() {
@@ -671,16 +692,16 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     throw lastFailure || new Error('模型调用失败');
   }
 
-  function recordUsage(usage, model) {
+  function recordUsage(usage, model, { sessionId = 'pet-chat', label = '桌宠对话' } = {}) {
     if (!usage || !tokenBudget?.recordExternalUsage) return;
     try {
       tokenBudget.recordExternalUsage({
         category: 'other',
-        sessionId: 'pet-chat',
+        sessionId,
         model,
         usage,
         at: Date.now(),
-        label: '桌宠对话',
+        label,
       });
     } catch (error) {
       pluginLog('[pet-chat] 记录 token 用量失败：', String(error?.message ?? error).slice(0, 120));
@@ -759,7 +780,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const history = readHistory();
     const role = roleInfo();
     const owner = ownerInfo();
-    const system = buildChatSystemPrompt({ role, owner, memory: memoryBlock(), purpose: purposeBackground(), modality: mode });
+    const system = buildChatSystemPrompt({ role, owner, memory: await recallMemory('pet', say), purpose: purposeBackground(), modality: mode });
     const user = [
       history.messages.length ? '【最近聊天】' : '',
       history.messages.length ? formatHistory(history, s.chat.historyTurns, say, owner.name) : say,
@@ -937,6 +958,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     ownerInfo,
     voiceSettings,
     memoryBlock,
+    recallMemory,
     purposeBackground,
     complete,
     synthesize,

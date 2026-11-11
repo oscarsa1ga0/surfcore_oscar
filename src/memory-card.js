@@ -101,6 +101,8 @@ const SOURCE_PLATFORM = {
   'qq-self': 'qq',
   'pet-owner': 'pet',
   'pet-self': 'pet',
+  'wechat-owner': 'wechat',
+  'wechat-self': 'wechat',
   'bili-video': 'bili',
   'bili-dynamic': 'bili',
   'bili-comment': 'bili',
@@ -411,8 +413,8 @@ function normalizeRecord(item) {
     id: String(raw.id ?? `mem_${hash(`${createdAt}|${title}|${text}`)}`),
     source: String(raw.source ?? 'system'),
     sourceId: String(raw.sourceId ?? ''),
-    platform: ['qq', 'bili', 'shared', 'pet'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
-    scope: ['qq', 'bili', 'shared', 'pet'].includes(raw.scope) ? raw.scope : 'qq',
+    platform: ['qq', 'bili', 'shared', 'pet', 'wechat'].includes(raw.platform) ? raw.platform : (SOURCE_PLATFORM[raw.source] ?? 'shared'),
+    scope: ['qq', 'bili', 'shared', 'pet', 'wechat'].includes(raw.scope) ? raw.scope : 'qq',
     kind: String(raw.kind ?? 'event'),
     title: short(title, 80),
     text: String(text).slice(0, 1200),
@@ -653,8 +655,13 @@ export function mergeMemories(card, ids, { title = '', pinned = true, now = Date
   const allOwner = selected.every((record) => asArray(record.tags).includes('owner'));
   const anyQq = selected.some((record) => record.scope === 'qq' || record.platform === 'qq');
   const allBili = selected.every((record) => record.scope === 'bili' || record.platform === 'bili');
-  const scope = anyQq ? 'qq' : (allBili ? 'bili' : 'shared');
-  const platform = anyQq ? 'qq' : (allBili ? 'bili' : 'shared');
+  const privateScope = ['wechat', 'pet'].find((channel) => selected.some((record) => record.scope === channel || record.platform === channel));
+  const scope = privateScope ?? (anyQq ? 'qq' : (allBili ? 'bili' : 'shared'));
+  const platform = scope;
+  const wechatKeys = new Set(selected
+    .filter((record) => record.scope === 'wechat' || record.platform === 'wechat')
+    .map((record) => String(record.conversationKey ?? '')));
+  const conversationKey = wechatKeys.size === 1 ? [...wechatKeys][0] : '';
   const tags = new Set(['merged']);
   for (const record of selected) {
     for (const tag of asArray(record.tags)) {
@@ -676,11 +683,12 @@ export function mergeMemories(card, ids, { title = '', pinned = true, now = Date
     title: eventTitle,
     detail: `由 ${selected.length} 条记忆合并（${wanted.join(', ')}）`,
     isOwner: allOwner,
-    isPrivate: scope === 'qq',
+    isPrivate: ['qq', 'pet', 'wechat'].includes(scope),
     direct: true,
     manualImportance: eventImportance,
     scope,
     platform,
+    conversationKey,
     tags: [...tags],
     createdAt: firstAt,
     lastSeenAt: lastAt,
@@ -1366,11 +1374,16 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
     //   · scope='pet'：默认不进 B站 注入块（桌宠是私下的），但 QQ / 桌宠 都读得到；
     //   · 主人的话 → pet-owner；她紧接着的回复并进 botReply，形成一问一答；
     //   · 没有对应主人的主动搭话 → pet-self（重要度低一点，避免挤掉 QQ 的私聊）。
-    if (String(item.platform ?? '').toLowerCase() === 'pet') {
+    const privateChannel = String(item.platform ?? '').toLowerCase();
+    if (privateChannel === 'pet' || privateChannel === 'wechat') {
+      const channelKey = privateChannel === 'wechat' ? conversationKey : 'pet';
+      if (privateChannel === 'wechat' && (!channelKey.startsWith('wechat:') || !isPrivate || (!isOwner && item.isSelf !== true))) continue;
+      const label = privateChannel === 'wechat' ? '微信' : '桌宠';
       if (item.isSelf === true) {
         const cutoff = 30 * 60 * 1000;
         const recent = card.records
-          .filter((record) => record.source === 'pet-owner'
+          .filter((record) => record.source === `${privateChannel}-owner`
+            && (privateChannel !== 'wechat' || record.conversationKey === channelKey)
             && !record.botReply
             && Math.abs(at - timeOf(record.createdAt, 0)) <= cutoff)
           .sort((a, b) => timeOf(b.createdAt, 0) - timeOf(a.createdAt, 0))[0];
@@ -1383,12 +1396,12 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         }
         const speaker = short(item.sender ?? '角色', 24) || '角色';
         const result = addMemoryRecord(card, {
-          source: 'pet-self',
+          source: `${privateChannel}-self`,
           sourceId: '',
-          platform: 'pet',
-          scope: 'pet',
+          platform: privateChannel,
+          scope: privateChannel,
           text,
-          title: `桌宠 · ${speaker}主动说：${short(text, 22)}`,
+          title: `${label} · ${speaker}主动说：${short(text, 22)}`,
           isSelf: true,
           isPrivate: true,
           direct: true,
@@ -1396,8 +1409,8 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
           lastSeenAt: at,
           speaker,
           private: true,
-          conversationKey: 'pet',
-          tags: ['pet', 'self'],
+          conversationKey: channelKey,
+          tags: [privateChannel, 'self'],
           manualImportance: 30,
         }, cfg, now);
         if (result.added) {
@@ -1408,12 +1421,12 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         continue;
       }
       const result = addMemoryRecord(card, {
-        source: 'pet-owner',
+        source: `${privateChannel}-owner`,
         sourceId: '',
-        platform: 'pet',
-        scope: 'pet',
+        platform: privateChannel,
+        scope: privateChannel,
         text,
-        title: `桌宠 · 和主人：${short(text, 22)}`,
+        title: `${label} · 和主人：${short(text, 22)}`,
         isOwner: true,
         isPrivate: true,
         direct: true,
@@ -1421,8 +1434,8 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         lastSeenAt: at,
         speaker: '主人',
         private: true,
-        conversationKey: 'pet',
-        tags: ['pet', 'owner'],
+        conversationKey: channelKey,
+        tags: [privateChannel, 'owner'],
       }, cfg, now);
       if (result.added) {
         added += 1;
@@ -1749,6 +1762,7 @@ function recordIsPrivate(record) {
 }
 
 function memorySourceLabel(record) {
+  if (record?.platform === 'wechat' || record?.scope === 'wechat') return '微信私聊';
   if (recordIsPrivate(record)) return '私聊';
   if (record?.platform === 'pet' || record?.scope === 'pet') return '桌宠';
   if (record?.platform === 'bili' || record?.scope === 'bili') return 'B站';
@@ -1810,6 +1824,11 @@ function visibleFor(card, platform, cfg, conversationKey = '', runtimeSharing = 
   return card.records.filter((record) => {
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
+    if (record.scope === 'wechat' || record.platform === 'wechat') {
+      return platform === 'all' || platform === 'pet'
+        || (platform === 'wechat' && current === String(record.conversationKey ?? ''));
+    }
+    if (platform === 'wechat') return ['bili', 'shared', 'pet'].includes(record.scope);
     if (platform === 'bili') {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
       return cfg.includeQqInBili && record.scope === 'qq';
@@ -1903,7 +1922,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
       push(fuzzy, record);
       continue;
     }
-    if (record.platform === 'pet' || record.scope === 'pet') push(petModule, record);
+    if (['pet', 'wechat'].includes(record.platform) || ['pet', 'wechat'].includes(record.scope)) push(petModule, record);
     else if (record.platform === 'bili' || record.scope === 'bili' || record.scope === 'shared') push(biliModule, record);
     else push(qqModule, record);
   }
@@ -1934,7 +1953,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
  *   · platform='qq'|'bili' + maxChars → 给提示词注入的裁剪版。
  */
 export function renderMemoryCard(card, options = {}) {
-  const platform = options.platform === 'bili' ? 'bili' : (options.platform === 'qq' ? 'qq' : 'all');
+  const platform = ['bili', 'qq', 'pet', 'wechat'].includes(options.platform) ? options.platform : 'all';
   const full = options.full === true;
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const cfg = normalizeMemoryCardConfig(options.config ?? {});
@@ -2249,7 +2268,8 @@ export function addManualMemory(card, { text, title = '', importance, scope = 'q
 /** 桥接进程调用：把一条 QQ 事件追加到 inbox（只追加，不做重活）。 */
 export function appendMemoryInboxEvent(paths, event = {}, { maxBytes = 1024 * 1024 } = {}) {
   try {
-    const text = redactForMemory(event.text, { scope: 'qq', maxChars: 500 });
+    const platform = ['pet', 'wechat'].includes(event.platform) ? event.platform : 'qq';
+    const text = redactForMemory(event.text, { scope: platform === 'wechat' ? 'wechat' : 'qq', maxChars: 500 });
     if (!text || text.startsWith('/')) return false;
     fs.mkdirSync(paths.dir, { recursive: true });
     try {
@@ -2261,7 +2281,7 @@ export function appendMemoryInboxEvent(paths, event = {}, { maxBytes = 1024 * 10
     } catch {}
     const line = JSON.stringify({
       at: iso(timeOf(event.at, Date.now())),
-      platform: event.platform === 'pet' ? 'pet' : 'qq',
+      platform,
       kind: event.kind === 'private' ? 'private' : 'group',
       sender: short(event.sender ?? '', 40),
       senderId: String(event.senderId ?? ''),

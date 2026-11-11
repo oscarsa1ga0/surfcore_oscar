@@ -10,11 +10,12 @@
  *
  * 只有本模块写记忆卡（单进程内用 promise 链串行化）；桥接只 append 不写卡，避免并发覆盖。
  */
+import { readBiliMemoryEntries } from './bili-memory-entries.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BACKUP_DIR, QQ_CONFIG, QQ_STATE_DIR, maskPath } from './paths.js';
+import { BACKUP_DIR, QQ_CONFIG, maskPath } from './paths.js';
 import {
-  activeMemoryPaths, activePlatformStateDir,
+  activeMemoryPaths,
 } from '../../../src/character-persona.js';
 import { backupFile, listBackups, readJson, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
 import {
@@ -31,15 +32,6 @@ const TICK_MS = 10 * 60 * 1000;
 /** 当前角色的记忆路径；没有角色系统时回退旧布局。每次调用都重新解析（切换角色后立即生效）。 */
 function pathsNow() {
   return activeMemoryPaths();
-}
-
-/** 当前角色的 B站 行为目录；旧布局回退到仓库 state/。 */
-function biliStateDir() {
-  return activePlatformStateDir(QQ_STATE_DIR);
-}
-
-function biliMemoryFile() {
-  return path.join(biliStateDir(), 'bili-memory.json');
 }
 
 function normalizeIdList(value) {
@@ -92,14 +84,7 @@ function todayKey(now = Date.now()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function readBiliEntries() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(biliMemoryFile(), 'utf8'));
-    return Array.isArray(raw?.entries) ? raw.entries : [];
-  } catch {
-    return [];
-  }
-}
+
 
 function readInboxLines() {
   const lines = [];
@@ -333,7 +318,7 @@ export function runMemoryCardMaintenance({ forceDecay = false, config = memoryCa
     const result = maintainMemoryCard({
       paths: pathsNow(),
       config,
-      biliEntries: readBiliEntries(),
+      biliEntries: readBiliMemoryEntries(),
       inboxLines: readInboxLines(),
       now,
       forceDecay,
@@ -467,8 +452,14 @@ export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now
 }
 
 /** B站调度器 / 调试用：读现成的 B站 注入块（mtime 缓存，避免每次重复读盘）。 */
-export function memoryCardPromptBlock(platform = 'bili') {
+export function memoryCardPromptBlock(platform = 'bili', { conversationKey = '' } = {}) {
   const paths = pathsNow();
+  if (platform === 'pet' || platform === 'wechat') {
+    const card = loadMemoryCard(paths);
+    if (!card) return '';
+    const config = memoryCardConfig();
+    return renderMemoryCard(card, { config, platform, conversationKey, maxChars: config.injectMaxChars.qq }).trim();
+  }
   const file = platform === 'bili' ? paths.promptBili : paths.promptQq;
   const cacheKey = `${platform}:${paths.dir}`;
   try {

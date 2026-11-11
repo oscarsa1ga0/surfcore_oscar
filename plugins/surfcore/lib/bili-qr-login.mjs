@@ -34,6 +34,12 @@ const sessions = new Map();
 function findEdge() {
   const candidates = [
     process.env.SURFCORE_EDGE,
+    ...(process.platform === 'darwin' ? [
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+    ] : []),
     path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
@@ -368,7 +374,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
   closeAllQrLogins();          // 同时只保留一个扫码会话，避免多个 Edge 泄漏
   cleanupStaleProfiles();
   const edgePath = findEdge();
-  if (!edgePath) throw new Error('找不到 Edge（可设 SURFCORE_EDGE 指向 msedge.exe）');
+  if (!edgePath) throw new Error('找不到扫码浏览器：安装 Chrome / Edge，或设置 SURFCORE_EDGE 指向浏览器可执行文件');
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-bili-qr-'));
   const port = await freePort();
   const edge = spawn(edgePath, [
@@ -379,11 +385,13 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
     'about:blank',
   ], { stdio: 'ignore', windowsHide: true });
 
+  let launchError;
+  edge.once('error', (error) => { launchError = error; });
   let cdp = null;
   try {
     await waitJson(`http://127.0.0.1:${port}/json/version`, START_WAIT_MS);
     const tabRes = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' });
-    if (!tabRes.ok) throw new Error(`Edge 新建标签失败（HTTP ${tabRes.status}）`);
+    if (!tabRes.ok) throw new Error(`扫码浏览器新建标签失败（HTTP ${tabRes.status}）`);
     const tab = await tabRes.json();
     cdp = await Cdp.connect(tab.webSocketDebuggerUrl);
     await cdp.send('Page.enable');
@@ -418,7 +426,7 @@ export async function startQrLogin({ target = 'owner', expectedMid = '', expecte
     try { cdp?.close(); } catch {}
     killEdge(edge);
     removeDir(profileDir);
-    throw error;
+    throw launchError || error;
   }
 }
 

@@ -132,22 +132,43 @@ function dirSize(dir) {
 export const ELECTRON_VERSION = '45.0.0';
 export const ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron';
 
+function electronArchive(version) {
+  const target = process.platform === 'darwin' ? `darwin-${process.arch}` : 'win32-x64';
+  return `electron-v${version}-${target}.zip`;
+}
+
+function electronIn(dir) {
+  return process.platform === 'darwin'
+    ? path.join(dir, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+    : path.join(dir, 'electron.exe');
+}
+
 export function electronDownloadUrl(version = ELECTRON_VERSION) {
-  return `${ELECTRON_MIRROR}/${version}/electron-v${version}-win32-x64.zip`;
+  return `${ELECTRON_MIRROR}/${version}/${electronArchive(version)}`;
 }
 
 /** GitHub 官方源（镜像挂掉时的备选；国内可能慢）。 */
 export function electronGitHubUrl(version = ELECTRON_VERSION) {
-  return `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-win32-x64.zip`;
+  return `https://github.com/electron/electron/releases/download/v${version}/${electronArchive(version)}`;
 }
 
 /** 常见 Electron 位置（按可信度排）。cfgPath / appDir 传进来就优先用。 */
 export function electronCandidates({ cfgPath = '', appDir = '', stateDir = '' } = {}) {
   const out = [];
   const push = (p) => { const t = String(p || '').trim(); if (t && !out.includes(t)) out.push(t); };
-  push(cfgPath);
-  if (stateDir) push(path.join(stateDir, 'runtime', `electron-v${ELECTRON_VERSION}`, 'electron.exe'));
-  if (appDir) push(path.join(path.dirname(appDir), 'node_modules', 'electron', 'dist', 'electron.exe'));
+  push(process.platform === 'darwin' && /\.app\/?$/i.test(cfgPath)
+    ? path.join(cfgPath, 'Contents', 'MacOS', 'Electron')
+    : cfgPath);
+  if (stateDir) push(electronIn(path.join(stateDir, 'runtime', `electron-v${ELECTRON_VERSION}`)));
+  if (appDir) {
+    push(electronIn(path.join(appDir, 'node_modules', 'electron', 'dist')));
+    push(electronIn(path.join(path.dirname(appDir), 'node_modules', 'electron', 'dist')));
+  }
+  if (process.platform === 'darwin') {
+    push(electronIn('/Applications'));
+    push(electronIn(path.join(os.homedir(), 'Applications')));
+    return out;
+  }
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   push(path.join(local, 'Programs', 'electron', 'electron.exe'));
   push(path.join(process.env.PROGRAMFILES || 'C:/Program Files', 'Electron', 'electron.exe'));
@@ -156,7 +177,7 @@ export function electronCandidates({ cfgPath = '', appDir = '', stateDir = '' } 
 
 export function detectElectronPath(options = {}) {
   for (const file of electronCandidates(options)) {
-    try { if (fs.existsSync(file)) return file; } catch {}
+    try { if (fs.statSync(file).isFile()) return file; } catch {}
   }
   return '';
 }
@@ -165,7 +186,7 @@ export function detectElectronPath(options = {}) {
 export async function installElectronRuntime({ stateDir, log = () => {}, version = ELECTRON_VERSION, source = 'auto', onProgress = () => {} } = {}) {
   if (!stateDir) throw new Error('缺少 stateDir');
   const dest = path.join(stateDir, 'runtime', `electron-v${version}`);
-  const exe = path.join(dest, 'electron.exe');
+  const exe = electronIn(dest);
   if (fs.existsSync(exe)) return { ok: true, already: true, electronPath: exe, dir: dest };
 
   // auto：先镜像再官方；也允许调用方强制指定（镜像挂了 / 官方更快）
@@ -173,7 +194,9 @@ export async function installElectronRuntime({ stateDir, log = () => {}, version
     ? [electronGitHubUrl(version)]
     : source === 'mirror'
       ? [electronDownloadUrl(version)]
-      : [electronDownloadUrl(version), electronGitHubUrl(version)];
+      : (process.platform === 'darwin'
+        ? [electronGitHubUrl(version), electronDownloadUrl(version)]
+        : [electronDownloadUrl(version), electronGitHubUrl(version)]);
 
   const { Readable } = await import('node:stream');
   const { pipeline } = await import('node:stream/promises');
@@ -194,14 +217,12 @@ export async function installElectronRuntime({ stateDir, log = () => {}, version
       await pipeline(src2, fs.createWriteStream(zip));
       onProgress(95, '解压 Electron');
       fs.mkdirSync(dest, { recursive: true });
-      await new Promise((resolve, reject) => {
-        const child = spawn('powershell', ['-NoProfile', '-Command',
-          `Expand-Archive -LiteralPath '${zip}' -DestinationPath '${dest}' -Force`],
-        { windowsHide: true, stdio: 'ignore' });
-        child.on('error', reject);
-        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`解压失败（exit ${code}）`))));
-      });
-      if (!fs.existsSync(exe)) throw new Error('解压后没找到 electron.exe');
+      const { error, stderr } = process.platform === 'darwin'
+        ? await run('/usr/bin/ditto', ['-x', '-k', zip, dest])
+        : await run('powershell.exe', ['-NoProfile', '-Command',
+          `Expand-Archive -LiteralPath '${zip.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`]);
+      if (error) throw new Error(stderr || error.message);
+      if (!fs.existsSync(exe)) throw new Error('解压后没找到 Electron 可执行文件');
       return { ok: true, electronPath: exe, dir: dest, version, source: url };
     } catch (error) {
       lastError = error;
@@ -657,14 +678,14 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
     if (!installed()) return { ok: false, error: '还没安装桌宠' };
     if (running()) return { ok: true, already: true, ...status() };
     const cfg = readConfig();
-    let electron = String(cfg.electronPath || process.env.DSH_PET_ELECTRON || '').trim();
+    let electron = detectElectronPath({ cfgPath: cfg.electronPath || process.env.DSH_PET_ELECTRON || '', appDir: resolveAppDir(), stateDir });
     if (!electron) {
       // 没填就试着从 PATH 里找一次（装了全局 electron 的用户可以少填一项）
       const probe = await run(process.platform === 'win32' ? 'where.exe' : 'which', ['electron']);
       const first = probe.stdout.split(String.fromCharCode(10)).map((x) => x.trim()).find(Boolean);
       if (first) electron = first;
     }
-    if (!electron) return { ok: false, error: '请先填写 Electron 路径（electron.exe）' };
+    if (!electron) return { ok: false, code: 'pet.electron-missing', error: '找不到 Electron 运行时', hint: '先在桌宠页下载 Electron，或填写 Electron 可执行文件路径' };
     if (!fs.existsSync(electron)) return { ok: false, error: `找不到 Electron：${electron}` };
 
     const env = { ...process.env };
@@ -674,6 +695,7 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
     const appDir = resolveAppDir();
     try { fs.rmSync(path.join(appDir, 'run.pid'), { force: true }); } catch {}
     env.FEIYU_PET_PIDFILE = path.join(appDir, 'run.pid');
+    env.DSH_HOME = path.dirname(stateDir);
 
     const logPath = path.join(root, 'start.log');
     let logFd = null;
@@ -684,7 +706,7 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
 
     // --user-data-dir 必须在命令行给：Chromium 在 main 跑起来之前就初始化 profile，
     // 给晚了（app.setPath）等于没给；默认 profile 在受限环境下会 EPERM 直接崩。
-    const args = ['.', '--no-sandbox', `--user-data-dir=${profileDir}`];
+    const args = ['.', ...(process.platform === 'win32' ? ['--no-sandbox'] : []), `--user-data-dir=${profileDir}`];
     let spawnedPid = 0;
 
     {
@@ -695,6 +717,7 @@ export function createPetService({ stateDir, pluginLog = () => {}, subprocess = 
         stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
         windowsHide: false,
       });
+      child.once('error', (error) => pluginLog('[pet] Electron 启动失败：', error.code || error.message));
       child.unref();
       try { if (child.pid) fs.writeFileSync(pidFile, String(child.pid)); } catch {}
       await new Promise((r) => setTimeout(r, 1400));

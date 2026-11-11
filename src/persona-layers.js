@@ -19,13 +19,14 @@
  */
 import { selectRoleText } from './role-card.js';
 
-export const PERSONA_SCENES = Object.freeze(['qq-group', 'qq-private', 'bili', 'pet']);
+export const PERSONA_SCENES = Object.freeze(['qq-group', 'qq-private', 'bili', 'pet', 'wechat']);
 
 export const PERSONA_SCENE_LABELS = Object.freeze({
   'qq-group': 'QQ 群聊',
   'qq-private': 'QQ 私聊',
   bili: 'B站',
   pet: '桌宠',
+  wechat: '微信私聊',
 });
 
 /** 根据会话 key / 平台选择场景卡。 */
@@ -33,7 +34,7 @@ export function personaSceneFromKey(key = '', platform = '') {
   const k = String(key ?? '');
   if (k.startsWith('group:')) return 'qq-group';
   if (k.startsWith('private:')) return 'qq-private';
-  if (platform === 'bili' || platform === 'pet') return platform;
+  if (platform === 'bili' || platform === 'pet' || platform === 'wechat') return platform;
   return '';
 }
 

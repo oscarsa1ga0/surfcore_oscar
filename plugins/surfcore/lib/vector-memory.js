@@ -10,10 +10,11 @@
  *
  * 单写者：只有本模块写向量记忆文件（插件进程内 promise 链串行化）。
  */
+import { readBiliMemoryEntries } from './bili-memory-entries.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { QQ_STATE_DIR, maskPath } from './paths.js';
-import { activeMemoryPaths, activePlatformStateDir } from '../../../src/character-persona.js';
+import { maskPath } from './paths.js';
+import { activeMemoryPaths } from '../../../src/character-persona.js';
 import { readUnified } from './store.js';
 import { consoleBase, consoleToken } from './bridge.js';
 import {
@@ -70,18 +71,9 @@ export function vectorMemoryConfig(unified = readUnified().config) {
   return normalizeVectorMemoryConfig(unified?.vectorMemory ?? EMPTY_CONFIG);
 }
 
-function biliStateDir() {
-  return activePlatformStateDir(QQ_STATE_DIR);
-}
 
-function readBiliEntries() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(biliStateDir(), 'bili-memory.json'), 'utf8'));
-    return Array.isArray(raw?.entries) ? raw.entries : [];
-  } catch {
-    return [];
-  }
-}
+
+
 
 function readInboxLines() {
   const lines = [];
@@ -191,7 +183,7 @@ export function runVectorMemoryMaintenance({
     const existing = loadVectorRecords(paths, { maxRecords: config.maxRecords });
     const incoming = [
       ...recordsFromInboxLines(readInboxLines(), { now }),
-      ...recordsFromBiliEntries(readBiliEntries(), { now }),
+      ...recordsFromBiliEntries(readBiliMemoryEntries(), { now }),
     ];
     const merged = mergeVectorRecords(existing, incoming);
     const added = merged.added;

@@ -72,6 +72,7 @@ import { createGateEventStore } from '../../../src/gate-events.js';
 import { normalizeAllowlist } from '../../../src/allowlist.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
+import { createWechatService } from './wechat.js';
 import { createPetPurposeService } from './pet-purpose.js';
 import { createPetApiService } from './pet-api.js';
 import { createUpdatesService, resumePendingApply } from './updates.js';
@@ -260,7 +261,16 @@ export function apply(ctx) {
   billing.start();
 
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
-  const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
+  const wechat = createWechatService({ stateDir: STATE_DIR, chat: petChat, tokenBudget });
+  const unregisterWechat = platforms.register({
+    id: 'wechat', name: '微信私聊', version: '1.0.0', status: 'active',
+    capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'],
+    async status() {
+      const { bound, enabled, online } = wechat.status();
+      return { ok: true, bound, enabled, online };
+    },
+  }, 'surfcore');
+  const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge, wechat });
   const petApi = createPetApiService({
     chat: petChat,
     purpose: petPurpose,
@@ -954,13 +964,12 @@ export function apply(ctx) {
     // 目的载体同理：切到桌宠后桥接下一次 tick 就不再自动出发（30 秒内生效），
     // 桌宠那边由 petPurpose 接手；不用重启桥接。
     if (result.saved.qq || result.saved.unified) {
-      const afterCarrier = readQqConfig().config?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
-      const beforeCarrier = currentQq?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
+      const afterCarrier = readQqConfig().config?.purpose?.carrier || 'qq';
+      const beforeCarrier = currentQq?.purpose?.carrier || 'qq';
       result.purposeCarrier = afterCarrier;
       if (afterCarrier !== beforeCarrier) {
-        result.warnings.push(afterCarrier === 'pet'
-          ? '目的载体已切到「桌宠」：QQ 桥接不再自动主动搭话，改由桌宠气泡/语音发出（30 秒内生效，不用重启桥接）。'
-          : '目的载体已切回「QQ」：桌宠不再主动搭话，改由桥接私聊你（30 秒内生效）。');
+        const carrierLabel = { pet: '桌宠', wechat: '微信私聊', qq: 'QQ' }[afterCarrier] || 'QQ';
+        result.warnings.push(`目的载体已切到「${carrierLabel}」。`);
       }
     }
     const afterPlatformStart = platformStartState();
@@ -1237,7 +1246,7 @@ ${body}`;
         scenesDir: layers.scenesDir,
       } : { core: resolvePersonaFile(), full: path.join(path.dirname(resolvePersonaFile()), 'persona.full.md'), daily: '', tone: '', scenes: {}, scenesDir: '' };
     };
-    const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
+    const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠', wechat: '微信私聊' };
     if (req.method === 'GET') {
       const paths = layerPaths();
       const core = readTextFile(paths.core);
@@ -1307,7 +1316,7 @@ ${body}`;
       target = paths.daily;
       label = 'persona-daily';
     } else if (layer === 'scene') {
-      if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '只支持 qq-group / qq-private / bili / pet' }); return; }
+      if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '请选择设置页提供的场景' }); return; }
       target = paths.scenes?.[scene] || '';
       label = `persona-scene-${scene}`;
     }
@@ -2946,7 +2955,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     const online = petChat.online();
     let bridge = null;
     try { bridge = await bridgeStatus(); } catch (error) { bridge = { ok: false, running: false, error: String(error?.message ?? error) }; }
+    const wx = wechat.status();
     return {
+      wechat: { bound: wx.bound, online: wx.online, canSend: wx.canSend },
       pet: {
         installed: Boolean(petStatus.installed),
         running: Boolean(petStatus.running),
@@ -2966,16 +2977,17 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handlePurpose(req, res, url) {
     const suffix = url.pathname.slice(`${API_PREFIX}/purpose`.length) || '/status';
     const method = String(req.method || 'GET').toUpperCase();
-    const carrier = readQqConfig().config?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
+    const configured = readQqConfig().config?.purpose?.carrier;
+    const carrier = ['pet', 'wechat'].includes(configured) ? configured : 'qq';
     const availability = await purposeAvailability();
     try {
       if (suffix === '/status' && method === 'GET') {
-        if (carrier === 'pet') {
+        if (carrier !== 'qq') {
           const st = petPurpose.status();
           json(res, 200, {
             ok: true,
-            source: 'pet',
-            carrier: 'pet',
+            source: carrier,
+            carrier,
             availability,
             enabled: st.enabled,
             modality: st.modality,
@@ -3019,9 +3031,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         return;
       }
       if (suffix === '/preview' && method === 'POST') {
-        if (carrier === 'pet') {
+        if (carrier !== 'qq') {
           const result = await petPurpose.preview();
-          json(res, result.ok ? 200 : 400, { ...result, source: 'pet', carrier: 'pet', availability });
+          json(res, result.ok ? 200 : 400, { ...result, source: carrier, carrier, availability });
           return;
         }
         if (!availability.qq.running) {
@@ -3034,9 +3046,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       }
       if (suffix === '/run' && method === 'POST') {
         const body = JSON.parse((await readBody(req)) || '{}');
-        if (carrier === 'pet') {
+        if (carrier !== 'qq') {
           const result = await petPurpose.run({ force: body.force !== false });
-          json(res, result.ok ? 200 : 409, { ...result, source: 'pet', carrier: 'pet', availability });
+          json(res, result.ok ? 200 : 409, { ...result, source: carrier, carrier, availability });
           return;
         }
         if (!availability.qq.running) {
@@ -3739,7 +3751,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         json(res, 503, {
           ok: false, code: 'bili.qr-start-failed',
           error: String(error?.message ?? error),
-          hint: '确认本机有 Edge（扫码用 headless Edge 打开 B站 登录页）；再试一次或重启 DSH 后重试',
+          hint: '确认本机已安装 Chrome 或 Edge，再重新获取二维码',
         });
       }
       return;
@@ -4266,6 +4278,22 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/bridge`) { await handleBridge(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/purpose`)) { await handlePurpose(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/voice`)) { await handleVoice(req, res, url); return; }
+    if (pathname === `${API_PREFIX}/wechat`) {
+      if (req.method === 'GET') { json(res, 200, wechat.status()); return; }
+      if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'wechat.method', error: '不支持此请求', hint: '回到微信设置页重试' }); return; }
+      try {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        let result;
+        if (body.action === 'login') result = await wechat.beginLogin();
+        else if (body.action === 'verify') result = wechat.verify(body.pin);
+        else if (body.action === 'enable' || body.action === 'pause') result = wechat.setEnabled(body.action === 'enable');
+        else result = { ok: false, code: 'wechat.action', error: '未知的微信设置操作', hint: '刷新微信设置页后重试' };
+        json(res, result.ok ? 200 : 409, result);
+      } catch {
+        json(res, 400, { ok: false, code: 'wechat.settings', error: '微信设置无法保存', hint: '检查本机配置目录权限后重试' });
+      }
+      return;
+    }
     if (pathname.startsWith(`${API_PREFIX}/pet`)) { await handlePet(req, res, url); return; }
 
     if (pathname === `${API_PREFIX}/token-budget`) { await handleTokenBudget(req, res, url); return; }
@@ -4331,6 +4359,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   const petHostTimer = setInterval(() => { try { petApi.writeHostFile(false); } catch {} }, 120_000);
   petHostTimer.unref?.();
   // 目的机制（桌宠载体）：carrier=pet 时由这里每 60 秒 tick；carrier=qq 时它自己会退出。
+  if (process.env.SURFCORE_SKIP_AUTOSTART !== '1') wechat.start();
   try { petPurpose.start(); } catch (error) { pluginLog('[pet-purpose] 启动失败：', String(error?.message ?? error)); }
 
   // 启动后异步做的事（不阻塞插件激活）
@@ -4358,6 +4387,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { scheduler?.stop?.(); } catch {}
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
+    wechat.stop();
+    unregisterWechat();
     if (petHostTimer) clearInterval(petHostTimer);
     try { sessionEventOff?.(); } catch {}
     try { billing.dispose(); } catch {}
