@@ -4053,3 +4053,9 @@ Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不�
 
 - 直接投递现有浏览回合。调用 tick 或 invalidate 会触发窗口检查、计划重算或自动次数更新。
 - 当前 DSH 通过 resolveAgent 恢复已有会话。盲目调用 create 会在原会话有历史时另建空会话。见 [B 站单次唤醒案例](cases/2026-11-12-bili-wake-now.md)。
+
+
+## #135（2026-11-12）每分钟查一次自己资料把 NapCat 打到「假在线」
+
+- 桥接的在线探活曾每分钟调 `get_stranger_info(user_id=自己, no_cache=true)`。实测每次登录会话约 35 次之后 QQ 开始让 `NodeIKernelProfileService/fetchUserDetailInfo` 超时（日志每分钟一条 Timeout），NapCat 补入站消息昵称也卡住：接口仍报 online，消息却进不来，约 40 分钟复发一次。
+- 现在资料只在连接、昵称变化或疑似掉线时查（成功缓存 30 分钟、失败 2 分钟）；在线探活改读本地好友列表，名单为空且强制资料也失败才判会话异常，两次确认至少隔 10 分钟。见 [NapCat 假在线案例](cases/2026-11-12-napcat-qq-session.md)。

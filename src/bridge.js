@@ -13232,7 +13232,7 @@ async function main() {
         const data = await withTimeout(bot.raw('get_friend_list', params), 6000, 'get_friend_list');
         const list = Array.isArray(data) ? data : data?.data;
         if (!Array.isArray(list) || friendListCache !== cache) return { checked: false, ok: true };
-        if (list.length === 0 && oneBotSessionProbe.seenProfile && !(await refreshQqSelfProfile())) {
+        if (list.length === 0 && oneBotSessionProbe.seenProfile && !(await refreshQqSelfProfile({ force: true }))) {
           if (friendListCache !== cache) return { checked: false, ok: true };
           return { checked: false, ok: false, sessionFailure: oneBotSessionFailure };
         }
@@ -15107,25 +15107,46 @@ async function main() {
   }
 
   // NapCat 登录信息可停留在启动时的昵称，资料接口可获取账号的当前昵称。
+  //
+  // 2026-11-12 掉线修复：以前这里被每分钟一次的在线探活直接调用，等于每分钟向 QQ 服务端
+  // 做一次 no_cache 资料拉取。实测每次登录会话大约 35 次之后 QQ 开始让
+  // NodeIKernelProfileService/fetchUserDetailInfo 超时（日志里每分钟一条 Timeout）；
+  // NapCat 收到入站消息时还要用它补发送者昵称，于是消息也卡在网关里，接口却仍报 online。
+  // 现在只在连接、昵称变化或疑似掉线时查，平时走缓存（成功 30 分钟 / 失败 2 分钟）。
+  const SELF_PROFILE_TTL_MS = 30 * 60 * 1000;
+  const SELF_PROFILE_RETRY_MS = 2 * 60 * 1000;
+  let selfProfileRefreshedAt = 0;
+  let selfProfileOk = false;
   let selfProfileRefresh = null;
-  function refreshQqSelfProfile() {
+  function refreshQqSelfProfile({ force = false } = {}) {
     const userId = selfUserId;
-    if (!usesExternalOneBot(cfg) || !/^\d{5,12}$/.test(userId)) return;
+    if (!usesExternalOneBot(cfg) || !/^\d{5,12}$/.test(userId)) return Promise.resolve(false);
+    if (!force && selfProfileRefreshedAt) {
+      const ttl = selfProfileOk ? SELF_PROFILE_TTL_MS : SELF_PROFILE_RETRY_MS;
+      if (Date.now() - selfProfileRefreshedAt < ttl) return Promise.resolve(selfProfileOk);
+    }
     if (selfProfileRefresh?.userId === userId) return selfProfileRefresh.promise;
     const promise = (async () => {
       try {
         const result = await bot.request('get_stranger_info', { user_id: Number(userId), no_cache: true }, { timeoutMs: 3000 });
-        if (result?.retcode !== 0 || String(result.data?.user_id) !== userId || selfUserId !== userId) return false;
+        if (result?.retcode !== 0 || String(result.data?.user_id) !== userId || selfUserId !== userId) {
+          selfProfileOk = false;
+          return false;
+        }
         const nickname = String(result.data?.nickname ?? '').replace(/[\r\n\t]+/g, ' ').trim();
         if (nickname) {
           selfDisplayName = nickname;
           selfNickname = nickname.toLowerCase();
           saveQqSelfIdentity();
         }
+        selfProfileOk = true;
         return true;
       } catch {
         // 网关不支持资料查询或暂时离线时，继续使用最后一次有效资料。
+        selfProfileOk = false;
         return false;
+      } finally {
+        selfProfileRefreshedAt = Date.now();
       }
     })().finally(() => {
       if (selfProfileRefresh?.promise === promise) selfProfileRefresh = null;
@@ -15134,29 +15155,46 @@ async function main() {
     return promise;
   }
 
-  // NapCat 的 HTTP 状态和心跳可能仍报在线。复用已有资料轮询，在连续失败后用好友列表交叉核对。
+  // NapCat 的 HTTP 状态和心跳可能仍报在线（「假在线」）。这里用本地好友列表做便宜探针：
+  // 不碰 QQ 服务端资料接口（见 refreshQqSelfProfile 的注释），只在名单为空时才做一次
+  // 服务端资料确认，避免探活本身把资料服务打限频。两次确认之间至少隔 10 分钟。
+  const SESSION_CONFIRM_COOLDOWN_MS = 10 * 60 * 1000;
   async function checkOneBotSession() {
     if (!externalOneBot || !snowlumaHealth.connected || !selfUserId) return;
     if (oneBotSessionProbe.account !== selfUserId) {
-      oneBotSessionProbe = { account: selfUserId, seenProfile: false, failures: 0, checking: false, degraded: false };
+      oneBotSessionProbe = { account: selfUserId, seenProfile: false, failures: 0, checking: false, degraded: false, confirmAt: 0 };
     }
     const probe = oneBotSessionProbe;
     if (probe.checking) return;
     probe.checking = true;
     try {
-      const profileOk = await refreshQqSelfProfile();
+      let friends = null;
+      try {
+        const response = await bot.request('get_friend_list', {}, { timeoutMs: 3000 });
+        if (response?.retcode === 0 && Array.isArray(response.data)) friends = response.data;
+      } catch {
+        friends = null;
+      }
       if (probe !== oneBotSessionProbe || selfUserId !== probe.account) return;
-      if (profileOk) {
+      if (friends?.length) {
         probe.seenProfile = true;
         probe.failures = 0;
+        if (probe.degraded) log('✅ QQ 网关会话已恢复（好友列表可用）');
         probe.degraded = false;
-      } else if (probe.seenProfile && ++probe.failures >= 2 && !probe.degraded) {
-        const response = await bot.request('get_friend_list', { no_cache: true }, { timeoutMs: 3000 });
-        if (probe !== oneBotSessionProbe || selfUserId !== probe.account) return;
-        probe.degraded = response?.retcode === 0 && Array.isArray(response.data) && response.data.length === 0;
+      } else if (
+        friends
+        && probe.seenProfile
+        && Date.now() - (probe.confirmAt || 0) >= SESSION_CONFIRM_COOLDOWN_MS
+        && (probe.degraded || ++probe.failures >= 2)
+      ) {
+        // 名单为空不等于掉线（可能本来就没有好友），用一次强制资料查询交叉核对；
+        // 资料也失败才判定「假在线」，避免把偶发抖动当成会话异常。
+        probe.confirmAt = Date.now();
+        probe.failures = 0;
+        const profileOk = await refreshQqSelfProfile({ force: true });
+        probe.degraded = !profileOk;
+        if (probe.degraded) log('⚠️ QQ 网关会话疑似失效：好友列表为空且资料查询失败（接口仍报在线），面板与试发会提示重新登录');
       }
-    } catch {
-      // 好友列表没有返回有效结果时保留现有状态，等待下一次可核对的数据。
     } finally {
       probe.checking = false;
     }

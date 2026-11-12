@@ -20,3 +20,21 @@ NapCat 4.18.42 的 HTTP / WebSocket 仍可访问时，QQ 内核的资料查询�
 - 14:45 登录后的会话截至 15:25 未复现此前的资料或好友列表异常。最后核对的真实私聊收发在 14:57。自动快速登录和两小时验收仍待实际触发或继续观察。
 - 观察目标为连续两小时好友名单正常、实时资料可读，且有真实私聊进出。若出现异常，保留网关现场，记录 Mac 睡眠、OneBot 状态和 NapCat 重登的时间。人工扫码恢复与自动登录成功需要分别验收。
 - 接口增量变更，建议 patch。发布文件为 `src/bridge.js`、`plugins/surfcore/lib/client.js` 及上述回归和文档。设置页异常会显示网关复核与登录步骤。
+
+## 2026-11-12 21:00 复查：根因是自建的每分钟资料查询
+
+**证据（同一份容器日志）**
+
+- 登录到第一条资料超时的间隔稳定在 33–38 分钟：11:13:00 登录 → 11:50:46 首条 Timeout（37m46s）；12:15:41 登录 → 12:49:10 `KickedOffLine`（33m29s）；20:04:55 登录 → 20:39:39 首条 Timeout（34m44s）。
+- 超时随后固定每分钟一条，且比桥接的 `/get_status` 轮询晚约 5 秒（NapCat 内部监听超时 5 秒），说明触发者就是桥接的每分钟在线探活。
+- 该探活调用 `get_stranger_info(user_id=自己, no_cache=true)`，NapCat 侧走 `getUserDetailInfoByUin` + `fetchUserDetailInfo(KSERVER)`，即每分钟一次服务端资料拉取。
+- NapCat 收到入站消息时要 `getUserDetailInfo(senderUid)` 补发送者昵称（`napcat.mjs:77669`）。资料服务被限频卡住后，入站消息也停在网关里，`get_login_info`/`get_status` 仍报在线——与交接里「假在线」的表现一致。
+
+**改动**
+
+- `src/bridge.js`：`refreshQqSelfProfile({ force })` 加缓存（成功 30 分钟、失败 2 分钟），连接时仍强制刷一次；`checkOneBotSession()` 改读本地好友列表 `get_friend_list`（不带 `no_cache`），只有名单为空、且强制资料查询也失败才判定会话异常；两次资料确认之间至少 10 分钟；降级/恢复各写一行 `bridge.log`。
+- 回归：`scripts/test-qq-self-profile.mjs` 增加「健康时多次探活不触碰资料接口」和「缓存期内不重复查询」断言；`node scripts/test-audit.mjs` 150/157，失败项与改动前同类（macOS 路径/编码、release manifest），与本改动无关。
+
+**验证**
+
+- 21:06 重启桥接加载修复，随后用只读脚本每分钟记录 `get_friend_list` 数量与 NapCat 的 `fetchUserDetailInfo` 超时条数，观察是否越过原定的 ~21:20 复发点。两小时验收仍按上文标准执行。

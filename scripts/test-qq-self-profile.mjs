@@ -19,46 +19,52 @@ let server;
 try {
   h.setSelfIdentity('旧昵称', id);
   let profile = { user_id: id, nickname: '新昵称' };
+  let profileQueries = 0;
   h.bot.request = async (action, params) => {
     assert.equal(action, 'get_stranger_info');
     assert.equal(params.user_id, Number(id));
     assert.equal(params.no_cache, true);
+    profileQueries++;
     return { retcode: 0, data: profile };
   };
   await h.refreshQqSelfProfile();
   assert.match(h.selfIdentityTextV2(), /新昵称/);
   const saved = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'self-identity.json'), 'utf8'));
   assert.equal(saved.nickname, '新昵称');
+  // 2026-11-12 掉线修复：资料查询走缓存，不再被每分钟探活反复打到 QQ 服务端。
   profile = { user_id: '123457', nickname: '其他帐号' };
   await h.refreshQqSelfProfile();
+  assert.equal(profileQueries, 1, '缓存期内重复调用不应再查资料接口');
   assert.match(h.selfIdentityTextV2(), /新昵称/);
 
   h.setSnowlumaHealth({ connected: true, accountOnline: true, good: true });
   let profileOk = true;
-  let friends = [];
+  let friends = [{ user_id: 123 }];
   let friendQueries = 0;
+  let sessionProfileQueries = 0;
   h.bot.raw = async () => friends;
   h.bot.request = async (action, params) => {
-    assert.equal(params.no_cache, true);
     if (action === 'get_friend_list') {
       friendQueries++;
+      assert.equal(params.no_cache, undefined, '探活读本地好友列表，不应强制刷新');
       return { retcode: 0, data: friends };
     }
     assert.equal(action, 'get_stranger_info');
+    assert.equal(params.no_cache, true);
+    sessionProfileQueries++;
     return profileOk ? { retcode: 0, data: { user_id: id, nickname: '新昵称' } } : { retcode: 1200, data: null };
   };
-  await h.checkOneBotSession();
-  assert.equal((await h.greetingFriendCheck('123', { refresh: true })).checked, true, '资料正常时，空好友列表仍是有效结果');
+  for (let i = 0; i < 3; i += 1) await h.checkOneBotSession();
+  assert.equal(sessionProfileQueries, 0, '健康时探活不应触碰 QQ 资料接口');
   assert.equal(h.snowlumaHealthSnapshot().sessionFailure, null);
-  profileOk = false;
-  await h.checkOneBotSession();
-  assert.equal(friendQueries, 0, '第一次资料失败不足以判定会话异常');
-  friends = [{ user_id: 123 }];
-  await h.checkOneBotSession();
-  assert.equal(friendQueries, 1);
-  assert.equal(h.snowlumaHealthSnapshot().sessionFailure, null, '资料失败而好友列表正常时不告警');
+  assert.equal((await h.greetingFriendCheck('123', { refresh: true })).checked, true);
+  // 名单变空：连续两次后再做一次资料交叉核对；资料也失败才算会话异常。
   friends = [];
   await h.checkOneBotSession();
+  assert.equal(sessionProfileQueries, 0, '单次空名单不足以判定会话异常');
+  profileOk = false;
+  await h.checkOneBotSession();
+  assert.equal(sessionProfileQueries, 1);
   const unhealthy = h.snowlumaHealthSnapshot();
   assert.equal(unhealthy.accountOnline, true);
   assert.equal(unhealthy.degraded, true);
