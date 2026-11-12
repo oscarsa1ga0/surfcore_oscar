@@ -1440,7 +1440,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       ]},
       { group: "分享", fields: [
         F("share.enabled", "开启分享", "关掉 = 只看不说", "switch"),
-        F("share.via", "分享方式", "默认发自己的动态（视频卡片）；也可评论区 @ / B站私信", "select", { options: [["dynamic", "发自己的动态（视频卡片）"], ["comment", "评论区 @ 你"], ["dm", "B站私信"]] }),
+        F("share.via", "分享方式", "发自己的动态（视频卡片）或通过 B站私信分享", "select", { options: [["dynamic", "发自己的动态（视频卡片）"], ["dm", "B站私信"]] }),
         F("quota.shareDaily", "每天上限", "建议 ≤3；0 = 不分享", "number", { min: 0, max: 20 }),
         F("share.minScore", "最低评分", "0~20；不到就不发", "number", { min: 0, max: 20 }),
         F("share.silentAfterDays", "沉默几天后降额", "", "number", { min: 0 }),
@@ -1476,6 +1476,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
           F(`dynamics.kinds.${key}.maxLen`, `${label} · 最长字数`, "", "number", { min: 20, max: 2000 }),
           F(`dynamics.kinds.${key}.prefix`, `${label} · 固定开头`, "留空 = 不加前缀", "text", { wide: true }),
         ]),
+      ]},
+      { group: "自由发布（不是任务）", note: "逛 B 站时想发就发，不设每日上限；和四类动态/分享/原创专栏共用「任意两条动态间隔」。想发就发，很多天一条不发也正常。原创视频上传接口已预留，当前未实现。", fields: [
+        F("freePost.enabled", "允许自由动态", "文字 / 一张图 / 任意视频卡片 / 链接；不要求是推荐视频", "switch"),
+        F("article.enabled", "允许原创专栏", "先 --draft 进草稿箱验证，再用 --go 发布", "switch"),
+        F("article.category", "专栏默认分类", "0 = B站默认；有需要再填分类 ID", "number", { min: 0, max: 1000 }),
       ]},
       { group: "鱼群判定关键词（B站）", note: "开头 / 中间 / 结尾任一命中即算鱼；默认 肥鱼 + 结尾 fish/鱼；只要评论者昵称命中就算，不涉及视频/UP 名", fields: [
         F("fishGuard.namePrefixes", "鱼名开头词", "逗号分隔；名字以这些词开头就算鱼（默认空，例如 DSH）", "list", { placeholder: "点击输入，例如 DSH（逗号分隔）" }),
@@ -1940,6 +1945,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
 
     function OverviewTab({ overview, reload, busy, setBusy, toast, unified, setUnified, goTab }) {
       const bridge = overview?.bridge ?? {};
+      const qqSessionFailure = bridge.snowluma?.sessionFailure;
       const bili = overview?.bili ?? {};
       const memory = overview?.memory ?? {};
       const align = overview?.alignment ?? {};
@@ -2306,6 +2312,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
             h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok }, bridge.running ? "运行中" : "未运行")),
+            qqSessionFailure ? h("div", { className: "qbw-warnbox", role: "status" }, qqSessionFailure.error + "。" + qqSessionFailure.hint) : null,
             h("div", { className: "qbw-kv" }, h("span", null, "端口"), h("span", null, bridge.port ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "PID"), h("span", null, bridge.pid ?? bridge.lockPid ?? "—")),
             h("div", { className: "qbw-kv" }, h("span", null, "模式"), h("span", null, overview?.mode?.effective ?? overview?.mode?.local ?? bridge.mode ?? "—")),
@@ -2790,7 +2797,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           toast(toPet ? "✓ 桌宠主动搭话已发送" : "✓ 目的回合已投递");
           await load();
         } catch (e) {
-          setMsg(`✗ ${e.message}${e.data?.reason ? `（${e.data.reason}）` : ""}`);
+          setMsg(`✗ ${e.message}${e.data?.hint ? ` · ${e.data.hint}` : e.data?.reason ? `（${e.data.reason}）` : ""}`);
         } finally { setBusy(""); }
       };
 
@@ -3728,6 +3735,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
       const externalOneBot = overview?.snowluma?.provider === "onebot";
+      const qqGatewayHealth = overview?.bridge?.snowluma;
       const groups = externalOneBot ? QQ_FIELDS.filter((group) => group.group !== "SnowLuma") : [...QQ_FIELDS];
       if (tools.length) {
         groups.push({ group: "二代 · 工具开关", note: "关掉即从模型工具面移除", fields: tools.map((key) => F(`socialV2.tools.${key}`, TOOL_LABELS[key] ?? key, key, "switch")) });
@@ -3768,8 +3776,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         setBusy("greeting-test");
         try {
           const r = await api("/bridge", { method: "POST", body: { action: "greeting-test" } });
-          toast(r.ok ? `✓ ${r.message ?? "早安问候已试发"}` : `✗ ${r.error ?? "试发失败"}`);
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
+          toast(r.ok ? `✓ ${r.message ?? "早安问候已试发"}` : `✗ ${[r.error ?? "试发失败", r.hint].filter(Boolean).join(" · ")}`);
+        } catch (e) { toast(`✗ ${[e.message, e.data?.hint].filter(Boolean).join(" · ")}`); } finally { setBusy(""); }
       };
       const restartBridgeButton = h(Btn, { kind: "qbw-btn2", onClick: async () => {
         setBusy("restart");
@@ -3809,7 +3817,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               finally { setBusy(""); }
             } }, "测试 HTTP 连接"),
             h(Btn, { kind: "qbw-btn2", onClick: () => window.open("https://luckylillia.com/guide/choice_install", "_blank", "noopener") }, "LLBot 安装指南")),
-          h("p", { className: "qbw-hint" }, overview?.bridge?.snowluma?.connected ? "QQ WebSocket 已连接" : (overview?.snowluma?.diagnosis?.hint || "等待桥接连接 WebSocket"))) : null,
+          qqGatewayHealth?.sessionFailure
+            ? h("p", { className: "qbw-warnbox", role: "status" }, qqGatewayHealth.hint)
+            : h("p", { className: "qbw-hint" }, qqGatewayHealth?.connected ? "QQ WebSocket 已连接" : (overview?.snowluma?.diagnosis?.hint || "等待桥接连接 WebSocket"))) : null,
         h(ModelSettingsCard, { busy, toast, reload }),
         h(CostCard, { toast, set }),
         h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast, onDiscardContext: onAdminDiscardContext, onSave: () => onSave?.(true), busy, canSave: dirty }),
@@ -4504,10 +4514,26 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
       };
       const [deps, setDeps] = useState("");
+      const [wakeStatus, setWakeStatus] = useState(null);
       const [pending, setPending] = useState([]);
       const [pendingMsg, setPendingMsg] = useState("");
       const [automation, setAutomation] = useState(null);
       const bili = overview?.bili ?? {};
+
+      const wakeNow = async () => {
+        setBusy("bili-wake");
+        setWakeStatus(null);
+        try {
+          const r = await api("/bili/wake-now", { method: "POST", body: {} });
+          setWakeStatus(r.ok
+            ? { ok: true, text: "已提交一轮。到 DSH 的「B站生物钟」工作区查看进度。" }
+            : { ok: false, text: [r.error || "唤醒失败", r.hint].filter(Boolean).join(" · ") });
+        } catch (e) {
+          setWakeStatus({ ok: false, text: `${e.message} · ${e.hint || "刷新设置页后重试"}` });
+        } finally {
+          setBusy(null);
+        }
+      };
 
       const loadAutomation = useCallback(async () => {
         try { setAutomation(await api("/bili/automation")); }
@@ -4597,7 +4623,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h(Btn, { onClick: () => setQrFish(true), disabled: !!busy }, "扫码登录小肥鱼"))),
         h(QqShareSection, { qq, set: setQqPath, data: automation, busy, setBusy, toast }),
         h(Section, { title: "作息窗口", note: "C 模式：每个窗口至少 1 次；全天上限见「每天最多醒来」，剩余次数按该时段最近评分分配，相邻两次至少隔「最小间隔」", defaultOpen: true },
-          h("div", { style: { padding: "6px 0" } }, h(WindowsEditor, { value: cfg?.night?.windows, onChange: (v) => set(["night", "windows"], v) }))),
+          h("div", { style: { padding: "6px 0" } }, h(WindowsEditor, { value: cfg?.night?.windows, onChange: (v) => set(["night", "windows"], v) })),
+          h("div", { className: "qbw-actions" },
+            h(Btn, { onClick: wakeNow, disabled: !!busy }, busy === "bili-wake" ? "唤醒中…" : "立即唤醒一次"),
+            h("span", { className: "qbw-hint" }, "按已保存的 B 站设置执行一轮，保留定时计划。")),
+          wakeStatus && h("div", { role: wakeStatus.ok ? "status" : "alert", className: wakeStatus.ok ? "qbw-hint" : "qbw-err" }, wakeStatus.text)),
         h(AdvancedSettings, { note: "凭据 / 鱼群状态 / 口味权重 / 待审核 / 全部 B站 参数：展开后同样可改" },
           h(FieldGroups, { groups, cfg, set, onSave, categories: BILI_ADV_CATEGORIES }),
           h(FishGuardStatusCard, { busy, toast }),
@@ -6821,6 +6851,79 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     // ── 身份对齐 ────────────────────────────────────────────────────────────
+    // ── 日记 ────────────────────────────────────────────────────────────────
+    function DiaryTab({ unified, setUnified, busy, setBusy, toast }) {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState("");
+      const cfg = unified?.diary ?? {};
+      const set = (key, value) => setUnified(["diary", key], value);
+      const load = useCallback(async () => {
+        try { setData(await api("/diary")); setErr(""); } catch (e) { setErr(e.message); }
+      }, []);
+      useEffect(() => { load(); }, [load]);
+      const reviewNow = async () => {
+        setBusy("diary-review");
+        try {
+          const r = await api("/diary/review", { method: "POST", body: { action: "review" } });
+          toast(r.ok ? "✓ 已叫醒她整理今天的日记（会话里能看到过程）" : `✗ ${r.error || "提交失败"}`);
+          await load();
+        } catch (e) {
+          toast(`✗ ${e.message}`);
+        } finally {
+          setBusy("");
+        }
+      };
+      const scheduler = data?.scheduler ?? null;
+      const status = data?.status ?? null;
+      const entries = Array.isArray(data?.entries) ? data.entries : [];
+      const when = (iso) => {
+        if (!iso) return "—";
+        try { return new Date(iso).toLocaleString("zh-CN", { hour12: false }); } catch { return iso; }
+      };
+      return h("div", null,
+        h("div", { className: "qbw-card" },
+          h("h4", null, "日记"),
+          h("p", { className: "qbw-hint" },
+            "日记存在当前角色的 characters/<id>/diary/ 里，和记忆卡分开。写不写、写什么由她自己决定；这里只控制自动整理和隐私闸。"),
+          h(Row, { label: "启用日记", hint: "关掉后不再自动整理；她仍可在聊天里被你要求写。" },
+            h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.enabled !== false, onChange: (e) => set("enabled", e.target.checked) })),
+          h(Row, { label: "每日自动回顾", hint: "到点叫醒一个专用日记会话；不会打断 QQ 聊天。" },
+            h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.autoReview !== false, onChange: (e) => set("autoReview", e.target.checked) })),
+          h(Row, { label: "回顾时间（本地）", hint: "默认 23:30。改完点底部保存，下一 tick 生效。" },
+            h("input", { className: "qbw-input", type: "time", value: cfg.reviewAt ?? "23:30", onChange: (e) => set("reviewAt", e.target.value) })),
+          h(Row, { label: "离线补执行窗口（小时）", hint: "程序在回顾时间没运行，恢复后在这个窗口内会补一次；默认 6。" },
+            h("input", { className: "qbw-input", type: "number", min: 0, max: 72, value: cfg.catchUpHours ?? 6, onChange: (e) => set("catchUpHours", Number(e.target.value) || 0) })),
+          h(Row, { label: "失败重试上限", hint: "同一天的回顾提交失败最多重试几次；默认 2。" },
+            h("input", { className: "qbw-input", type: "number", min: 1, max: 5, value: cfg.maxAttempts ?? 2, onChange: (e) => set("maxAttempts", Number(e.target.value) || 2) })),
+          h(Row, { label: "允许自主暂存候选", hint: "允许她在聊天中把值得回顾的事临时记下来，晚上再决定写不写。" },
+            h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.captureEnabled !== false, onChange: (e) => set("captureEnabled", e.target.checked) })),
+          h(Row, { label: "私人日记出站硬闸", hint: "未用 diary_share 授权过的私人日记原文，发送时会被桥接拦下；日记读不到时放行，不影响聊天。" },
+            h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.leakGuard !== false, onChange: (e) => set("leakGuard", e.target.checked) })),
+        ),
+        h("div", { className: "qbw-card", style: { marginTop: "10px" } },
+          h("h4", null, "状态"),
+          h("div", { className: "qbw-hint" },
+            scheduler?.running
+              ? `回顾运行中 · 会话 ${scheduler.sessionId || "—"} · 下一次 ${scheduler.nextReviewAt || cfg.reviewAt || "23:30"}`
+              : `回顾未运行（${data?.reason || scheduler?.reason || "未启动"}）`),
+          status ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
+            `共 ${status.entries} 篇 · 今天候选 ${status.candidates} 条 · 已分享记录 ${status.shares} 次`,
+            status.scheduler?.lastReviewedDay ? ` · 上次回顾 ${status.scheduler.lastReviewedDay}` : " · 还没回顾过",
+            status.scheduler?.lastError ? ` · 上次错误：${status.scheduler.lastError}` : "") : null,
+          status?.lastEntry ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
+            `最近一篇：${status.lastEntry.date}「${status.lastEntry.title || "无题"}」${status.lastEntry.visibility === "shareable" ? "（可分享）" : "（私人）"}`) : null,
+          h("div", { style: { display: "flex", gap: "10px", marginTop: "10px", flexWrap: "wrap" } },
+            h(Btn, { kind: "qbw-btn2", onClick: reviewNow, disabled: !!busy || !scheduler?.running }, busy === "diary-review" ? "整理中…" : "立即整理今天的日记"),
+            h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新状态"),
+            h("span", { className: "qbw-hint" }, data?.paths?.dir ? `目录：${data.paths.dir}` : "")),
+          entries.length ? h("div", { style: { marginTop: "10px" } },
+            h("div", { className: "qbw-label" }, "最近的日记"),
+            entries.map((entry) => h("div", { key: entry.id, className: "qbw-hint", style: { marginTop: "4px" } },
+              `${entry.date} · ${entry.id} · ${entry.title || "（无题）"} · ${entry.visibility === "shareable" ? "可分享" : "私人"}${entry.shared ? " · 已分享过" : ""}`))) : null,
+          err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null),
+      );
+    }
+
     function AlignTab({ busy, setBusy, toast, reload }) {
       const [data, setData] = useState(null);
       const [err, setErr] = useState("");
@@ -7869,6 +7972,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
       ["memory", "记忆"],
+      ["diary", "日记"],
       ["align", "对齐"],
       ["extensions", "扩展"],
       ["advanced", "全部参数"],
@@ -8163,6 +8267,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, onResource: () => setResourceOpen(true) });
+        if (tab === "diary") return h(DiaryTab, { unified, setUnified: setUnifiedPath, busy, setBusy, toast: notify });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
       if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });

@@ -164,6 +164,8 @@ const SAFE_PREFIXES = [
   'mcp__snowluma__',
   'mcp__snowluma-host__',
   'mcp__web-search-safe__',
+  // 日记工具（SurfCore 宿主注册的全局工具）：角色自己的日记，不是本地文件权限。
+  'diary_',
 ]
 
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
@@ -237,6 +239,6 @@ export function apply(ctx) {
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
     if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
+    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具、日记工具与无害模型侧工具）`
   })
 }

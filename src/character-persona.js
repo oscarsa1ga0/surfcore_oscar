@@ -107,6 +107,22 @@ function linkOrCopy(src, dest) {
   try { fs.copyFileSync(src, dest); return true; } catch { return false; }
 }
 
+/**
+ * 日记目录进快照（备份用）。
+ * 跳过 .lock / 临时文件 / trash：锁没有意义，回收站不进备份，避免快照越滚越大。
+ */
+function copyDiaryTree(srcDir, destDir) {
+  if (!srcDir || !fs.existsSync(srcDir)) return;
+  ensureDir(destDir);
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (entry.name === '.lock' || entry.name === 'trash' || entry.name.startsWith('.tmp')) continue;
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) copyDiaryTree(src, dest);
+    else if (entry.isFile()) copyFile(src, dest);
+  }
+}
+
 function removeDirSafe(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
@@ -156,6 +172,8 @@ export function characterPaths(id) {
     memoryFullStats: path.join(memoryDir, 'memory-card-full-stats.json'),
     memoryFullMd: path.join(memoryDir, 'memory-card-full.md'),
     biliDir: path.join(dir, 'bili'),
+    // 日记是角色自己的生活记录，和 memory/ 分开存；见 src/diary-store.js。
+    diaryDir: path.join(dir, 'diary'),
     snapshotsDir: path.join(dir, 'snapshots'),
   };
 }
@@ -412,6 +430,7 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
   ensureDir(paths.dir);
   ensureDir(paths.memoryDir);
   ensureDir(paths.biliDir);
+  ensureDir(paths.diaryDir);
   ensureDir(paths.snapshotsDir);
   const persona = String(personaText ?? '').trim() || defaultPersona(cleanName);
   fs.writeFileSync(paths.persona, `${persona}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -432,6 +451,7 @@ export function createCharacter({ name, personaText, memoryCard, fullRecords, id
     persona: 'persona.md',
     memory: 'memory',
     bili: 'bili',
+    diary: 'diary',
     // B站 提示词/记忆里用的角色名；不再从全局 bili.config.persona.name 读（换角色会串）。
     personaMeta: { name: personaNameFromText(persona, cleanName) },
   };
@@ -547,6 +567,8 @@ export function snapshotCharacter(id, { slot, reason = 'manual', now = Date.now(
       copyFile(path.join(paths.biliDir, entry.name), path.join(tmp, 'bili', entry.name));
     }
   } catch {}
+  // 日记：进快照做备份；restoreSnapshot 不回滚 diary（生活记录不该被回档抹掉）。
+  try { copyDiaryTree(paths.diaryDir, path.join(tmp, 'diary')); } catch {}
   const meta = readJson(path.join(tmp, 'snapshot.json'), {});
   atomicWriteJson(path.join(tmp, 'snapshot.json'), { ...meta, fullMemoryMode: fullMode });
   // Windows 不能 rename 覆盖非空目录：先把旧槽挪走再换入。
@@ -624,6 +646,8 @@ export function restoreSnapshot(id, slot, { now = Date.now() } = {}) {
     throw new Error('快照不存在');
   }
   const before = snapshotCharacter(id, { slot: `pre-restore-${new Date(now).toISOString().replace(/[:.]/g, '-')}`, reason: 'before-restore', now });
+  // diary 故意不回档：它是角色的生活记录，回档人格/记忆不应该把之后的日记一起抹掉。
+  // 快照里仍保留一份 diary 作为备份；要找回旧日记请人工从 snapshots/<slot>/diary 复制。
   copyFile(path.join(source, 'persona.md'), paths.persona);
   copyFile(path.join(source, 'persona.daily.md'), paths.personaDaily);
   copyFile(path.join(source, 'persona.tone.md'), paths.personaTone);

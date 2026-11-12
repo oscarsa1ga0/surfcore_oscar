@@ -14,6 +14,7 @@ import crypto from 'node:crypto'
 // 2026-10-18 修：send 分支用了 `gate(...)` 但**从来没导入过** ✗（一跑到那儿就 ReferenceError）
 import { gate } from '../lib/quota-gate.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
+import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
 const argv = process.argv.slice(2)
 const mode = argv[0]
@@ -28,6 +29,20 @@ const isDry = args.has('dry')
 const isGo = args.has('go')
 if (mode === 'send' && isGo && !assertInteractEnabled('发弹幕')) process.exit(3)
 if (!roomArg) { console.error('需要 --room <房间号>'); process.exit(2) }
+if (mode === 'send') {
+  try {
+    assertOutboundIdentitySafe(msg, {
+      surface: 'B站 直播弹幕',
+      targetMid: args.get('reply-mid'),
+      targetName: args.get('reply-name'),
+      // 弹幕 ID 单独参与引用，工具无法从它核对真实接收者。
+      unverifiedTarget: args.has('reply-dmid'),
+    })
+  } catch (error) {
+    console.error(`✗ ${error.message}`)
+    process.exit(9)
+  }
+}
 
 const credPath = accountBili('credentials.json')
 if (!fs.existsSync(credPath)) { console.error(`缺少凭据文件: ${credPath}`); process.exit(3) }

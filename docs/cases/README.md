@@ -6,6 +6,14 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-12 | [B 站生物钟单次唤醒](2026-11-12-bili-wake-now.md) | 作息窗口可立即提交一轮，保留原排程 | macOS 分支 |
+| 2026-11-12 | [B 站主人身份保密](2026-11-12-bili-owner-privacy.md) | 阻止公开 @、点名和能识别主人的回复目标 | macOS 分支 |
+| 2026-11-12 | [NapCat 会话异常](2026-11-12-napcat-qq-session.md) | 外接 OneBot 假在线诊断与快速登录核验 | macOS 分支 |
+| 2026-11-12 | [QQ 好友名单缓存](2026-11-12-qq-friend-cache.md) | 登录恢复后刷新名单及主动试发好友校验 | macOS 分支 |
+| 2026-11-12 | [QQ 旧回复补发](2026-11-12-qq-reply-retry.md) | 60 秒内按会话和最新历史核验重试 | macOS 分支 |
+| 2026-11-12 | [macOS QQ 收藏表情](2026-11-12-macos-qq-sticker-collect.md) | 兼容 NapCat 临时文件和收藏回读 | macOS 分支 |
+| 2026-11-12 | [macOS QQ 资料同步](2026-11-12-macos-qq-profile.md) | 刷新外接 OneBot 昵称，查看当前 QQ 头像 | macOS 分支 |
+| 2026-11-12 | [macOS QQ 看图修复](2026-11-12-macos-qq-image-input.md) | 保留未声明的图片能力；通过 NapCat 从容器内取原图 | macOS 分支 |
 | 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |
 | 2026-11-06 | [向量记忆库：最近记录 + 语义搜索](2026-11-06-vector-memory-library.md) | 只读记忆库；最近 30 条 + 一句话搜旧事；默认隐藏敏感 | 待发布 |
 | 2026-11-05 | [向量记忆 UI/自检/完整重建](2026-11-05-vector-memory-ui-self-test.md) | 本地/云端 Tab；radio + 一键启动；真实 embedding 自检；stale 检测；重建到 pending=0 | 待发布 |

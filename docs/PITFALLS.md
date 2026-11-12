@@ -4004,3 +4004,52 @@ npm run test:audit
 ## macOS QQ 接入时分别配置 OneBot 的 HTTP 和正向 WebSocket
 
 Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不同的 token，桥接不能套用 SnowLuma 的账号发现或用 HTTP token 覆盖 WebSocket token。HTTP 探测确认登录接口可用，收发验收还需要正向 WebSocket 连通并从白名单账号发一条消息。见 [macOS QQ 安装指南](cases/2026-11-11-macos-qq.md)。
+
+
+## #127（2026-11-12）macOS QQ 图片进了桥接，模型只看到标签
+
+- `session/modelCatalog` 不一定提供 `inputModalities`。目录内模型的能力缺失应保留为未知，不能因跟随 DSH 切换 provider 就当成不支持。
+- NapCat Docker 的 `get_image` 可以返回容器内路径。宿主取不到时，用同一图片引用调用 `download_file_image_stream`，不要把容器路径或消息里的 URL 当成网关文件引用。
+- 仅检查 HTTP 200 会漏掉这个问题；回归要检查 MCP 结果确有图像字节和正确 MIME。见 [QQ 看图案例](cases/2026-11-12-macos-qq-image-input.md)。
+
+
+## #128（2026-11-12）NapCat 改昵称后仍返回旧登录资料
+
+- NapCat 的 `get_login_info` 用于确认登录帐号，昵称可能仍是旧值。通过同账号的 `get_stranger_info(no_cache=true)` 刷新身份。
+- 角色内置形象和 QQ 头像是两个来源。外接 OneBot 的自我图片工具按登录帐号读取 QQ 头像，并标明来源。见 [QQ 资料同步案例](cases/2026-11-12-macos-qq-profile.md)。
+
+
+## #129（2026-11-12）NapCat 收藏表情把 base64 当成本地路径
+
+- NapCat 4.18.42 的 `add_custom_face` 需要容器内文件。用 `upload_file_stream` 暂存经过校验的字节，再以返回的临时文件路径收藏。
+- `add_custom_face` 成功回执没有 `emoji_id`。通过 QQ 收藏列表中的图片摘要取得对应条目，并识别已收藏的图。见 [QQ 收藏表情案例](cases/2026-11-12-macos-qq-sticker-collect.md)。
+
+
+## #130（2026-11-12）QQ 启动补发了过时的回复
+
+- 出站失败队列只能重试 60 秒内且明确未发出的回复。发送结果不明确时可能已经送达，不能自动重试。
+- QQ 账号上线后核对会话与最新历史，历史缺失、会话继续、收尾或旧队列无上下文时跳过。见 [QQ 旧回复补发案例](cases/2026-11-12-qq-reply-retry.md)。
+
+
+## #131（2026-11-12）NapCat 恢复后桥接仍缓存空好友名单
+
+- NapCat 显示在线时也可能暂时返回空名单。重新登录后用真实好友列表与最近消息核对连接是否恢复。
+- 连接或账号重新上线后清缓存。空结果下次重查，手动试发强制刷新。见 [QQ 好友名单缓存案例](cases/2026-11-12-qq-friend-cache.md)。
+
+
+## #132（2026-11-12）NapCat 假在线时好友列表为空
+
+- 外接 OneBot 的心跳及 `get_status` 在线字段不能独立证明 QQ 会话可用。资料查询曾成功但连续失败时，再核对好友列表。空列表需要结合资料失败，避免误判正常的零好友账号。
+- Mac 合盖后出现资料接口超时是一条待对照的线索。快速登录可在 NapCat 的「系统配置 → 登录配置」保存，实际恢复需要有效的 QQ 登录凭据。见 [NapCat 假在线案例](cases/2026-11-12-napcat-qq-session.md)。
+
+
+## #133（2026-11-12）B 站结构化回复和旧评论分享会公开提及主人
+
+- 对外发言要同时核对正文和回复目标。只拦正文数字会漏掉昵称、直播回复 UID 和图文提及。公开评论的回复对象从 B 站读回核实。
+- 旧评论分享改走私信。发出前返回明确的拒绝原因。见 [B 站主人身份保密案例](cases/2026-11-12-bili-owner-privacy.md)。
+
+
+## #134（2026-11-12）手动唤醒 B 站要保留原排程
+
+- 直接投递现有浏览回合。调用 tick 或 invalidate 会触发窗口检查、计划重算或自动次数更新。
+- 当前 DSH 通过 resolveAgent 恢复已有会话。盲目调用 create 会在原会话有历史时另建空会话。见 [B 站单次唤醒案例](cases/2026-11-12-bili-wake-now.md)。

@@ -6,6 +6,7 @@ import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 // 2026-10-26 补：line 50 用到 gate 却没 import，改动态会 ReferenceError。
 // 与 dynamic.mjs:11-12 是同一个坑（那份 2026-10-21 已修，这份是复制时漏的）。
 import { gate } from '../lib/quota-gate.mjs'
+import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -13,6 +14,13 @@ const dyn = process.argv[2]
 const textFile = process.argv[3]
 const go = process.argv.includes('--go')
 if (!dyn || !textFile) { console.error('用法: node edit-dynamic.mjs <dyn_id> <文本文件> [--go]'); process.exit(2) }
+const text = fs.readFileSync(textFile, 'utf8').replace(/\r\n/g, '\n')
+try {
+  assertOutboundIdentitySafe(text, { surface: 'B站 动态编辑' })
+} catch (error) {
+  console.error(`✗ ${error.message}`)
+  process.exit(9)
+}
 
 const cred = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -22,7 +30,6 @@ const H = {
   origin: 'https://www.bilibili.com',
   cookie: `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`,
 }
-const text = fs.readFileSync(textFile, 'utf8').replace(/\r\n/g, '\n')
 
 // 先把当前动态的图片原样取出来（编辑时带上，免得把图弄丢）
 const d = await (await fetch(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${dyn}&features=itemOpusStyle`, { headers: H })).json()

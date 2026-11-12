@@ -25,6 +25,14 @@ const isGo = args.has('go')
 if (mode === 'post' && isGo && !assertInteractEnabled('发动态')) process.exit(3)
 const text = args.get('text')
 const dynId = args.get('id')
+if (mode === 'post') {
+  try {
+    assertOutboundIdentitySafe(text, { surface: 'B站 动态' })
+  } catch (error) {
+    console.error(`✗ ${error.message}`)
+    process.exit(9)
+  }
+}
 
 const credPath = accountBili('credentials.json')
 if (!fs.existsSync(credPath)) { console.error(`缺少凭据文件: ${credPath}`); process.exit(3) }
@@ -103,14 +111,6 @@ if (mode === 'post') {
   if (isDry) { console.log('\n[dry] 未发布。'); process.exit(0) }
 // P0-5（Kimi 评审 #5）：写通道也要过限额闸；不通过就停手
 if (!gate({ type: 'dynamic', target: 'dynamic', auto: process.argv.includes('--auto') })) { console.error('拒绝：限额闸不通过（额度/白名单）'); process.exit(2) }
-// 出站身份闸（2026-10-23 用户要求：只准自己互认，不许泄露主人和别人的信息）
-// 动态是公开面：一旦把主人/别人的 QQ 号或 B站 mid 贴出去就收不回来；提示词只是概率约束，这里是硬拦。
-try {
-  assertOutboundIdentitySafe(text, { surface: 'B站 动态' });
-} catch (error) {
-  console.error(`\n✗ ${error.message}`);
-  process.exit(9);
-}
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'user-agent': UA, referer: REF, origin: 'https://t.bilibili.com', 'content-type': 'application/json', cookie: cookieHeader },

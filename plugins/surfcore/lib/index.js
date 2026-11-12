@@ -38,7 +38,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, characterPaths, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -66,6 +66,9 @@ import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
+import { createDiaryToolDefinitions } from './diary-tools.js';
+import { startDiaryScheduler } from './diary-scheduler.js';
+import { diaryStatus as readDiaryStatus, listEntries as listDiaryEntries } from '../../../src/diary-store.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
@@ -186,7 +189,7 @@ function QQ_STATE_DIR() {
 }
 
 export const name = 'surfcore';
-export const inject = ['webServer', 'connection', 'sessionController'];
+export const inject = ['webServer', 'connection', 'sessionController', 'tools'];
 
 export function apply(ctx) {
   ensureDirs();
@@ -219,7 +222,11 @@ export function apply(ctx) {
   });
 
   let scheduler = null;
+  let manualBiliWake = false;
   let schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
+  // 日记：独立于 B站 生物钟；不依赖 QQ 是否在线，换角色时跟着重启。
+  let diaryScheduler = null;
+  let diaryStatus = { running: false, startedAt: null, lastError: null, sessionId: null, reason: '' };
   // 关闭温柔模式并丢弃上下文时递增：给 B站 一个全新 DSH sessionId，旧历史不再带入。
   let biliSessionEpoch = 0;
   let syncTimer = null;
@@ -374,6 +381,26 @@ export function apply(ctx) {
       sessionId: schedulerStatus.sessionId ?? null,
     };
   }
+  function biliSessionId() {
+    const character = readCurrentCharacter();
+    const base = character ? `bili-whale-${character.id}` : 'bili-whale';
+    return biliSessionEpoch ? `${base}-r${biliSessionEpoch}` : base;
+  }
+  function createBiliScheduler(sessionId, automatic = true) {
+    const biliWorkspace = biliWorkspacePath(DSH_HOME);
+    return startScheduler(ctx, {
+      dshHome: DSH_HOME,
+      biliMjs: BILI_MJS,
+      // 新会话走 workspaceId；cwd 只作为旧版 DSH 没有 workspaceController 时的兜底。
+      cwd: biliWorkspace,
+      workspacePath: biliWorkspace,
+      workspaceTitle: BILI_WORKSPACE_TITLE,
+      sessionId,
+      automatic,
+      tokenBudget,
+      log: (message) => pluginLog(message),
+    });
+  }
   // B站生物钟：合体后由本插件接管（旧 dsh-bili-whale 会被停用）。
   // 抽成函数给「一键启动」复用：DSH 重启后插件加载时按平台开关决定是否自动启动，
   // 失败后也能手动拉起。
@@ -392,21 +419,8 @@ export function apply(ctx) {
       return schedulerStatus;
     }
     try {
-      const character = readCurrentCharacter();
-      const baseSessionId = character ? `bili-whale-${character.id}` : 'bili-whale';
-      const sessionId = biliSessionEpoch ? `${baseSessionId}-r${biliSessionEpoch}` : baseSessionId;
-      const biliWorkspace = biliWorkspacePath(DSH_HOME);
-      scheduler = startScheduler(ctx, {
-        dshHome: DSH_HOME,
-        biliMjs: BILI_MJS,
-        // 新会话走 workspaceId；cwd 只作为旧版 DSH 没有 workspaceController 时的兜底。
-        cwd: biliWorkspace,
-        workspacePath: biliWorkspace,
-        workspaceTitle: BILI_WORKSPACE_TITLE,
-        sessionId,
-        tokenBudget,
-        log: (message) => pluginLog(message),
-      });
+      const sessionId = biliSessionId();
+      scheduler = createBiliScheduler(sessionId);
       schedulerStatus = { running: true, disabled: false, reason: '', startedAt: new Date().toISOString(), lastError: null, lastTickAt: null, sessionId };
       pluginLog(`生物钟已启动（会话 ${sessionId}）`);
     } catch (error) {
@@ -438,7 +452,67 @@ export function apply(ctx) {
     const next = startSchedulerNow();
     return { reset: true, sessionId: next?.sessionId ?? null, started: next?.running === true };
   }
+  function diaryConfig() {
+    try { return readUnified().config?.diary ?? {}; } catch { return {}; }
+  }
+  /** 日记回顾和 B站 生物钟是两套独立调度；日记不依赖 QQ/B站 是否在线。 */
+  function startDiarySchedulerNow() {
+    if (diaryScheduler) return diaryStatus;
+    const cfg = diaryConfig();
+    if (cfg.enabled === false) {
+      diaryStatus = { running: false, startedAt: null, lastError: null, sessionId: null, reason: 'disabled' };
+      return diaryStatus;
+    }
+    const current = readCurrentCharacter();
+    if (!current) {
+      diaryStatus = { running: false, startedAt: null, lastError: null, sessionId: null, reason: 'no-character' };
+      return diaryStatus;
+    }
+    try {
+      const paths = characterPaths(current.id);
+      const sessionId = `diary-${current.id}`;
+      diaryScheduler = startDiaryScheduler(ctx, {
+        dshHome: DSH_HOME,
+        characterId: current.id,
+        characterDir: paths.dir,
+        characterName: current.name,
+        sessionId,
+        qqStateDir: QQ_STATE_DIR(),
+        readConfig: diaryConfig,
+        log: pluginLog,
+        tokenBudget,
+        // 当天完整聊天：recentMessages 只有 100 条，早上很容易被挤出窗口。
+        // 走桥接新增的 /api/diary/history（一次性读网关历史）补足；桥接不在时自动回退。
+        fetchDayHistory: async ({ day, count }) => {
+          const result = await callBridge('/api/diary/history', {
+            method: 'POST', body: { day, count }, timeoutMs: 30000,
+          });
+          return result?.ok ? result.data : null;
+        },
+      });
+      diaryStatus = { running: true, startedAt: new Date().toISOString(), lastError: null, sessionId, reason: '' };
+      pluginLog(`日记回顾已启动（会话 ${sessionId}）`);
+    } catch (error) {
+      diaryStatus = {
+        running: false, startedAt: null, sessionId: null,
+        lastError: String(error?.message ?? error), reason: 'start-failed',
+      };
+      pluginLog('日记回顾启动失败：', diaryStatus.lastError);
+    }
+    return diaryStatus;
+  }
+  function stopDiarySchedulerNow(reason = '') {
+    const wasRunning = Boolean(diaryScheduler);
+    try { diaryScheduler?.stop?.(); } catch (error) {
+      pluginLog('日记回顾停止失败：', String(error?.message ?? error));
+    }
+    diaryScheduler = null;
+    diaryStatus = { running: false, startedAt: null, lastError: null, sessionId: null, reason };
+    if (wasRunning) pluginLog(`日记回顾已停止${reason ? `（${reason}）` : ''}`);
+    return { ok: true, wasRunning };
+  }
   startSchedulerNow();
+  startDiarySchedulerNow();
 
   // 管理员称呼的存量修复：v0.7.2 及以前只把 ownerQQ 投影到 QQ config.json，
   // displayName/biliName/gentle 留在 unified，桥接独立进程读不到 → 叫“管理员”。
@@ -555,7 +629,10 @@ export function apply(ctx) {
     await vectorMemoryIdle();
     const wasRunning = skipPlatform ? false : (await bridgeStatus()).running;
     let schedulerWasRunning = !skipPlatform && Boolean(scheduler && schedulerStatus.running);
+    const diaryWasRunning = Boolean(diaryScheduler);
     try {
+      // 日记会话也属于旧角色：先停掉，换完指针再起新角色的。
+      stopDiarySchedulerNow('character-switch');
       if (schedulerWasRunning) {
         try { await scheduler?.retire?.(); } catch (error) { pluginLog('切换角色：停 B站 会话失败：', error?.message ?? error); }
         scheduler = null;
@@ -582,6 +659,7 @@ export function apply(ctx) {
         if (!started.ok) pluginLog('切换角色：桥接重启失败（角色已切换，平台保持停止）：', started.error || started.message);
       }
       if (!skipPlatform) startSchedulerNow();
+      startDiarySchedulerNow();
       pluginLog(`角色已切换：${current?.name ?? '（无）'} → ${target.name}（epoch ${switched.current?.epoch}）`);
       return {
         ok: true,
@@ -590,10 +668,12 @@ export function apply(ctx) {
         bridgeRestarted: wasRunning,
         archived,
         scheduler: schedulerStatus,
+        diary: diaryStatus,
       };
     } catch (error) {
       pluginLog('角色切换失败：', error?.message ?? error);
       if (schedulerWasRunning && (!scheduler || !schedulerStatus.running)) startSchedulerNow();
+      if (diaryWasRunning && !diaryScheduler) startDiarySchedulerNow();
       throw error;
     }
   }
@@ -605,6 +685,8 @@ export function apply(ctx) {
     scheduler = null;
     schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
     startSchedulerNow();
+    stopDiarySchedulerNow('character-migrated');
+    startDiarySchedulerNow();
   }
 
 
@@ -709,6 +791,23 @@ export function apply(ctx) {
   };
 
   const disposers = [];
+  // ── 日记工具：注册为全局工具（QQ / 日记会话 / 未来微信/桌宠共用同一套）──
+  // 只在这里注册一次；工具内部只走 src/diary-store.js，模型拿不到路径参数。
+  try {
+    const diaryTools = createDiaryToolDefinitions({ log: pluginLog, getConfig: diaryConfig });
+    const toolsService = ctx.tools ?? (typeof ctx.get === 'function' ? ctx.get('tools') : null);
+    if (!toolsService?.register) {
+      pluginLog('日记工具未注册：tools 服务不可用');
+    } else {
+      for (const definition of diaryTools) {
+        try { disposers.push(toolsService.register(definition)); }
+        catch (error) { pluginLog(`日记工具注册失败（${definition.name}）：`, String(error?.message ?? error)); }
+      }
+      pluginLog(`日记工具已注册 ${diaryTools.length} 个`);
+    }
+  } catch (error) {
+    pluginLog('日记工具注册失败：', String(error?.message ?? error));
+  }
   function route(kind, pathname, handler) {
     disposers.push(ctx.webServer.register({
       kind,
@@ -937,6 +1036,13 @@ export function apply(ctx) {
       } catch {}
       try { writeAlignmentBriefs(); } catch (error) { result.warnings.push(`对齐简报重建失败：${error?.message ?? error}`); }
       try { scheduler?.invalidate?.(); } catch {}
+      // 日记开关/回顾时间改完立刻生效：关掉就停调度，重新打开就起；时间由 tick 重读。
+      try {
+        if (readUnified().config.diary?.enabled === false) stopDiarySchedulerNow('config-disabled');
+        else if (!diaryScheduler) startDiarySchedulerNow();
+      } catch (error) {
+        result.warnings.push(`日记调度更新失败：${error?.message ?? error}`);
+      }
       startSyncTimer();
       // 改了记忆卡容量/注入上限后立刻重渲染，避免「设置保存了但提示词还是旧的」。
       try {
@@ -3625,6 +3731,35 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function handleBili(req, res, url) {
     const pathname = url.pathname;
+    if (req.method === 'POST' && pathname === `${API_PREFIX}/bili/wake-now`) {
+      if (manualBiliWake) {
+        json(res, 409, { ok: false, code: 'BILI_WAKE_BUSY', error: '正在提交上一轮手动唤醒', hint: '到 B站生物钟工作区查看进度' });
+        return;
+      }
+      if (!readFishAccount().configured) {
+        json(res, 409, { ok: false, code: 'BILI_WAKE_LOGIN', error: '还没有配置 B 站账号', hint: '先在「B站账号」扫码登录，再点「立即唤醒一次」' });
+        return;
+      }
+      manualBiliWake = true;
+      let oneOff;
+      try {
+        const sessionId = schedulerStatus.running ? schedulerStatus.sessionId : biliSessionId();
+        const runner = scheduler ?? (oneOff = createBiliScheduler(sessionId, false));
+        await runner.wakeNow();
+        json(res, 200, { ok: true, sessionId });
+      } catch (error) {
+        if (error?.code === 'token-budget-blocked') {
+          json(res, 409, { ok: false, code: 'BILI_WAKE_BUDGET', error: 'B 站今日 Token 额度已用完', hint: '在「Token 额度」调整 B 站额度，或等明天再试' });
+        } else {
+          pluginLog('[bili-whale] 手动唤醒失败：', String(error?.message ?? error).slice(0, 160));
+          json(res, 503, { ok: false, code: 'BILI_WAKE_FAILED', error: 'DSH 未能接收 B 站唤醒', hint: '检查 DSH 是否可正常发起对话，再重试' });
+        }
+      } finally {
+        oneOff?.stop();
+        manualBiliWake = false;
+      }
+      return;
+    }
     if (req.method === 'GET' && pathname.endsWith('/fish-guard')) {
       const dir = activePlatformStateDir(BILI_DIR);
       const stateFile = path.join(dir, 'fish-guard.json');
@@ -4204,12 +4339,55 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  // ── 日记：状态 / 手动立即整理 ───────────────────────────────────────────
+  async function handleDiary(req, res) {
+    const current = readCurrentCharacter();
+    const config = diaryConfig();
+    if (req.method === 'GET') {
+      if (!current) {
+        json(res, 200, { ok: true, running: false, reason: 'no-character', config, scheduler: diaryStatus, status: null, entries: [] });
+        return;
+      }
+      const paths = characterPaths(current.id);
+      let status = null;
+      let entries = [];
+      try { status = readDiaryStatus(paths.diaryDir); } catch (error) { pluginLog('读取日记状态失败：', String(error?.message ?? error)); }
+      try { entries = listDiaryEntries(paths.diaryDir, { limit: 12 }).entries || []; } catch (error) { pluginLog('读取日记目录失败：', String(error?.message ?? error)); }
+      json(res, 200, {
+        ok: true,
+        running: Boolean(diaryScheduler),
+        scheduler: diaryScheduler?.status?.() ?? diaryStatus,
+        config,
+        status,
+        entries,
+        paths: { dir: maskPath(paths.diaryDir) },
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      if (String(body?.action ?? '') !== 'review') {
+        json(res, 400, { ok: false, error: '未知 action（只支持 review）' });
+        return;
+      }
+      if (!diaryScheduler) {
+        json(res, 409, { ok: false, error: '日记回顾没有启动（检查 diary.enabled 与当前角色）' });
+        return;
+      }
+      const result = await diaryScheduler.reviewNow();
+      json(res, result.ok ? 200 : 500, result);
+      return;
+    }
+    json(res, 405, { ok: false, error: '只支持 GET/POST' });
+  }
+
   // ── 路由：API 前缀 ──────────────────────────────────────────────────────
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
+    if (pathname === `${API_PREFIX}/diary`) { await handleDiary(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }
     if (pathname === `${API_PREFIX}/limit-mute`) { await handleLimitMute(req, res); return; }
@@ -4400,6 +4578,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
     try { scheduler?.stop?.(); } catch {}
+    try { diaryScheduler?.stop?.(); } catch {}
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);

@@ -90,14 +90,6 @@ async function relation(toMid) {
 }
 
 async function send(toMid, text) {
-  // 出站身份闸（2026-10-23 用户要求：只准自己互认，不许泄露主人和别人的信息）
-  // 公开面一旦把主人/别人的 QQ 号或 B站 mid 贴出去就收不回来；提示词只是概率约束，这里是硬拦。
-  try {
-    assertOutboundIdentitySafe(text, { surface: 'B站 私信' });
-  } catch (error) {
-    console.error(`\n✗ ${error.message}`);
-    process.exit(9);
-  }
   const body = new URLSearchParams()
   body.set('msg[sender_uid]', String((await me()).mid))
   body.set('msg[receiver_id]', String(toMid))
@@ -131,6 +123,12 @@ if (STATUS) {
 }
 
 if (!MSG) { console.error('用法: node dm.mjs --msg "…" [--share --target BV…] --dry|--go   |   --to <mid> --msg "…" --dry|--go   |   --status'); process.exit(2) }
+try {
+  assertOutboundIdentitySafe(MSG, { surface: 'B站 私信', privateRecipientMid: !TO || TO === OWNER ? OWNER : undefined })
+} catch (error) {
+  console.error(`✗ ${error.message}`)
+  process.exit(9)
+}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 陌生人回复通道（--to <mid>）—— 2026-10-20 加

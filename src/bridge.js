@@ -27,6 +27,7 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { downloadOneBotImageStream, isProbablySafeImageFileRef, uploadOneBotStickerImage } from './onebot-image-stream.js';
 import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
@@ -50,8 +51,8 @@ import {
   normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
 import { resolvePriceTable, isPeakAt } from './model-prices.js';
-import { catalogChoices, findCatalogModel, pickCatalogFallback } from './model-options.js';
-import { createOutbox } from './outbox.js';
+import { catalogChoices, catalogImageInput, findCatalogModel, pickCatalogFallback } from './model-options.js';
+import { createOutbox, historyAllowsReplay, neverDispatched } from './outbox.js';
 import {
   DEFAULT_QQ_FISH_GUARD, appendFishGuardTrigger, assessFishDensity, fishGuardPromptLine, fishGuardReasonText,
   isFishName, normalizeQqFishGuard,
@@ -85,6 +86,9 @@ import { createBiliMemory } from './bili-memory.js';
 import {
   appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
 } from './memory-card.js';
+// 私人日记出站闸：只拦“未授权的日记原文”，不改变普通聊天的发送路径。
+// 日记文件读不到/损坏时 fail-open，保证聊天不受影响。
+import { checkPrivateLeak, isLeakGuardEnabled, listEntries } from './diary-store.js';
 import {
   effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
   readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
@@ -2058,7 +2062,7 @@ async function main() {
       stickerSyncedAt = Date.now();
       saveStickerStoreSafe();
       log(`[sticker] 已同步 QQ 收藏表情 ${fetched.length} 个（本地库 ${stickerEntries.length} 条）`);
-      return { entries: stickerEntries, syncedAt: stickerSyncedAt, fromCache: false };
+      return { entries: stickerEntries, fetched, syncedAt: stickerSyncedAt, fromCache: false };
     } catch (error) {
       log(`[sticker] 同步收藏表情失败: ${error?.message ?? error}`);
       return null;
@@ -2785,56 +2789,82 @@ async function main() {
   async function collectStickerV2(key, messageRef, remark, meta = {}) {
     const assertSendAllowed = captureSendGuard(key);
     const st = getSocialV2State(key);
-    const found = (st.recentMessages || []).find((m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef))));
+    const messages = st.recentMessages || [];
+    const found = messages.find((m) => m?.messageId && String(m.messageId) === String(messageRef))
+      ?? messages.find((m) => m && String(m.seq) === String(messageRef));
     if (!found) throw new Error('找不到这条消息，请确认 messageId/seq 有效且属于当前会话');
     if (found.isSelf) throw new Error('不能收藏自己发的表情，只能收藏群友发的');
     const mediaList = Array.isArray(found.media) ? found.media : [];
     if (!mediaList.length) throw new Error('这条消息没有可收藏的图片/表情');
     const media = mediaList[0];
-    let file = '';
-    if (media?.kind === 'image') {
-      // 优先取图片字节转 base64，避免 SnowLuma 直接下载聊天图片 URL 失败（带签名/防盗链）。
-      // 严禁把消息里的原始 media.url / media.file 直接交给 OneBot 去下载：那会绕过 SSRF/本地文件防护。
-      const img = await fetchOneBotImage(media);
-      if (img?.buffer) {
-        file = 'base64://' + img.buffer.toString('base64');
-      } else {
-        throw new Error('无法安全获取该图片字节，已拒绝收藏');
+    // 只使用经过桥接校验的字节，避免让网关直接解析聊天消息里的 URL 或文件路径。
+    const image = media?.kind === 'face' ? await fetchFaceMedia(media) : await fetchOneBotImage(media);
+    if (!image?.buffer) throw new Error('无法安全获取该图片，请重新发送后再收藏');
+    const version = usesExternalOneBot(cfg)
+      ? await bot.request('get_version_info', {}, { timeoutMs: 3000 }).catch(() => null)
+      : null;
+    const napcat = /^NapCat(?:[.\s]|$)/i.test(String(version?.data?.app_name ?? ''));
+    const digest = napcat ? crypto.createHash('md5').update(image.buffer).digest('hex').toUpperCase() : '';
+    const readFavorite = async () => {
+      const synced = await syncStickerLibrary(true);
+      const match = synced?.fetched?.find((item) => String(item?.md5 ?? '').trim().toUpperCase() === digest);
+      return match ? findSticker(synced.entries, match.emoji_id || match.resId || match.id) : null;
+    };
+    let entry = napcat ? await readFavorite() : null;
+    const alreadyCollected = Boolean(entry);
+    let emojiId = entry?.id || '';
+    if (!entry) {
+      assertSendAllowed();
+      const file = napcat
+        ? await uploadOneBotStickerImage(bot.request.bind(bot), image)
+        : 'base64://' + image.buffer.toString('base64');
+      assertSendAllowed();
+      // 网关错误可能把完整文件参数写进 wording，不能将其带入日志或模型上下文。
+      const addRes = await bot.request('add_custom_face', { file }).catch(() => null);
+      if (addRes?.status !== 'ok' || addRes.retcode !== 0) {
+        throw new Error('QQ 网关拒绝收藏表情');
       }
-    } else if (media?.kind === 'face') {
-      const face = await fetchFaceMedia(media);
-      if (face?.buffer) file = 'base64://' + face.buffer.toString('base64');
+      if (napcat) {
+        // NapCat 返回 result/isExist，不返回 emoji_id；以 QQ 收藏列表的图片摘要确认。
+        entry = await readFavorite();
+        if (!entry) {
+          throw Object.assign(new Error('网关已受理，但还未能在 QQ 收藏列表里核对到这张图'), {
+            code: 'STICKER_COLLECT_UNVERIFIED',
+            hint: '稍后查看收藏表情列表，确认没有这张图后再尝试',
+          });
+        }
+        emojiId = entry.id;
+      } else {
+        emojiId = String(addRes.data?.emoji_id || '');
+        if (!emojiId) throw new Error('QQ 网关未返回收藏表情编号');
+      }
     }
-    if (!file) throw new Error('无法获取该表情的图片源');
-    assertSendAllowed();
-    const addRes = await bot.request('add_custom_face', { file });
-    if (!addRes || addRes.status !== 'ok' || addRes.retcode !== 0) {
-      throw new Error(`add_custom_face 失败: ${addRes?.wording || addRes?.retcode || 'unknown'}`);
-    }
-    const emojiId = String(addRes.data?.emoji_id || '');
-    if (!emojiId) throw new Error('add_custom_face 未返回 emoji_id');
     const maxRemarkChars = Math.max(1, Number(cfg.socialV2?.sticker?.collect?.maxRemarkChars) || 20);
     const cleanRemark = String(remark ?? '').trim().slice(0, maxRemarkChars);
-    if (cleanRemark) {
-      assertSendAllowed();
-      const modRes = await bot.request('modify_custom_face', { emoji_id: emojiId, desc: cleanRemark });
-      if (!modRes || modRes.status !== 'ok' || modRes.retcode !== 0) {
-        log(`[sticker] 收藏成功但备注失败 ${emojiId}: ${modRes?.wording || modRes?.retcode || 'unknown'}`);
+    let remarkStored = '';
+    if (!napcat && cleanRemark) {
+      try {
+        assertSendAllowed();
+        const modRes = await bot.request('modify_custom_face', { emoji_id: emojiId, desc: cleanRemark });
+        if (modRes?.status === 'ok' && modRes.retcode === 0) remarkStored = 'qq';
+      } catch {
+        // 备注失败不改变已经完成的收藏。
       }
     }
-    // 强制刷新本地库，让刚收藏的表情立即可用（并在合并时拿到编号 + 兜底情绪/内容）。
-    const synced = await syncStickerLibrary(true);
-    const entry = findSticker(synced?.entries ?? stickerEntries, emojiId);
-    // 收藏时模型看过图，顺手给的 emotion/content 比事后自动推断准，直接落到本地库。
-    let tagged = entry;
-    if (entry && (meta.emotion || meta.content || (Array.isArray(meta.keywords) && meta.keywords.length))) {
-      tagged = applyStickerNoteV2(entry.id, {
-        emotion: meta.emotion,
-        content: meta.content,
-        keywords: meta.keywords
-      }) || entry;
+    if (!napcat) {
+      const synced = await syncStickerLibrary(true);
+      entry = findSticker(synced?.entries ?? stickerEntries, emojiId);
     }
-    return { emojiId, entry: tagged || null, remark: cleanRemark };
+    // 收藏时模型看过图，顺手给的 emotion/content 比事后自动推断准，直接落到本地库。
+    const localRemark = cleanRemark && !remarkStored;
+    if (entry && (localRemark || meta.emotion || meta.content || (Array.isArray(meta.keywords) && meta.keywords.length))) {
+      const tagged = applyStickerNoteV2(entry.id, { ...meta, ...(localRemark ? { note: cleanRemark } : {}) });
+      if (tagged) {
+        entry = tagged;
+        if (localRemark) remarkStored = 'local';
+      }
+    }
+    return { emojiId, entry: entry || null, alreadyCollected, remark: remarkStored ? cleanRemark : '', remarkStored };
   }
 
   function saveSlangStore() {
@@ -4036,6 +4066,12 @@ async function main() {
     downTimer: null,      // close 后的观察窗口（重连很快时不该报 L2）
     downReason: '',
   };
+  let oneBotSessionProbe = { account: '', seenProfile: false, failures: 0, checking: false, degraded: false };
+  const oneBotSessionFailure = {
+    code: 'ONEBOT_QQ_SESSION_UNAVAILABLE',
+    error: 'OneBot 仍连着，但 QQ 资料与好友列表查询异常',
+    hint: '打开 NapCat（或当前 OneBot 网关）检查 QQ 登录状态，需要时重新登录。',
+  };
 
   /** 记录一次"上游还活着"的证据。任何来自 SnowLuma 的事件包都算（含心跳）。 */
   function noteUpstreamPacket(kind) {
@@ -4342,12 +4378,13 @@ async function main() {
     const wasOnline = snowlumaHealth.accountOnline === true;
     snowlumaHealth.accountOnline = online;
     if (online && !wasOnline) {
+      friendListCache = { at: 0, ids: null };
       if (historyCatchUpConfig().enabled && currentMode === 'reserved2') {
         log(`[history] QQ 账号会话已上线（${source}），检查离线期间的历史消息`);
         void runHistoryCatchUp(`online:${source}`).catch((error) => log(`[history] 上线补历史异常：${error?.message ?? error}`));
       }
-      void outbox.flush(`account-online:${source}`).catch((error) => log(`[outbox] 上线补发异常：${error?.message ?? error}`));
     }
+    if (online) void flushReplyOutbox(`account-online:${source}`);
   }
 
   /** 供 /api/status 与控制台使用的只读快照。 */
@@ -4358,8 +4395,11 @@ async function main() {
     // 只有 SnowLuma **明确自报** good=false 才算"确认坏了"（接收链路）。
     // 「静默」只能说明连它的进程/WS 都没动静了 —— 那是**另一个**故障面，措辞必须分开。
     const confirmed = snowlumaHealth.good === false;
+    const sessionFailure = snowlumaHealth.connected && oneBotSessionProbe.degraded ? oneBotSessionFailure : null;
     let hint = null;
-    if (confirmed) {
+    if (sessionFailure) {
+      hint = `${sessionFailure.error}。${sessionFailure.hint}`;
+    } else if (confirmed) {
       hint = 'SnowLuma 自报接收链路异常（good=false）：它的 [Hook] 收不到 QQ 客户端的数据，'
         + '消息进不来。这不是桥接的问题。请查看 SnowLuma 的 logs/snowluma-*.log 里的 [Hook] 行'
         + '（receive path stale / process enumeration timed out），并考虑升级 SnowLuma。';
@@ -4381,7 +4421,8 @@ async function main() {
       lastPacketAgoMs: agoMs,
       lastPacketKind: snowlumaHealth.lastPacketKind || null,
       silent,
-      degraded: confirmed || silent,
+      degraded: Boolean(sessionFailure) || confirmed || silent,
+      sessionFailure,
       hint,
     };
   }
@@ -4392,9 +4433,13 @@ async function main() {
     if (snap.degraded && !snowlumaHealth.degraded) {
       snowlumaHealth.degraded = true;
       snowlumaHealth.reason = snap.hint ?? '';
-      log(`⚠️ SnowLuma 上游不健康：${snap.hint}`);
-      log('   这不是桥接的问题：桥接没有任何原生/注入面，也不控制 SnowLuma 或 QQ。');
-      log('   排查：SnowLuma 的 logs/snowluma-*.log 里搜 [Hook]（看是否有 "receive path stale" 或 "process enumeration timed out"）。');
+      if (snap.sessionFailure) {
+        log(`⚠️ ${snap.hint}`);
+      } else {
+        log(`⚠️ SnowLuma 上游不健康：${snap.hint}`);
+        log('   这不是桥接的问题：桥接没有任何原生/注入面，也不控制 SnowLuma 或 QQ。');
+        log('   排查：SnowLuma 的 logs/snowluma-*.log 里搜 [Hook]（看是否有 "receive path stale" 或 "process enumeration timed out"）。');
+      }
     } else if (!snap.degraded && snowlumaHealth.degraded) {
       snowlumaHealth.degraded = false;
       snowlumaHealth.reason = '';
@@ -4427,6 +4472,7 @@ async function main() {
       } else {
         noteReceiveHealth(body.data?.good, 'get_status');
         if (typeof body.data?.online === 'boolean') setAccountOnline(body.data.online, 'get_status');
+        if (body.data?.online === true) void checkOneBotSession();
       }
     } catch (error) {
       snowlumaHealth.goodError = error?.message ?? String(error);
@@ -5875,7 +5921,11 @@ async function main() {
             // manual=true：试发不占用「今天已发」名额，也不改下一次准点排程。
             const result = await fireMorningGreeting({ manual: true });
             if (!result.ok) {
-              sendJson({ ok: false, error: `试发失败：${result.reason ?? '未知原因'}` }, 500);
+              if (result.code === oneBotSessionFailure.code) {
+                sendJson({ ok: false, ...oneBotSessionFailure }, 503);
+              } else {
+                sendJson({ ok: false, error: `试发失败：${result.reason ?? '未知原因'}` }, 500);
+              }
               return;
             }
             sendJson({ ok: true, greeting: cfg.greetings, message: `已投递早安问候 → ${cfg.greetings.morning.uin}` });
@@ -6396,6 +6446,40 @@ async function main() {
           try { atomicWriteJson(SOCIAL_V2_FILE, { conversations: {} }); } catch (error) { log('重置二代状态：写空状态文件失败:', error?.message ?? error); }
           log('控制台：二代 AI 状态已重置（会话、定时器、唤醒配置已清空，工具日志保留）');
           sendJson({ ok: true });
+          return;
+        }
+        // 日记回顾的「当天完整聊天」：用网关历史接口补足 recentMessages 只有最近 100 条的问题。
+        // 只返回已配置/已允许的会话，避免变成任意 QQ 号的历史读取接口；控制台令牌鉴权。
+        if (req.method === 'POST' && url.pathname === '/api/diary/history') {
+          try {
+            const body = await readBody();
+            const day = /^\d{4}-\d{2}-\d{2}$/.test(String(body?.day ?? ''))
+              ? String(body.day)
+              : new Date().toLocaleDateString('sv-SE');
+            const count = Math.max(50, Math.min(5000, Number(body?.count) || 2000));
+            const requested = Array.isArray(body?.keys) ? body.keys.map(String) : null;
+            const keys = [...new Set((requested ?? [...socialV2.conversations.keys()])
+              .filter((key) => /^(group|private):\d+$/.test(key) && isSessionAllowedInCurrentMode(key)))];
+            const conversations = {};
+            for (const key of keys) {
+              const match = /^(group|private):(\d+)$/.exec(key);
+              if (!match) continue;
+              const raw = await fetchOneBotHistory(match[1], Number(match[2]), count);
+              if (!raw) continue;
+              const list = [];
+              for (const item of raw) {
+                const candidate = await historyCandidateFromRaw(item);
+                if (!candidate) continue;
+                if ((cfg.deny?.users ?? []).map(String).includes(String(candidate.userId ?? ''))) continue;
+                if (new Date(candidate.time).toLocaleDateString('sv-SE') !== day) continue;
+                list.push({ time: candidate.time, sender: candidate.sender, isSelf: candidate.isSelf, text: candidate.text });
+              }
+              conversations[key] = list;
+            }
+            sendJson({ ok: true, day, count, conversations });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/state') {
@@ -7438,17 +7522,39 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getSelfImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_self_image' }, 403); return; }
-          const selfPath = path.join(ROOT, 'assets', 'deepseek娘.png');
+          const external = usesExternalOneBot(cfg);
           try {
             if (imageInputSupport === false) {
-              sendJson({ ok: true, key, image: null, text: '当前模型不支持图片输入，无法查看 Q 版形象；可以用角色卡/设定里的文字描述自己。' });
+              sendJson({ ok: true, key, image: null, text: '当前模型不支持图片输入，无法查看形象图片。' });
               return;
             }
+            if (external) {
+              const profileId = selfUserId;
+              if (!/^\d{5,12}$/.test(profileId)) {
+                sendJson({ ok: false, code: 'QQ_SELF_NOT_READY', error: '尚未获取当前 QQ 账号', hint: '确认 NapCat 已登录后重试' }, 503);
+                return;
+              }
+              const avatarUrl = `https://q1.qlogo.cn/g?b=qq&nk=${profileId}&s=640`;
+              const fetched = await safeFetchBuffer(avatarUrl, MAX_MEDIA_BYTES);
+              const avatar = acceptImageBuffer(fetched.buffer, 'QQ 头像');
+              if (!avatar || selfUserId !== profileId) {
+                sendJson({ ok: false, code: 'QQ_AVATAR_UNAVAILABLE', error: '未能取得当前账号的 QQ 头像', hint: '请稍后重试，或在 QQ 中发送当前头像' }, 502);
+                return;
+              }
+              sendJson({ ok: true, key, source: 'qq-avatar', image: { mimeType: avatar.mimeType, data: avatar.buffer.toString('base64') } });
+              return;
+            }
+            const selfPath = path.join(ROOT, 'assets', 'deepseek娘.png');
             if (!fs.existsSync(selfPath)) { sendJson({ ok: false, error: '未找到 AI 形象图片 assets/deepseek娘.png' }, 404); return; }
             const buf = fs.readFileSync(selfPath);
             const mimeType = mimeFromBuffer(buf) || 'image/png';
             sendJson({ ok: true, key, image: { mimeType, data: buf.toString('base64') } });
           } catch (error) {
+            if (external) {
+              log(`QQ 头像读取失败：${error?.message ?? error}`);
+              sendJson({ ok: false, code: 'QQ_AVATAR_UNAVAILABLE', error: 'QQ 头像服务暂时无法读取', hint: '请稍后重试，或在 QQ 中发送当前头像' }, 502);
+              return;
+            }
             sendJson({ ok: false, error: `读取 AI 形象图片失败：${error?.message ?? error}` }, 500);
           }
           return;
@@ -8112,16 +8218,19 @@ async function main() {
               keywords: body.keywords
             });
             saveSocialV2State();
-            log(`[sticker] AI 收藏表情 ${key}: ${result.emojiId}${result.remark ? '（备注：' + result.remark + '）' : ''}`);
-            appendActivity(`${key} [sticker] AI 收藏表情：${result.remark || result.emojiId}`);
-            sendJson({ ok: true, key, sticker: result.entry, emojiId: result.emojiId, remark: result.remark });
+            log(`[sticker] ${result.alreadyCollected ? '表情已在收藏' : 'AI 收藏表情'} ${key}: ${result.emojiId}`);
+            if (!result.alreadyCollected) appendActivity(`${key} [sticker] AI 收藏表情：${result.remark || result.emojiId}`);
+            sendJson({ ok: true, key, sticker: result.entry, emojiId: result.emojiId, remark: result.remark,
+              alreadyCollected: result.alreadyCollected, remarkStored: result.remarkStored });
           } catch (error) {
             const idx = st.stickerCollectTimes.indexOf(now);
             if (idx >= 0) st.stickerCollectTimes.splice(idx, 1);
             if (st.stickerCollectTimes.length > 500) st.stickerCollectTimes = st.stickerCollectTimes.slice(-500);
             saveSocialV2State();
             log(`[sticker] AI 收藏表情失败 ${key}: ${error?.message ?? error}`);
-            sendJson({ ok: false, error: `收藏表情失败：${error?.message ?? error}` }, 500);
+            sendJson({ ok: false, code: error?.code || 'STICKER_COLLECT_FAILED',
+              error: `收藏表情失败：${error?.message ?? error}`,
+              hint: error?.hint || '确认 QQ 网关在线，或重新发送这张表情再试' }, 502);
           }
           return;
         }
@@ -9221,6 +9330,16 @@ async function main() {
           }
           try {
             const images = await fetchMediaData(media);
+            if (!images.some((image) => image.data && image.mimeType)) {
+              const disabled = imageInputSupport === false;
+              sendJson({
+                ok: false,
+                code: disabled ? 'IMAGE_INPUT_DISABLED' : 'IMAGE_FETCH_FAILED',
+                error: disabled ? '当前模型的图片输入已禁用，未向模型提供原图' : 'QQ 原图获取失败，未向模型提供原图',
+                hint: disabled ? '在 SurfCore 设置中选择支持图片的模型，并检查「模型图片输入」设置' : '确认 NapCat 在线后重新发送原图；旧图片链接可能已失效',
+              }, disabled ? 409 : 502);
+              return;
+            }
             sendJson({ ok: true, messageId, media, images });
           } catch (error) {
             log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
@@ -9655,6 +9774,7 @@ async function main() {
 
   function sendToQQ(key, msg) {
     const assertSendAllowed = captureSendGuard(key);
+    const retryContext = captureReplyContext(key);
     const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
     if (kind === 'group') recordFishWindow(key, '我', selfUserId, { isSelf: true });
@@ -9673,9 +9793,7 @@ async function main() {
           lastSendFailed.set(key, true);
           noteSendFailure(key, error);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
-          if (isConnectionSendError(error) && outbox.push(kind, id, part)) {
-            log(`[outbox] 暂存待补发 1 条（${key}），累计 ${outbox.stats().count} 条`);
-          }
+          queueFailedReply(kind, id, part, error, retryContext);
         })
         .then(() => sleep(cfg.sendDelayMs));
     }
@@ -9883,12 +10001,24 @@ async function main() {
   }
 
 
-  function isConnectionSendError(error) {
-    const message = String(error?.message ?? error ?? '');
-    return /ECONNREFUSED|ECONNRESET|EPIPE|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|fetch failed|socket hang up|network|WebSocket closed|closed before opening|timed? ?out|\b5\d\d\b|1006/i.test(message);
+  /**
+   * 私人日记出站检查（只对 agent 编写的文本生效；系统提示也走同一条链路，但几乎不可能
+   * 命中 24 字日记原文）。命中且未授权 → 抛错让工具把原因带回给模型；自身故障一律放行。
+   */
+  function diaryLeakBlock(text) {
+    try {
+      const value = String(text ?? '');
+      if (value.length < 24) return null;
+      if (!isLeakGuardEnabled()) return null;
+      const current = readCurrentCharacter();
+      if (!current) return null;
+      return checkPrivateLeak(characterPaths(current.id).diaryDir, value);
+    } catch {
+      return null;
+    }
   }
 
-  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null, { fromOutbox = false } = {}) {
+  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null, { retryContext = null } = {}) {
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
       const rid = String(replyToMessageId).trim();
@@ -9906,6 +10036,11 @@ async function main() {
     if (hasKnownToken) {
       log(`发送内容包含会话令牌，已阻止发送 (${kind}:${id})`);
       throw new Error('发送内容包含会话令牌，已阻止发送');
+    }
+    const diaryLeak = diaryLeakBlock(rawMessage);
+    if (diaryLeak?.blocked) {
+      log(`发送内容命中未授权的私人日记原文，已阻止发送 (${kind}:${id})`);
+      throw new Error(diaryLeak.message);
     }
     segments.push({ type: 'text', data: { text: escapeCqText(rawMessage) } });
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
@@ -9925,11 +10060,7 @@ async function main() {
       });
     } catch (error) {
       noteSendFailure(sendKey, error);
-      if (!fromOutbox && isConnectionSendError(error)) {
-        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
-          log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
-        }
-      }
+      queueFailedReply(kind, id, rawMessage, error, retryContext, { replyToMessageId, atUserId });
       throw error;
     }
     const body = await res.json().catch(() => ({}));
@@ -9937,11 +10068,6 @@ async function main() {
       const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
       const error = new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
       noteSendFailure(sendKey, error);
-      if (!fromOutbox && isConnectionSendError(error)) {
-        if (outbox.push(kind, id, rawMessage, { replyToMessageId, atUserId })) {
-          log(`[outbox] 暂存待补发 1 条（${kind}:${id}），累计 ${outbox.stats().count} 条`);
-        }
-      }
       throw error;
     }
     noteSendSuccess(sendKey);
@@ -9949,20 +10075,101 @@ async function main() {
     return body.data;
   }
 
+  const REPLY_RETRY_MS = 60_000;
+  let replyOutboxAccount = '';
+  let replyOutboxReady = false;
+  const replayedMessages = new Map(); // 同一批回复中本次补发成功的 QQ 消息 ID
+
+  function replyConversationSnapshot(key) {
+    const st = socialV2.conversations.get(key);
+    const knownIds = (st?.recentMessages ?? []).slice(-8)
+      .flatMap((message) => message?.messageId ? [String(message.messageId)] : []);
+    return {
+      knownIds,
+      sessionId: state.sessions[key] || '',
+      policy: sessionPolicy(key),
+      unreadSeq: st?.lastUnreadSeq || 0,
+      lastReplyAt: st?.lastAiReplyAt || 0,
+      closureAt: st?.closure?.at || 0,
+    };
+  }
+
+  function captureReplyContext(key) {
+    return {
+      createdAt: Date.now(),
+      account: replyOutboxAccount,
+      batch: crypto.randomUUID(),
+      snapshot: replyConversationSnapshot(key),
+    };
+  }
+
+  function queueFailedReply(kind, id, text, error, context, options = {}) {
+    if (!context?.account || !neverDispatched(error)) return;
+    if (outbox.push(kind, id, text, { ...options, context, createdAt: context.createdAt })) {
+      log(`[outbox] 暂存待补发 1 条（${kind}:${id}），最多保留 60 秒`);
+    }
+  }
+
+  function replyContextMatches(entry) {
+    const key = `${entry.kind}:${entry.id}`;
+    const context = entry.context;
+    const age = Date.now() - Number(entry.at);
+    return replyOutboxReady && snowlumaHealth.connected && snowlumaHealth.accountOnline === true
+      && context?.account === replyOutboxAccount && context?.snapshot && context.batch
+      && Number.isFinite(age) && age >= 0 && age <= REPLY_RETRY_MS
+      && isSessionAllowedInCurrentMode(key) && !shouldBlockSilentReply(key)
+      && JSON.stringify(context.snapshot) === JSON.stringify(replyConversationSnapshot(key));
+  }
+
   const outbox = createOutbox({
     file: path.join(STATE_DIR, 'outbox.json'),
-    isConnectionError: isConnectionSendError,
-    send: async (entry) => {
-      await onebotSend(entry.kind, entry.id, entry.text, entry.replyToMessageId, entry.atUserId, { fromOutbox: true });
+    ttlMs: REPLY_RETRY_MS,
+    isConnectionError: neverDispatched,
+    send(entry, isPending) {
+      const job = sendChain.then(async () => {
+        if (!isPending() || !replyContextMatches(entry)) return false;
+        const { batch, snapshot } = entry.context;
+        const knownIds = new Set([...snapshot.knownIds, ...(replayedMessages.get(batch) ?? [])]);
+        const messages = await fetchOneBotHistory(entry.kind, entry.id, 8, 3000);
+        if (!historyAllowsReplay(messages, entry.at, knownIds)
+            || !isPending() || !replyContextMatches(entry)) return false;
+        const result = await onebotSend(entry.kind, entry.id, entry.text, entry.replyToMessageId, entry.atUserId);
+        if (result?.message_id != null) {
+          const ids = replayedMessages.get(batch) ?? [];
+          ids.push(String(result.message_id));
+          replayedMessages.set(batch, ids);
+        }
+        return true;
+      });
+      sendChain = job.catch(() => {});
+      return job;
     },
     log,
   });
-  void outbox.flush('startup').catch((error) => log(`[outbox] 启动补发异常：${error?.message ?? error}`));
+
+  async function flushReplyOutbox(reason) {
+    const status = outbox.stats();
+    if (!replyOutboxReady || !snowlumaHealth.connected || snowlumaHealth.accountOnline !== true
+        || !status.count || status.flushing) return;
+    try {
+      return await outbox.flush(reason);
+    } catch (error) {
+      log(`[outbox] 补发异常：${error?.message ?? error}`);
+    } finally {
+      replayedMessages.clear();
+    }
+  }
 
   // 直接发任意 OneBot 消息段（卡片/分享卡用）。文本发送仍走 sendToQQ，
   // 这样限速、审计和会话守卫不被绕过。
   async function onebotSendSegments(kind, id, segments) {
     if (!Array.isArray(segments) || !segments.length) throw new Error('消息段为空');
+    const textParts = segments
+      .filter((segment) => segment?.type === 'text' && segment?.data?.text)
+      .map((segment) => String(segment.data.text))
+      .join('');
+    const leak = textParts ? diaryLeakBlock(textParts) : null;
+    if (leak?.blocked) throw new Error(leak.message);
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -10130,19 +10337,6 @@ async function main() {
     }
   }
 
-  // OneBot 图片 file 字段只应接受简单缓存文件名；拒绝路径、URL、盘符、协议前缀等，
-  // 防止把任意本地路径/内网 URL 交给网关 get_image 造成 SSRF/任意文件读取。
-  function isProbablySafeImageFileRef(file) {
-    const s = String(file ?? '').trim();
-    if (!s || s.length > 512) return false;
-    if (/[\u0000-\u001f\u007f]/.test(s)) return false;
-    if (/[\\/]/.test(s)) return false;
-    if (/^[a-zA-Z]:/.test(s)) return false;
-    if (/^(file|https?|base64|data):/i.test(s)) return false;
-    if (s.includes('..')) return false;
-    return /^[\w.+=@-]+$/.test(s);
-  }
-
   // QQ 表情包 CDN 的地址可以只靠 emoji_id 推出来（实测形态：
   // https://gxh.vip.qq.com/club/item/parcel/item/<id 前两位>/<id>/raw300.gif）。
   // 市场表情不在网关缓存里（get_image 返回 image not found in cache），url 又可能缺失，
@@ -10231,7 +10425,10 @@ async function main() {
       if (!(media.kind === 'image' || media.kind === 'sticker')) return null;
       if (!media.file || !isProbablySafeImageFileRef(media.file)) return null;
       try {
-        const info = await bot.getImage({ file: String(media.file) });
+        const info = await bot.getImage({ file: String(media.file).trim() }).catch((error) => {
+          failures.push(`get_image: ${error?.message ?? error}`);
+          return null;
+        });
         const obj = info && typeof info === 'object' ? info : {};
         const base64 = base64FromMaybe(obj.data) || base64FromMaybe(obj.base64) || base64FromMaybe(obj.file);
         if (base64) {
@@ -10241,6 +10438,22 @@ async function main() {
             if (accepted) return accepted;
           } else {
             log(`get_image 返回的图片 base64 超限，已跳过（${Math.round(base64.length * 3 / 4 / 1024)}KB）`);
+          }
+        }
+        // 外接网关的缓存路径属于它自己的主机或容器。通过网关读同一个安全文件引用，
+        // 无需把容器目录挂到 Mac；不支持流式接口的 OneBot 仍可走原有 URL/本地路径。
+        if (usesExternalOneBot(cfg)) {
+          try {
+            const buffer = await downloadOneBotImageStream({
+              httpUrl: cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000',
+              accessToken: cfg.snowluma?.accessToken,
+              file: media.file,
+              maxBytes: MAX_MEDIA_BYTES,
+            });
+            const accepted = acceptImageBuffer(buffer, 'OneBot 图片流');
+            if (accepted) return accepted;
+          } catch (error) {
+            failures.push(`OneBot 图片流: ${error?.message ?? error}`);
           }
         }
         if (obj.url) {
@@ -10558,6 +10771,7 @@ async function main() {
 
   function sendMessagesV2(key, messages, delays, replyToMessageId, atUserId = null) {
     const assertSendAllowed = captureSendGuard(key);
+    const retryContext = captureReplyContext(key);
     const [kind, id] = key.split(':');
     const sent = [];
     const failed = [];
@@ -10568,7 +10782,7 @@ async function main() {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
-          await onebotSend(kind, id, msg, useReply, useAt);
+          await onebotSend(kind, id, msg, useReply, useAt, { retryContext });
           sent.push(msg);
         })
         .catch((error) => {
@@ -10655,23 +10869,11 @@ async function main() {
     if (mode === 'true') return true;
     const key = `${provider}/${model}`;
     if (imageInputCache.has(key)) return imageInputCache.get(key);
-    let support = null;
+    let catalog = null;
     try {
-      const catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session.modelCatalog');
-      const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
-      const entry = (group?.models ?? []).find((m) => m?.id === model);
-      const mods = entry?.inputModalities ?? entry?.modalities?.input ?? entry?.capabilities?.inputModalities;
-      if (Array.isArray(mods)) {
-        support = mods.some((m) => /image|vision|image_url/i.test(String(m?.id ?? m?.type ?? m)));
-      }
+      catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session.modelCatalog');
     } catch {}
-    // 目录里找不到的第三方模型（例如百炼）：无法证明支持 image，默认走文字兜底，
-    // 避免 ACP 直接拒绝整个工具结果。确认它支持图片时可在设置页强制 true。
-    if (support === null) {
-      const defaultProvider = String(cfg.dsh?.provider || 'deepseek-official');
-      const defaultModel = String(cfg.dsh?.model || 'deepseek-flash');
-      if (provider !== defaultProvider || model !== defaultModel) support = false;
-    }
+    const support = catalogImageInput(catalog, provider, model, cfg.dsh);
     imageInputCache.set(key, support);
     return support;
   }
@@ -12693,7 +12895,14 @@ async function main() {
 
     // 不是好友时 QQ 会直接拒收（result=16）；别每分钟重试，也别把原因只留在日志。
     if (!preview) {
-      const reach = await greetingFriendCheck(owner).catch(() => ({ checked: false, ok: true }));
+      const reach = await greetingFriendCheck(owner, { refresh: force }).catch(() => ({ checked: false, ok: true }));
+      if (reach.sessionFailure) {
+        if (!force) {
+          markPurposeSkip(purposeState, { now, reason: reach.sessionFailure.code, nextFireAt: now + SNOWLUMA_STATUS_POLL_MS });
+          savePurposeState();
+        }
+        return { ok: false, reason: reach.sessionFailure.code, ...reach.sessionFailure };
+      }
       if (reach.checked && !reach.ok) {
         markPurposeSkip(purposeState, { now, reason: 'not-friend', nextFireAt: now + 6 * 60 * 60 * 1000 });
         savePurposeState();
@@ -13013,13 +13222,22 @@ async function main() {
   // 2026-10-23 实测：问候目标 3362299430 根本不在好友列表 —— 提示词修好了、工具也调了，
   // 仍然发不出去，而且只在日志里留一行。所以发之前先查一次，并把原因推给管理员。
   let friendListCache = { at: 0, ids: null };
-  async function greetingFriendCheck(uin) {
+  async function greetingFriendCheck(uin, { refresh = false } = {}) {
     const now = Date.now();
-    if (!friendListCache.ids || now - friendListCache.at > 10 * 60 * 1000) {
+    const cache = friendListCache;
+    if (!refresh && oneBotSessionProbe.degraded) return { checked: false, ok: false, sessionFailure: oneBotSessionFailure };
+    if (refresh || !cache.ids?.size || now - cache.at > 10 * 60 * 1000) {
       try {
-        const data = await withTimeout(bot.raw('get_friend_list', {}), 6000, 'get_friend_list');
-        const list = Array.isArray(data) ? data : (data?.data ?? []);
-        friendListCache = { at: now, ids: new Set(list.map((x) => String(x?.user_id ?? ''))) };
+        const params = refresh && usesExternalOneBot(cfg) ? { no_cache: true } : {};
+        const data = await withTimeout(bot.raw('get_friend_list', params), 6000, 'get_friend_list');
+        const list = Array.isArray(data) ? data : data?.data;
+        if (!Array.isArray(list) || friendListCache !== cache) return { checked: false, ok: true };
+        if (list.length === 0 && oneBotSessionProbe.seenProfile && !(await refreshQqSelfProfile())) {
+          if (friendListCache !== cache) return { checked: false, ok: true };
+          return { checked: false, ok: false, sessionFailure: oneBotSessionFailure };
+        }
+        if (friendListCache !== cache) return { checked: false, ok: true };
+        friendListCache = { at: now, ids: new Set(list.map((x) => String(x?.user_id ?? x?.uin ?? '')).filter(Boolean)) };
       } catch (error) {
         // 查不到不拦（可能是老运行时没有这个接口），交给发送失败暴露。
         log(`[早安] 好友列表查询失败（按可发送继续）：${error?.message ?? error}`);
@@ -13073,7 +13291,8 @@ async function main() {
     }
     // 「不是好友」不会因为重试而变好：当天标记为已处理，避免每 10 分钟重试刷屏；
     // 同时给管理员私聊一条原因（一天最多一次），别让它只留在日志里。
-    const reach = await greetingFriendCheck(uin);
+    const reach = await greetingFriendCheck(uin, { refresh: manual });
+    if (reach.sessionFailure) return { ok: false, retry: true, reason: reach.sessionFailure.error, ...reach.sessionFailure };
     if (reach.checked && !reach.ok) {
       const reason = `目标 QQ ${uin} 不在机器人好友列表：QQ 会拒绝私聊（result=16「请先添加对方为好友」）`;
       log(`[早安] ${reason}`);
@@ -14887,6 +15106,63 @@ async function main() {
     }
   }
 
+  // NapCat 登录信息可停留在启动时的昵称，资料接口可获取账号的当前昵称。
+  let selfProfileRefresh = null;
+  function refreshQqSelfProfile() {
+    const userId = selfUserId;
+    if (!usesExternalOneBot(cfg) || !/^\d{5,12}$/.test(userId)) return;
+    if (selfProfileRefresh?.userId === userId) return selfProfileRefresh.promise;
+    const promise = (async () => {
+      try {
+        const result = await bot.request('get_stranger_info', { user_id: Number(userId), no_cache: true }, { timeoutMs: 3000 });
+        if (result?.retcode !== 0 || String(result.data?.user_id) !== userId || selfUserId !== userId) return false;
+        const nickname = String(result.data?.nickname ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+        if (nickname) {
+          selfDisplayName = nickname;
+          selfNickname = nickname.toLowerCase();
+          saveQqSelfIdentity();
+        }
+        return true;
+      } catch {
+        // 网关不支持资料查询或暂时离线时，继续使用最后一次有效资料。
+        return false;
+      }
+    })().finally(() => {
+      if (selfProfileRefresh?.promise === promise) selfProfileRefresh = null;
+    });
+    selfProfileRefresh = { userId, promise };
+    return promise;
+  }
+
+  // NapCat 的 HTTP 状态和心跳可能仍报在线。复用已有资料轮询，在连续失败后用好友列表交叉核对。
+  async function checkOneBotSession() {
+    if (!externalOneBot || !snowlumaHealth.connected || !selfUserId) return;
+    if (oneBotSessionProbe.account !== selfUserId) {
+      oneBotSessionProbe = { account: selfUserId, seenProfile: false, failures: 0, checking: false, degraded: false };
+    }
+    const probe = oneBotSessionProbe;
+    if (probe.checking) return;
+    probe.checking = true;
+    try {
+      const profileOk = await refreshQqSelfProfile();
+      if (probe !== oneBotSessionProbe || selfUserId !== probe.account) return;
+      if (profileOk) {
+        probe.seenProfile = true;
+        probe.failures = 0;
+        probe.degraded = false;
+      } else if (probe.seenProfile && ++probe.failures >= 2 && !probe.degraded) {
+        const response = await bot.request('get_friend_list', { no_cache: true }, { timeoutMs: 3000 });
+        if (probe !== oneBotSessionProbe || selfUserId !== probe.account) return;
+        probe.degraded = response?.retcode === 0 && Array.isArray(response.data) && response.data.length === 0;
+      }
+    } catch {
+      // 好友列表没有返回有效结果时保留现有状态，等待下一次可核对的数据。
+    } finally {
+      probe.checking = false;
+    }
+    reportSnowlumaHealth();
+  }
+
   // 唤醒提示词里的「随身身份证」。
   // 背景（2026-11-01）：以前这里只有一句「完整角色卡请调用 qq_get_prompt 查看」，
   // 实测模型几乎不调这个工具（state/tool-calls.jsonl：1830 次工具调用里只有 10 次，
@@ -14908,6 +15184,35 @@ async function main() {
     }
     const name = roleState.role || '（未命名角色）';
     return `【当前角色】${name}\n${card}\n（完整角色卡 / 场景语气 / 推荐值 / 可用工具：可调用 qq_get_prompt 查看）\n\n`;
+  }
+
+  /**
+   * QQ 会话里的「日记感知」：她写日记的是一个独立 DSH 会话，写完不会自动进入 QQ 上下文。
+   * 每次唤醒给她一行最近写过的日记（只标题/日期/可见性），让她知道自己写过；
+   * 要不要读、要不要给主人看，仍由她自己决定。
+   */
+  function diaryPromptLineV2(key = '') {
+    try {
+      // 只在主人私聊里提示：群聊/其他人私聊里连标题都不提，避免私人日记的标题被带出去。
+      const owner = String(cfg.ownerQQ || '').trim();
+      if (!owner || String(key) !== `private:${owner}`) return '';
+      const current = readCurrentCharacter();
+      if (!current) return '';
+      const { entries } = listEntries(characterPaths(current.id).diaryDir, { limit: 8 });
+      if (!entries.length) return '';
+      const today = new Date().toLocaleDateString('sv-SE');
+      const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('sv-SE');
+      const recent = entries.filter((entry) => entry.date === today || entry.date === yesterday).slice(0, 2);
+      if (!recent.length) return '';
+      const parts = recent.map((entry) => {
+        const when = entry.date === today ? '今天' : '昨天';
+        const visibility = entry.visibility === 'shareable' ? '可分享' : '私人';
+        return `${when}《${entry.title || '无题'}》（${entry.id}，${visibility}）`;
+      });
+      return `【日记】你${parts.join('；')}。想回顾就 diary_read；主人问起时由你决定给看、只给一段或拒绝。`;
+    } catch {
+      return '';
+    }
   }
 
   function buildWakePromptV2(key, reason, vectorBlock = '') {
@@ -15010,9 +15315,11 @@ async function main() {
     // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
     const memoryCardText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    const diaryText = diaryPromptLineV2(key);
+    const diaryLine = diaryText ? `${diaryText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + diaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15021,6 +15328,7 @@ async function main() {
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      diary: diaryLine.length,
       voice: voiceLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
@@ -15591,7 +15899,7 @@ async function main() {
     return targets;
   }
 
-  async function fetchOneBotHistory(kind, id, count) {
+  async function fetchOneBotHistory(kind, id, count, timeoutMs = 15000) {
     const action = kind === 'private' ? 'get_friend_msg_history' : 'get_group_msg_history';
     if (historyApiUnsupported.has(action)) return null;
     const params = kind === 'private'
@@ -15606,7 +15914,7 @@ async function main() {
           ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
         },
         body: JSON.stringify(params),
-        signal: AbortSignal.timeout(15000)
+        signal: AbortSignal.timeout(timeoutMs)
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
@@ -17515,6 +17823,7 @@ async function main() {
   }
 
   bot.on('open', () => {
+    friendListCache = { at: 0, ids: null };
     // 用实际连接地址（自愈后可能与 config 里的初值不同，别打印过期的那个）
     const connectedUrl = bot.url ?? cfg.snowluma.wsUrl;
     snowlumaHealth.connected = true;
@@ -17525,16 +17834,22 @@ async function main() {
     // 这个区别见 startSnowlumaWatch 的说明。这里顺手把上游健康快照刷一次。
     void pollSnowlumaStatus();
     // 读取机器人昵称（用于社交模式"被提到"识别）；重连后也会刷新
-    bot.getLoginInfo().then((login) => {
-      if (login?.nickname) {
-        selfNickname = String(login.nickname).toLowerCase();
-        selfDisplayName = String(login.nickname).trim();
-        log(`机器人昵称: ${login.nickname}`);
+    bot.getLoginInfo().then(async (login) => {
+      const userId = String(login?.user_id ?? '');
+      const accountChanged = userId && userId !== selfUserId;
+      if (accountChanged || !externalOneBot || !selfDisplayName) {
+        selfDisplayName = String(login?.nickname ?? '').trim();
+        selfNickname = selfDisplayName.toLowerCase() || 'deepseek';
       }
-      if (login?.user_id != null) {
-        selfUserId = String(login.user_id);
+      if (userId) {
+        selfUserId = userId;
         reconcileAllowlist('login');
+        replyOutboxAccount = userId;
+        replyOutboxReady = true;
+        void flushReplyOutbox('reconnect');
       }
+      await refreshQqSelfProfile();
+      if (selfDisplayName) log(`机器人昵称: ${selfDisplayName}`);
       // 把「QQ 昵称 / QQ 号」落一小份给另一侧用：B站 会话是插件进程，拿不到网关登录信息，
       // 但它要靠这两个锚点认出「自己的 QQ 资料卡截图」（2026-10-23 用户要求跨平台互认）。
       saveQqSelfIdentity();
@@ -17646,6 +17961,8 @@ async function main() {
 
   bot.on('close', (info) => {
     snowlumaHealth.connected = false;
+    oneBotSessionProbe = { account: '', seenProfile: false, failures: 0, checking: false, degraded: false };
+    replyOutboxReady = false;
     log(`${qqGateway} 连接断开（code=${info?.code ?? '?'}），重连中…`);
     // 1006 在每次启动/短暂抖动都会出现，重连通常几百毫秒；先给 15 秒观察窗口，
     // 窗口内重连成功就不记 L2、不弹窗（2026-10-31：用户明明连着却收到“通道断开”）。

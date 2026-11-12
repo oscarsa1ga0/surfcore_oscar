@@ -164,6 +164,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     index: path.join(stateDir, 'bili-memory.json'),
     titles: path.join(stateDir, 'bili-video-titles.json'),
     dynamics: path.join(stateDir, 'bili-dynamics-cache.json'),
+    // 她自己发布的作品（自由动态 / 原创专栏）—— append-only，不参与动态缓存的重写。
+    posts: path.join(stateDir, 'bili-posts.jsonl'),
     history: path.join(stateDir, 'bili-share-history.json'),
   };
   // 行为账本（日记/评分/额度/收藏）优先角色级；角色级缺文件时只读回退账号级，
@@ -331,6 +333,31 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       }))
       .filter((it) => it.text.length >= 10 || it.title);
 
+    const postItems = (() => {
+      const out = [];
+      try {
+        const text = fs.readFileSync(paths.posts, 'utf8');
+        for (const line of text.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const item = JSON.parse(line);
+            if (!item || typeof item !== 'object') continue;
+            const type = String(item.type ?? 'dynamic') === 'article' ? 'article' : 'dynamic';
+            out.push({
+              id: String(item.id ?? `${type}:${out.length}`),
+              type,
+              title: redactOwner(cleanText(item.title ?? '')),
+              text: redactOwner(cleanText(item.text ?? '')),
+              url: String(item.url ?? ''),
+              date: String(item.date ?? '').slice(0, 10) || localDate(item.at),
+              at: String(item.at ?? ''),
+            });
+          } catch {}
+        }
+      } catch {}
+      return out;
+    })();
+
     const blocks = parseDiaryBlocks(diaryRaw, fallbackDate);
     const anecdotes = [];
     const thoughts = [];
@@ -366,6 +393,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       favoriteItems,
       commentItems,
       dynamicItems,
+      postItems,
       anecdotes,
       thoughts,
       titles: loadTitles().items ?? {},
@@ -486,6 +514,22 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
         shareable: false,
       });
     }
+    // 她自己发布的作品（自由动态 / 原创专栏）：动态缓存里可能已经有同一 dyn，
+    // 用 id 去重；专栏只在 bili-posts 里，单独补进来。
+    const seenIds = new Set(entries.map((entry) => entry.id));
+    for (const post of (Array.isArray(data.postItems) ? data.postItems : [])) {
+      if (!post.title && !post.text) continue;
+      if (seenIds.has(post.id)) continue;
+      seenIds.add(post.id);
+      entries.push({
+        ...post,
+        quote: '',
+        score: 0,
+        favorite: false,
+        priority: 5,
+        shareable: false,
+      });
+    }
     return entries;
   }
 
@@ -503,7 +547,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push('# B站记忆');
     lines.push('');
     lines.push(`> 自动同步：${now}`);
-    lines.push('> 来源：公开视频打分、公开评论、公开收藏、自己的公开动态、日记里的公开看片见闻。');
+    lines.push('> 来源：公开视频打分、公开评论、公开收藏、自己的公开动态/原创专栏、日记里的公开看片见闻。');
     lines.push('> **私信内容一律不进入本文件**（生成器不读 dm-*.json，日记里转述私信的段落整段丢弃）。');
     lines.push('');
     lines.push('## 一、我是谁（B 站侧）');
@@ -531,7 +575,9 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       if (isBlocked(`${e.title} ${e.text} ${e.quote}`)) continue;
       const head = e.type === 'dynamic'
         ? `- ${e.date || ''} B站动态：${short(e.text, 260)}`
-        : `- ${e.date || ''}${e.score ? ` [${e.score}分]` : ''} ${e.title}${e.bvid ? ` ${e.bvid}` : ''}`;
+        : e.type === 'article'
+          ? `- ${e.date || ''} B站专栏《${short(e.title, 60)}》：${short(e.text, 260)}`
+          : `- ${e.date || ''}${e.score ? ` [${e.score}分]` : ''} ${e.title}${e.bvid ? ` ${e.bvid}` : ''}`;
       lines.push(head);
       if (e.type !== 'dynamic') {
         if (e.reason) lines.push(`  - 当时的判断：${short(e.reason, 260)}`);
@@ -574,7 +620,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     const seen = new Set();
     const picks = [];
     const sorted = entries
-      .filter((e) => ['video', 'favorite', 'diary', 'dynamic'].includes(e.type))
+      .filter((e) => ['video', 'favorite', 'diary', 'dynamic', 'article'].includes(e.type))
       .filter((e) => e.date && !isBlocked(`${e.title} ${e.text} ${e.quote}`))
       .filter((e) => !String(e.title ?? '').includes('未取到标题'))
       .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.score || 0) - (a.score || 0));
@@ -586,14 +632,14 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       if (picks.length >= 10) break;
     }
     for (const e of picks) {
-      const label = e.type === 'dynamic' ? '动态' : e.score ? `${e.score}分` : e.favorite ? '收藏' : '看过';
-      const body = e.type === 'dynamic'
+      const label = e.type === 'dynamic' ? '动态' : e.type === 'article' ? '专栏' : e.score ? `${e.score}分` : e.favorite ? '收藏' : '看过';
+      const body = e.type === 'dynamic' || e.type === 'article'
         ? short(e.text, 110)
         : short(e.quote || e.reason || e.anecdote || '', 100);
       lines.push(`- ${e.date}【${label}】${short(e.title, 46)}${body ? `：${body}` : ''}`);
     }
     lines.push('');
-    lines.push('我的习惯：看到认真做但没人看的小 UP 会去留一句；评论常用「mer」收尾；喜欢短、可爱、荒诞、有梗的东西，不爱长篇干货和带货。');
+    lines.push('我的习惯：看到认真做但没人看的小 UP 会去留一句；喜欢短、可爱、荒诞、有梗的东西，不爱长篇干货和带货。');
     lines.push('边界：B 站私信里的内容不在我的记忆里，我也不会编；群友问起就按记得的公开经历回答。');
     let brief = lines.join('\n');
     if (brief.length > 2700) brief = `${brief.slice(0, 2700)}…`;

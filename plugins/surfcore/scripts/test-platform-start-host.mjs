@@ -5,6 +5,7 @@
  *   · 开关关闭时插件加载不会启动生物钟（scheduler.running=false / disabled=true）；
  *   · /overview 暴露 platformStart；
  *   · /bridge 的 start-qq / start-bili / start-all 在开关关闭时不会偷偷拉起平台。
+ *   · 单次唤醒按需创建 B站工作区和会话，保留排程文件与自动启动状态。
  *
  * 用临时 DSH_HOME，不读写真实 ~/.dsh。
  */
@@ -16,6 +17,10 @@ import path from 'node:path';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-platform-host-'));
 const stateDir = path.join(tmp, 'surfcore');
+const fakeRoot = path.join(tmp, 'qq-bridge');
+fs.mkdirSync(path.join(fakeRoot, 'src'), { recursive: true });
+fs.writeFileSync(path.join(fakeRoot, 'src', 'bridge.js'), '// fixture\n');
+fs.writeFileSync(path.join(fakeRoot, 'config.json'), JSON.stringify({ consolePort: 1 }));
 fs.mkdirSync(stateDir, { recursive: true });
 fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   version: 1,
@@ -23,6 +28,7 @@ fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   platforms: { start: { qq: false, bili: false } },
 }, null, 2)}\n`, 'utf8');
 
+process.env.SURFCORE_ROOT = fakeRoot;
 process.env.DSH_HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
@@ -33,6 +39,11 @@ const { apply } = await import('../lib/index.js');
 
 const routes = [];
 const effects = [];
+const workspaces = [];
+const workspaceTitles = [];
+const sessions = [];
+const prompts = [];
+let promptResult = async () => ({ accepted: true });
 const ctx = {
   webServer: { register(route) { routes.push(route); return () => {}; } },
   get(name) {
@@ -40,10 +51,22 @@ const ctx = {
     return null;
   },
   effect(fn) { effects.push(fn); return () => {}; },
+  workspaceController: {
+    create: async (params) => {
+      workspaces.push(params);
+      return { created: true, workspace: { workspaceId: 'ws-bili' } };
+    },
+    rename: async (params) => { workspaceTitles.push(params); },
+  },
   sessionController: {
-    inspect: async () => ({ events: [] }),
-    create: async () => ({}),
-    prompt: async () => ({ accepted: true }),
+    resolveAgent: async (sessionId) => sessions.some((session) => session.sessionId === sessionId)
+      ? { agent: { id: sessionId } }
+      : { error: { code: 'session/not-found' } },
+    create: async (params) => { sessions.push(params); return { sessionId: params.sessionId }; },
+    prompt: async (args, signal) => {
+      prompts.push({ args, signal });
+      return promptResult();
+    },
   },
   settings: null,
 };
@@ -124,6 +147,57 @@ try {
   assert.equal(all.data.scheduler?.disabled, true, 'B站 关闭时一键启动应跳过生物钟');
   assert.equal(all.data.snowluma?.skipped, true, 'QQ 关闭时一键启动不应打开 SnowLuma');
 
+  const wakePath = '/dsh-surfcore/api/bili/wake-now';
+  const needsLogin = await invoke(api, 'POST', wakePath, {});
+  assert.equal(needsLogin.status, 409);
+  assert.equal(needsLogin.data.code, 'BILI_WAKE_LOGIN');
+  assert.ok(needsLogin.data.hint);
+  assert.equal(sessions.length, 0);
+
+  const biliDir = path.join(stateDir, 'bili');
+  const credentials = path.join(biliDir, 'credentials.json');
+  const schedule = path.join(biliDir, 'whale-night.json');
+  fs.mkdirSync(biliDir, { recursive: true });
+  fs.writeFileSync(credentials, JSON.stringify({ sessdata: 'fixture', bili_jct: 'fixture' }));
+  const plan = '{"date":"2026-11-12","action":"done","wakes":12,"watchWakes":10}\n';
+  fs.writeFileSync(schedule, plan);
+  const originalConfig = fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8');
+  let markPromptEntered;
+  let completePrompt;
+  const promptEntered = new Promise((resolve) => { markPromptEntered = resolve; });
+  promptResult = () => new Promise((resolve) => {
+    completePrompt = resolve;
+    markPromptEntered();
+  });
+  const firstWake = invoke(api, 'POST', wakePath, {});
+  await Promise.race([promptEntered, firstWake]);
+  assert.equal(prompts.length, 1, '手动唤醒必须绕过已结束的自动计划');
+  const duplicate = await invoke(api, 'POST', wakePath, {});
+  completePrompt({ accepted: true });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.data.code, 'BILI_WAKE_BUSY');
+  assert.ok(duplicate.data.hint);
+  assert.deepEqual(await firstWake, { status: 200, data: { ok: true, sessionId: 'bili-whale' } });
+  assert.deepEqual(workspaces, [{ path: path.join(stateDir, 'state', 'bili-agents') }]);
+  assert.deepEqual(workspaceTitles, [{ workspaceId: 'ws-bili', title: 'B站生物钟' }]);
+  assert.deepEqual(sessions, [{ sessionId: 'bili-whale', workspaceId: 'ws-bili' }]);
+  assert.equal(prompts[0].args.mode, 'queue');
+  assert.match(prompts[0].args.content[0].text, /【手动唤醒】.*逛一轮 B 站/);
+  assert.equal(prompts[0].signal.aborted, false, '一次性调度器清理不能取消已提交的回合');
+  assert.equal(fs.readFileSync(schedule, 'utf8'), plan);
+  assert.equal(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'), originalConfig);
+  const afterWake = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
+  assert.equal(afterWake.data.scheduler.running, false);
+  assert.equal(afterWake.data.platformStart.bili, false);
+
+  promptResult = async () => ({ accepted: false });
+  const rejected = await invoke(api, 'POST', wakePath, {});
+  assert.equal(rejected.status, 503);
+  assert.equal(rejected.data.code, 'BILI_WAKE_FAILED');
+  assert.ok(rejected.data.hint);
+  assert.equal(sessions.length, 1, '再次唤醒复用现有会话');
+  assert.equal(fs.readFileSync(schedule, 'utf8'), plan);
+
   // 保存配置时把开关打开（跳过真实进程，只验证配置落盘与返回值）。
   const saved = await invoke(api, 'POST', '/dsh-surfcore/api/config', {
     unified: { platforms: { start: { qq: true, bili: true } } },
@@ -133,6 +207,18 @@ try {
   assert.equal(saved.data.platformStart?.bili, true);
   const onDisk = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
   assert.deepEqual(onDisk.platforms.start, { qq: true, bili: true });
+
+  const started = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-bili' });
+  assert.equal(started.data.scheduler.running, true);
+  promptResult = async () => ({ accepted: true });
+  assert.deepEqual(await invoke(api, 'POST', wakePath, {}), { status: 200, data: { ok: true, sessionId: 'bili-whale' } });
+  const whileRunning = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
+  assert.deepEqual(whileRunning.data.scheduler, started.data.scheduler, '手动唤醒不能重启自动调度器');
+  assert.equal(sessions.length, 1);
+  assert.equal(workspaces.length, 1);
+  assert.equal(prompts.length, 3);
+  assert.equal(new Set(prompts.map(({ args }) => args.requestId)).size, 3);
+  assert.equal(fs.readFileSync(schedule, 'utf8'), plan);
 
   console.log('platform-start host wiring OK');
 } finally {

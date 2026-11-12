@@ -11,6 +11,7 @@
  * 运行：node scripts/test-greeting.mjs
  */
 import assert from 'node:assert/strict';
+import { bridgeHarness } from './audit-bridge-harness.mjs';
 import {
   GREETING_GRACE_MS, GREETING_RETRY_MS,
   buildMorningGreetingPrompt, localDateKey, parseGreetingTime, pickGreetingTheme, planMorningGreeting,
@@ -105,6 +106,32 @@ test('补发提示词要说明这是补发，且不让她以为现在是八点',
   assert.match(prompt, /补发/);
   assert.match(prompt, /原定 08:00/);
 });
+
+const h = await bridgeHarness({ config: { snowluma: { provider: 'onebot' } } });
+try {
+  let list = [];
+  let queried = [];
+  h.bot.raw = async (action, params) => {
+    assert.equal(action, 'get_friend_list');
+    queried.push(params);
+    return list;
+  };
+  assert.equal((await h.greetingFriendCheck('123')).ok, false);
+  list = [{ user_id: 123 }];
+  assert.equal((await h.greetingFriendCheck('123')).ok, true, '空好友名单不阻挡恢复后的真实好友');
+
+  list = [{ user_id: 456 }];
+  h.setAccountOnline(false, 'fixture');
+  h.setAccountOnline(true, 'fixture');
+  assert.equal((await h.greetingFriendCheck('456')).ok, true, '账号重新上线后重新读取列表');
+
+  list = [{ user_id: 123 }];
+  assert.equal((await h.greetingFriendCheck('123', { refresh: true })).ok, true);
+  assert.equal(queried.at(-1).no_cache, true, '手动试发时刷新网关的好友列表');
+  console.log('PASS 重连与手动试发刷新好友名单');
+} finally {
+  await h.close();
+}
 
 if (failures) process.exitCode = 1;
 console.log(failures ? `\n${failures} 项失败` : '\ngreeting tests OK');

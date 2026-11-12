@@ -23,8 +23,8 @@ import yaml from 'js-yaml';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
 
-/** 由桥接托管的两个 preset（顺序即 patch 层顺序）。 */
-export const PRESETS = ['qq-chat', 'qq-chat-v2'];
+/** 由桥接托管的 preset（顺序即 patch 层顺序）。 */
+export const PRESETS = ['qq-chat', 'qq-chat-v2', 'surfcore-diary'];
 
 /** preset 行 id：与 config.id（桥接解析的 preset 名）区分开，方便在 profile patch 里按行定位。 */
 export function presetRowId(name) {
@@ -41,15 +41,30 @@ export function presetRowId(name) {
  * node_modules junction 由 setup-dsh.mjs 或 dev_heal_links 维护。
  */
 export const GUARD_SPECIFIER = 'surfcore/qq-tool-restrict.mjs';
+/** 日记 preset 的守卫：同一套隐藏名单 + 只允许日记工具/安全搜索。 */
+export const DIARY_GUARD_SPECIFIER = 'surfcore/diary-tool-guard.mjs';
 
 /** 源里允许出现的相对行名 → 新机制下的等价引用。其它相对名一律报错（避免静默装不上）。 */
 const RELATIVE_ROW_REWRITES = new Map([
   ['./qq-tool-restrict.mjs', GUARD_SPECIFIER],
+  ['./diary-tool-guard.mjs', DIARY_GUARD_SPECIFIER],
 ]);
+
+/** 每个 preset 必须包含的安全/人格行；缺了就不允许生成 patch。 */
+const REQUIRED_ROWS = {
+  'qq-chat': ['persona', 'qq-tool-restrict'],
+  'qq-chat-v2': ['persona', 'qq-tool-restrict'],
+  'surfcore-diary': ['persona', 'diary-tool-guard'],
+};
 
 export const BUNDLE_DIR = path.join(REPO_ROOT, 'plugins', 'surfcore');
 export function patchFileFor(name) {
   return path.join(BUNDLE_DIR, 'presets', `${name}.patch.yml`);
+}
+
+/** 把源里的相对行名改写成 profile 可解析的裸说明符；未知相对名原样返回。 */
+export function rewriteRowName(name) {
+  return RELATIVE_ROW_REWRITES.get(name) ?? name;
 }
 function sourceDirFor(name) {
   return path.join(REPO_ROOT, 'dsh', 'agent-presets', name);
@@ -94,7 +109,7 @@ function normalizeRows(rows, preset) {
         throw new Error(`${label}: 相对/绝对插件名 ${JSON.stringify(next.name)} 在 0.1.7 下会按 profile 目录解析，`
           + '必须改写为「bundle 包名/子路径」或去掉；请在 build-agent-preset-patches.mjs 里显式登记改写规则');
       }
-      next.name = rewrite;
+      next.name = rewriteRowName(next.name);
     }
     if (row.group === true) {
       if (!Array.isArray(row.config)) throw new Error(`${label} 是 group 行但 config 不是行列表`);
@@ -103,7 +118,7 @@ function normalizeRows(rows, preset) {
     return next;
   });
   const normalized = walk(rows, 'plugins');
-  for (const required of ['persona', 'qq-tool-restrict']) {
+  for (const required of REQUIRED_ROWS[preset] ?? ['persona']) {
     if (!seen.has(required)) throw new Error(`${preset}: 行列表缺少 ${required} 行（安全/人格边界不允许缺失）`);
   }
   return normalized;

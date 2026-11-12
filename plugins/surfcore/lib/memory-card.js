@@ -42,6 +42,10 @@ function biliMemoryFile() {
   return path.join(biliStateDir(), 'bili-memory.json');
 }
 
+function biliPostsFile() {
+  return path.join(biliStateDir(), 'bili-posts.jsonl');
+}
+
 function normalizeIdList(value) {
   const list = Array.isArray(value) ? value : String(value ?? '').split(/[\s,，;；]+/);
   return [...new Set(list.map((item) => String(item ?? '').trim()).filter((item) => /^\d{4,15}$/.test(item)))];
@@ -93,12 +97,31 @@ function todayKey(now = Date.now()) {
 }
 
 function readBiliEntries() {
+  const entries = [];
+  const seen = new Set();
   try {
     const raw = JSON.parse(fs.readFileSync(biliMemoryFile(), 'utf8'));
-    return Array.isArray(raw?.entries) ? raw.entries : [];
-  } catch {
-    return [];
-  }
+    for (const entry of Array.isArray(raw?.entries) ? raw.entries : []) {
+      const id = String(entry?.id ?? '');
+      if (id) seen.add(id);
+      entries.push(entry);
+    }
+  } catch {}
+  // 自由动态 / 原创专栏是 append-only 的 bili-posts.jsonl；B站 memory 刷新前也能先入库。
+  try {
+    const text = fs.readFileSync(biliPostsFile(), 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const item = JSON.parse(line);
+        const id = String(item?.id ?? '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        entries.push(item);
+      } catch {}
+    }
+  } catch {}
+  return entries;
 }
 
 function readInboxLines() {

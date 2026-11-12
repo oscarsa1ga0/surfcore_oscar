@@ -35,9 +35,7 @@ try {
   line(c.self?.mid ? OK : NO, '她的身份', c.self?.name ? `${c.self.name}（${c.self.mid}）` : '设置页 →「她是谁」还没填')
   line(c.owner?.mid ? OK : NO, '主人的身份', c.owner?.name ? `${c.owner.name}（${c.owner.mid}）` : '设置页 →「她是谁」里填主人 mid')
   line(c.share?.via ? OK : NO, '分享方式',
-    c.share?.via === 'dm' ? '私信（不发公开评论）'
-      : c.share?.via === 'dynamic' ? '自己的动态（视频卡片）'
-        : '评论区 @')
+    c.share?.via === 'dm' ? 'B站私信' : '自己的动态（视频卡片）')
   line(c.notify?.type ? OK : NO, '消息推送', String(c.notify?.type ?? '未设置'))
 } catch {
   line(NO, '配置文件', '没有 ' + CFG + ' —— 先去设置页保存一次')

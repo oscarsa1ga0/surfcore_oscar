@@ -103,6 +103,9 @@ const tests = [
   'test-backup-prune.mjs',
   // 媒体兜底：p.qpic/gxh 候选、失败标签兜底、非多模态文字路径。
   'test-media-fallback.mjs',
+  'test-model-options.mjs', 'test-image-input.mjs',
+  'test-qq-self-profile.mjs',
+  'test-qq-sticker-collect.mjs',
   // 人格层读取：tone 必须读 persona.tone.md，不能回落核心。
   'test-persona-layer-read.mjs',
   // B站 shots 缓存：超期/超量清理，不碰新文件/未知文件。

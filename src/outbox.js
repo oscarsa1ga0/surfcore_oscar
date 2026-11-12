@@ -11,10 +11,30 @@ const DEFAULT_TTL_MS = 24 * 60 * 60_000;
 const DEFAULT_MAX = 60;
 const DEFAULT_MAX_TRIES = 12;
 
+const PRE_DISPATCH_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+// A lost response can occur after QQ has accepted the message.
+export function neverDispatched(error) {
+  return PRE_DISPATCH_CODES.has(error?.cause?.code ?? error?.code)
+    || error?.message === 'SnowLuma WebSocket is not open';
+}
+
+/** QQ timestamps have second precision, so only known message IDs are safe in the same second. */
+export function historyAllowsReplay(messages, createdAt, knownIds) {
+  const startedSecond = Math.floor(createdAt / 1000);
+  return Array.isArray(messages) && messages.length > 0 && messages.every((message) => {
+    const time = Number(message?.time);
+    const id = String(message?.message_id ?? message?.real_id ?? message?.message_seq ?? '');
+    return Number.isFinite(time) && time > 0 && (time < startedSecond || (id && knownIds.has(id)));
+  });
+}
+
 function safeRead(file) {
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? data.filter((entry) => entry && typeof entry === 'object') : [];
   } catch { return []; }
 }
 
@@ -52,13 +72,13 @@ export function createOutbox({
     }
   }
 
-  function push(kind, id, text, { replyToMessageId = null, atUserId = null } = {}) {
+  function push(kind, id, text, { replyToMessageId = null, atUserId = null, context, createdAt = now() } = {}) {
     const body = String(text ?? '');
     if (!body || !kind || id == null) return false;
     const t = now();
     cleanRecent(t);
     const hash = hashOf(kind, String(id), body);
-    if (recent.has(hash)) return false;
+    if (!Number.isFinite(createdAt) || createdAt > t || t - createdAt > ttlMs || recent.has(hash)) return false;
     if (entries.some((e) => e.hash === hash && t - Number(e.at) < DEDUPE_MS)) return false;
     if (entries.length >= max) {
       entries.shift();
@@ -66,7 +86,7 @@ export function createOutbox({
     }
     entries.push({
       hash, kind: String(kind), id: String(id), text: body,
-      replyToMessageId, atUserId, at: t, tries: 0,
+      replyToMessageId, atUserId, context, at: createdAt, tries: 0,
     });
     save();
     return true;
@@ -89,27 +109,30 @@ export function createOutbox({
 
   async function flush(reason = 'manual') {
     if (flushing) return { ok: false, skipped: 'busy', sent: 0, left: entries.length };
-    const t = now();
-    entries = entries.filter((e) => {
-      if (t - Number(e.at) <= ttlMs) return true;
-      log(`[outbox] 过期丢弃 ${e.kind}:${e.id}`);
-      return false;
-    });
-    if (!entries.length) { save(); return { ok: true, sent: 0, left: 0 }; }
+    if (!entries.length) return { ok: true, sent: 0, left: 0 };
     flushing = true;
     let sent = 0;
-    let stopped = false;
+    function remove(entry) {
+      entries = entries.filter((item) => item !== entry);
+      save();
+    }
     try {
-      const keep = [];
-      for (let i = 0; i < entries.length; i += 1) {
-        const entry = entries[i];
-        if (stopped) { keep.push(entry); continue; }
-        if (Number(entry.tries) >= maxTries) {
-          log(`[outbox] 超过重试上限，丢弃 ${entry.kind}:${entry.id}`);
+      // 正常发送可能清掉待补项，新的失败也可能在 await 期间入队。
+      for (const entry of entries.slice()) {
+        if (!entries.includes(entry)) continue;
+        const age = now() - Number(entry.at);
+        if (!Number.isFinite(age) || age < 0 || age > ttlMs || Number(entry.tries) >= maxTries) {
+          remove(entry);
+          log(`[outbox] 过期或超过重试上限，跳过 ${entry.kind}:${entry.id}`);
           continue;
         }
         try {
-          await send(entry);
+          const result = await send(entry, () => entries.includes(entry));
+          remove(entry);
+          if (result === false) {
+            log(`[outbox] 对话已变化或无法核验，跳过旧回复 ${entry.kind}:${entry.id}`);
+            continue;
+          }
           sent += 1;
           recent.set(entry.hash, now());
           log(`[outbox] 补发成功 ${entry.kind}:${entry.id}`);
@@ -117,16 +140,15 @@ export function createOutbox({
           if (isConnectionError(error)) {
             entry.tries = Number(entry.tries || 0) + 1;
             entry.lastError = String(error?.message ?? error).slice(0, 300);
-            keep.push(entry);
-            stopped = true;
+            save();
             log(`[outbox] 补发遇到连接错误，保留 ${entry.kind}:${entry.id}（第 ${entry.tries}/${maxTries} 次）`);
+            break;
           } else {
+            remove(entry);
             log(`[outbox] 非连接错误，丢弃 ${entry.kind}:${entry.id}：${String(error?.message ?? error).slice(0, 200)}`);
           }
         }
       }
-      entries = keep;
-      save();
       log(`[outbox] 补发结束（触发：${reason}）：成功 ${sent}，剩余 ${entries.length}`);
       return { ok: true, sent, left: entries.length };
     } finally {

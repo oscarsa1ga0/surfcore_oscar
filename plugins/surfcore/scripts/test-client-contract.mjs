@@ -75,6 +75,8 @@ for (const wanted of [
 
 const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8');
 assert.ok(source.includes('"/bili/automation"'), '设置页没有调用 /bili/automation');
+assert.match(source, /title: "作息窗口"[^]*?"立即唤醒一次"/, '作息窗口缺少「立即唤醒一次」');
+assert.ok(source.includes('api("/bili/wake-now", { method: "POST"'), '手动唤醒应提交独立的 POST 请求');
 assert.ok(source.includes('AutomationCard'), '设置页没有今天用量卡片');
 assert.ok(source.includes('QqShareSection'), '设置页没有 QQ 分享段');
 // PITFALLS #21：QQ 分享段以前藏在 B站 页最底部、还是折叠的，用户找不到。
@@ -290,6 +292,7 @@ const shareViaField = client.BILI_FIELDS.flatMap((g) => g.fields).find((f) => f.
 assert.ok(shareViaField, 'B站页缺少 share.via');
 assert.equal(shareViaField.kind, 'select');
 assert.equal(shareViaField.options?.[0]?.[0], 'dynamic', 'share.via 默认项必须是 dynamic');
+assert.deepEqual(Array.from(shareViaField.options, ([value]) => value), ['dynamic', 'dm']);
 assert.ok(source.includes('night.minGapMin'), '作息页缺少 night.minGapMin');
 assert.ok(source.includes('每窗至少 1'), '作息页提示没有写清 C 的每窗至少 1');
 assert.ok(source.includes('容量警告字数') && source.includes('warnChars'), '记忆卡缺少无上限的警告字数设置');

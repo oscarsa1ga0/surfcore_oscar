@@ -1377,7 +1377,7 @@ if (true) {
 if (cfg.socialV2?.tools?.getSelfImage !== false) {
   server.tool(
     'qq_get_self_image',
-    '查看你自己的默认 Q 版形象图片（DeepSeek 小鲸鱼形象）。当你被问“你长什么样/发张自拍/你是什么形象”时，可以调用这个工具看自己的样子；返回的图片会直接进入你的视觉上下文。',
+    '查看自己的 QQ 头像或角色形象。被问到换头像或你长什么样时，可以用这个工具获取图像，返回结果会标明来源。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）')
@@ -1392,7 +1392,7 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
         }
         return {
           content: [
-            { type: 'text', text: '这是你的默认 Q 版形象：' },
+            { type: 'text', text: data.source === 'qq-avatar' ? '这是你的 QQ 头像。' : '这是你的默认 Q 版形象。' },
             { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
           ]
         };

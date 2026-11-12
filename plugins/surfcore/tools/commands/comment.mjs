@@ -37,13 +37,10 @@ import { findByParent as findAttack, setStatus as setAttackStatus } from '../lib
 // ── 限额闸（B 档「限额自主」的代码强制部分，2026-10-14 主人选 B 档）────────────────
 // 语义：闸门**只管自主发言**（带 --auto，即"她自己决定说的"）；主人当场授权的发言不拦 ✓
 // 这一层存在的理由：主人明确要求"限频写进代码，不是写进你的自觉里"。
-// --share（2026-10-17 加）：分享型 —— "把看到的好东西 @ 主人"。它**不看白名单**，
-//   但受**每日合计 ≤3**、**同一视频 7 天内一次**两条硬限制（由 quota.mjs 强制）。
 const AUTO = process.argv.includes('--auto')
-const SHARE = process.argv.includes('--share')
 // --once-per-person（2026-10-17 加）：同一个人 30 天内最多只回一条（只对"回复某人"生效）。
 // 2026-10-18 接线：不传旗标时按配置决定（config.listen.oncePerPerson ✓ 设置页那个开关）
-//   —— 只在"回复某人"（带 --parent）时生效；分享/顶层评论不受影响 ✓
+//   —— 只在"回复某人"（带 --parent）时生效；顶层评论不受影响。
 const ONCE = process.argv.includes('--once-per-person')
   || (process.argv.includes('--parent') && config().listen?.oncePerPerson === true)
 const ONCE_DAYS = 30
@@ -67,17 +64,22 @@ const loadReplied = () => { try { return JSON.parse(fs.readFileSync(REPLIED, 'ut
 const saveReplied = (o) => { try { fs.mkdirSync(path.dirname(REPLIED), { recursive: true }); fs.writeFileSync(REPLIED, JSON.stringify(o, null, 2) + '\n') } catch {} }
 // 查出"被回复的那个人"是谁（reply/reply 里 rpid === parent 的那条的作者）
 // 2026-10-21：type 参数化 —— 动态评论是 type=11，不能写死 1 ✗
-async function parentAuthor(aid, rootRpid, parentRpid, replyType = 1) {
+async function parentAuthor(aid, rootRpid, parentRpid, replyType = 1, cookie = '') {
   for (let pn = 1; pn <= 4; pn += 1) {
-    const j = await (await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=${replyType}&oid=${aid}&root=${rootRpid}&pn=${pn}&ps=20`, {
-      headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' },
+    const qs = new URLSearchParams({ type: replyType, oid: aid, root: rootRpid, pn, ps: 20 })
+    const j = await (await fetch(`https://api.bilibili.com/x/v2/reply/reply?${qs}`, {
+      headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/', ...(cookie ? { cookie } : {}) },
+      signal: AbortSignal.timeout(5000),
     })).json()
     const list = j.data?.replies ?? []
-    const hit = list.find((r) => String(r.rpid) === String(parentRpid))
-    if (hit) return {
-      mid: String(hit.mid ?? hit.member?.mid ?? ''),
-      name: hit.member?.uname ?? '',
-      ctime: Number(hit.ctime) * 1000 || 0,
+    const hit = [j.data?.root, ...list].find((r) => r && String(r.rpid_str ?? r.rpid) === String(parentRpid))
+    if (hit) {
+      const mid = hit.mid_str ?? hit.member?.mid_str ?? hit.member?.mid ?? hit.mid
+      return {
+        mid: typeof mid === 'string' || Number.isSafeInteger(mid) ? String(mid) : '',
+        name: hit.member?.uname ?? '',
+        ctime: Number(hit.ctime) * 1000 || 0,
+      }
     }
     if (!list.length) break
   }
@@ -123,88 +125,20 @@ if (!dry && !go) { console.error('refusing to run without an explicit --dry or -
 // 沉默逛：--dry 允许预览，--go 一律拒绝；不能只靠提示词自觉。
 if (!dry && !assertInteractEnabled(AUTO ? '自动评论/回复' : '评论')) process.exit(3)
 
-// --share（分享型）：正文里必须 @ 主人 —— 没写 @ 就自动补上。
-// 昵称取配置的 owner.name（space/wbi/acc/info 可能被风控，不实时查）；
-// 昵称改过的话，发完用 `thread` 看 `@到:` 就能发现（没解析出来就说明名字旧了）。
-// --share（分享型）—— 2026-10-17 严格化（Kimi 评审指出两个洞）：
-//   ① 必须与 --auto 同传：不然它就是"第三条自我声明车道"，绕开了自主发言那套判据
-//   ② 正文**必须以 @<配置里的主人昵称> 开头**：以前"含个 @"就算数 → 一条 "@任何人 快来买" 也能过闸 ✗
-if (SHARE) {
-  // 2026-10-18 接线：设置页「分享评论」的总开关（关掉 = 只看不说 ✓）
-  if (config().share?.enabled === false) {
-    console.error('分享已在设置里关闭（share.enabled = false）→ 这次不发（筛/深读/日记照常 ✓）')
-    process.exit(3)
-  }
-  if (!AUTO) { console.error('--share 必须与 --auto 同传（分享型也是"她自己决定说的"）'); process.exit(2) }
-  const ow = config().owner ?? {}
-  if (!ow.name) { console.error('--share 需要先配置 owner.name（要 @ 谁）'); process.exit(2) }
-  // ── 「标尺」（2026-10-18 加，Kimi 提议 + 主人认可）────────────────────
-  // 把"值不值"从感觉变成可审计的流程：
-  //   ① --reason  必填（白纸黑字写"为什么值得占用主人一次注意力"）
-  //   ② --score   必填且 ≥ config.share.minScore（默认 13 = 超过 12 分）
-  //   ③ --rank    只能是 1（当天深读里的第一名 —— 相对比较比绝对打分稳）
-  // 三项任一不过 → 拒绝发送；"今天没有值得发的"本身就是合法结果 ✓
-  {
-    const reason = String(args.get('reason') ?? '').trim()
-    if (reason.length < 8) { console.error('--share 必须带 --reason "为什么值得占用主人一次注意力"（≥8 字）'); process.exit(2) }
-    const minScore = Number(config().share?.minScore ?? 7)
-    const score = Number(args.get('score'))
-    if (!Number.isFinite(score) || String(args.get('score') ?? '') === '') { console.error(`--share 必须带 --score（每项 0-4，满 20；阈值 ${minScore}，超过 12 就发）`); process.exit(2) }
-    if (score < minScore) { console.error(`✗ 评分 ${score} < 阈值 ${minScore} → 这条不值得发（"今天没有值得发的"是合法结果）`); process.exit(2) }
-    const rank = Number(args.get('rank') ?? 1)
-    if (rank !== 1) { console.error('--share 只允许 --rank 1（当天深读里的第一名）'); process.exit(2) }
-    console.log(`[标尺] 分数 ${score}/20（阈值 ${minScore}：超过 12 就发）· 排名 #${rank} · 理由：${reason.slice(0, 60)}`)
-  }
-
-  const want = `@${ow.name}`
-  // 2026-10-20（管理员定）：**分享评论里不许带链接** ✗
-  //   实测：带 URL 的那条被 B站 判成 state=17（仅自己可见 / 审核中），匿名完全看不到；
-  //   同一天另外 7 条不带链接的评论全是 state=0 真公开。
-  //   → 自动把 URL 换成 BV 号（纯文本 B站 不拦 ✓），链接改由「报备」私信发给你 ✓
-  {
-    const before = String(message ?? '')
-    const stripped = before.replace(/https?:\/\/\S+/gu, (u) => {
-      const m = u.match(/BV[0-9A-Za-z]{10}/)
-      return m ? m[0] : ''
-    }).replace(/[ \t]{2,}/g, ' ').replace(/\s+([，。！？、])/g, '$1').trim()
-    if (stripped !== before.trim()) {
-      message = stripped
-      console.log('[分享型] 正文里的链接已换成 BV 号（带链接会被平台吞 ✗）')
-    }
-  }
-  const body = String(message ?? '').trimStart()
-  if (!body.startsWith(want)) {
-    if (body.includes('@')) { console.error(`--share 的正文必须以 "${want}" 开头（里面那个 @ 不是主人）→ 拒绝发送`); process.exit(2) }
-    message = `${want} ${message}`
-    console.log(`[分享型] 正文没 @，已自动补：${want}`)
-  }
+if (args.has('share')) {
+  console.error('分享评论会公开 @ 主人。请改用 B站私信分享或普通动态。')
+  process.exit(9)
 }
 
-// "同一个人只回一条"（可选 · 2026-10-17 加）：只在二级回复（--root + --parent）时生效。
-// 用在"只回直接回她的人"那条流程里 → 同一个人 30 天内不会被回第二次（防拉锯、防被当聊天机器人）。
-// 放在入口处（--dry 也会跑），这样"能不能回"在发之前就能知道。
-if (ONCE) {
-  if (!parent || !root) {
-    console.log('  [once] 没有 --root/--parent —— 这个开关只对"回复某人"生效，已忽略')
-  } else {
-    const who = await parentAuthor(oid, root, parent)
-    if (!who?.mid) {
-      // fail-closed（2026-10-17，Kimi 评审指出）：判重系统状态未知时，默认动作是**这次不回**
-      console.error('  [once] 没查到被回复者的 uid → 判重状态未知，**这次不回**（fail-closed）')
-      console.error('  （确认要回就别传 --once-per-person，或者先手工确认这个人没被回过）')
-      process.exit(2)
-    } else {
-      const led = loadReplied()
-      const hist = (led.byUid?.[who.mid] ?? []).filter((x) => Date.now() - new Date(x.at).getTime() < ONCE_DAYS * 86_400_000)
-      if (hist.length) {
-        console.error(`  [once] ${ONCE_DAYS} 天内已经回过 ${who.name || who.mid}（${hist[0].at} · ${hist[0].target}）→ 这次不回`)
-        console.error('  （不想要这个开关，就别传 --once-per-person）')
-        process.exit(2)
-      }
-      console.log(`  [once] ${who.name || who.mid} 在 ${ONCE_DAYS} 天内没被回过 ✓ 可以回`)
-    }
+function checkIdentity(target = {}) {
+  try {
+    assertOutboundIdentitySafe(message, { surface: 'B站 评论', ...target })
+  } catch (error) {
+    console.error(`✗ ${error.message}`)
+    process.exit(9)
   }
 }
+checkIdentity()
 
 const credPath = accountBili('credentials.json')
 if (!fs.existsSync(credPath)) {
@@ -259,7 +193,7 @@ console.log(`  手机绑定: ${nav.data.mobile_verified ? '是' : '否'}   硬�
 console.log('  ⚠️ 请确认这就是你的小号；若是主号，停手、换 cookie')
 
 // ── 鱼群保护（B站评论区）────────────────────────────────────────────
-// 只有"她自己决定说的"（--auto、非分享）才走这层；主人当场授权的发言不拦。
+// 自主发言（--auto）才走这层。
 // 鱼太多 → 不发新楼层；能聚拢就改成回复鱼；2026-10-23 起默认强制聚拢（没有合适鱼楼也回一条）。
 const fishCfg = normalizeBiliFishGuard(config().fishGuard)
 const fishState = loadFishGuardState()
@@ -270,17 +204,42 @@ const forceGather = args.get('no-force-gather') === true
   : (args.get('force-gather') === true || fishCfg.forceGather !== false)
 const hadThread = Boolean(root || parent)
 // 评论年龄闸：明确太旧的评论不回复，避免挖 2023 年坟、骚扰早已离开的人。
+const replyAuthor = hadThread
+  ? await parentAuthor(oid, root || parent, parent || root, type, cookieHeader).catch(() => null)
+  : null
 if (hadThread) {
-  try {
-    const who = await parentAuthor(oid, root, parent, type)
-    const age = checkCommentAge(who?.ctime)
-    if (!age.ok) { printAgeBlock(age); process.exit(3) }
-  } catch (error) {
-    console.error(`⚠️ 评论年龄检查失败（按未知处理，不拦）：${String(error?.message ?? error).slice(0, 120)}`)
+  checkIdentity({ targetMid: replyAuthor?.mid, targetName: replyAuthor?.name, unverifiedTarget: !replyAuthor?.mid })
+  const age = checkCommentAge(replyAuthor?.ctime)
+  if (!age.ok) { printAgeBlock(age); process.exit(3) }
+}
+// "同一个人只回一条"（可选 · 2026-10-17 加）：只在二级回复（--root + --parent）时生效。
+// 用在"只回直接回她的人"那条流程里 → 同一个人 30 天内不会被回第二次（防拉锯、防被当聊天机器人）。
+// 放在入口处（--dry 也会跑），这样"能不能回"在发之前就能知道。
+if (ONCE) {
+  if (!parent || !root) {
+    console.log('  [once] 没有 --root/--parent —— 这个开关只对"回复某人"生效，已忽略')
+  } else {
+    const who = replyAuthor
+    if (!who?.mid) {
+      // fail-closed（2026-10-17，Kimi 评审指出）：判重系统状态未知时，默认动作是**这次不回**
+      console.error('  [once] 没查到被回复者的 uid → 判重状态未知，**这次不回**（fail-closed）')
+      console.error('  （确认要回就别传 --once-per-person，或者先手工确认这个人没被回过）')
+      process.exit(2)
+    } else {
+      const led = loadReplied()
+      const hist = (led.byUid?.[who.mid] ?? []).filter((x) => Date.now() - new Date(x.at).getTime() < ONCE_DAYS * 86_400_000)
+      if (hist.length) {
+        console.error(`  [once] ${ONCE_DAYS} 天内已经回过 ${who.name || who.mid}（${hist[0].at} · ${hist[0].target}）→ 这次不回`)
+        console.error('  （不想要这个开关，就别传 --once-per-person）')
+        process.exit(2)
+      }
+      console.log(`  [once] ${who.name || who.mid} 在 ${ONCE_DAYS} 天内没被回过 ✓ 可以回`)
+    }
   }
 }
+
 let fishPlan = null
-if (AUTO && !SHARE && fishCfg.enabled && !hadThread) {
+if (AUTO && fishCfg.enabled && !hadThread) {
   fishPlan = await planFishGuard({
     oid,
     type,
@@ -310,6 +269,7 @@ if (AUTO && !SHARE && fishCfg.enabled && !hadThread) {
         parent = target.rpid
         const mention = `@${target.uname || target.mid || target.rpid}`
         if (!String(message).startsWith(mention)) message = `${mention} ${message}`
+        checkIdentity({ targetMid: target.mid, targetName: target.uname, unverifiedTarget: !target.mid })
         if (fishPlan.gatherFallback) {
           console.log('  → 没有满足条件的鱼楼；按「强制聚拢」选回复最少/最新的鱼楼，仍然回一条 ✓')
         }
@@ -372,8 +332,8 @@ let ATTACK = null
 
 // ── 自由发言闸（2026-10-20 定 · 2026-10-21 加「自己动态」这本账）──────────
 //   四本账分开：普通评论 / 回找我的人 / 主动搭话 / **自己动态下的回复**
-//   共用同一条 2 分钟全局冷却 ✓  分享型（--share）有自己的一套，不在这里管 ✓
-const GATE = AUTO && !SHARE
+//   共用同一条全局冷却。
+const GATE = AUTO
 // 2026-10-21：**自动识别**自己动态 —— type=11/17 且 oid 命中"我发过的动态"，
 //   还分得清是哪一类（best/game/anime/gaming）✓
 //   2026-10-22 修：新版转发动态的 comment_type=17；只认 11 会把动态回复错记成"回找我的人"。
@@ -396,12 +356,7 @@ let toMid = ''
 if (GATE) {
   if (GATE_KIND === 'comment' && bvid) upMid = await upOf(bvid)
   // 自己动态那本账要按"对方 mid"限每人 1 条 → 得先查出被回复的人是谁
-  if (GATE_KIND.startsWith('mine:') && parent && root) {
-    try {
-      const who = await parentAuthor(oid, root, parent, type)
-      toMid = who?.mid ?? ''
-    } catch {}
-  }
+  if (GATE_KIND.startsWith('mine:')) toMid = replyAuthor?.mid ?? ''
   const g = checkFree({ kind: GATE_KIND, upMid, bvid, parent: parent ? String(parent) : '', toMid })
   console.log(`\n[自由发言闸] ${g.text}`)
   if (!g.ok) {
@@ -421,10 +376,10 @@ if (dry) {
   process.exit(0)
 }
 
-// 闸门：自主发言（--auto）或分享型（--share）才拦；主人授权的发言只显示额度
+// 限额只约束自主发言（--auto）。
 {
   const target = bvid ? `BV:${bvid}` : `oid:${oid}`
-  const chk = quota(['check', '--type', 'comment', '--target', target, ...(SHARE ? ['--share'] : AUTO ? ['--auto'] : [])])
+  const chk = quota(['check', '--type', 'comment', '--target', target, ...(AUTO ? ['--auto'] : [])])
   console.log(`\n[限额闸] ${chk.out}`)
   if (chk.code !== 0) {
     console.error('  → 拒绝发送。这是硬约束第 4 条的代码实现，不要绕过（要发请主人当场授权，或改白名单/额度）。')
@@ -432,14 +387,6 @@ if (dry) {
   }
 }
 
-// 出站身份闸（2026-10-23 用户要求：只准自己互认，不许泄露主人和别人的信息）
-// 公开面一旦把主人/别人的 QQ 号或 B站 mid 贴出去就收不回来；提示词只是概率约束，这里是硬拦。
-try {
-  assertOutboundIdentitySafe(message, { surface: 'B站 评论' });
-} catch (error) {
-  console.error(`\n✗ ${error.message}`);
-  process.exit(9);
-}
 // 判重（--once-per-person）已在入口处检查，这里直接发
 console.log('\n[go] 发送中…')
 const res = await fetch(url, {
@@ -497,7 +444,7 @@ if (out.code === 0) {
   // once-per-person：记一笔"回过谁"，下次判重用
   if (ONCE && parent && root) {
     try {
-      const who = await parentAuthor(oid, root, parent)
+      const who = replyAuthor
       if (who?.mid) {
         const led = loadReplied()
         led.byUid ??= {}
@@ -523,19 +470,19 @@ if (out.code === 0) {
     ...(parent && DYN_KIND ? ['--mine', DYN_KIND] : []),
     ...(toMid ? ['--to-mid', String(toMid)] : []),
     ...(parent ? ['--parent-id', String(parent)] : []),
-    ...(SHARE ? ['--share'] : AUTO ? ['--auto'] : [])])
+    ...(AUTO ? ['--auto'] : [])])
   console.log(`  [限额闸] ${rec.out}`)
-  // 自主 / 分享型 → **自动报备**（把 AGENTS 里的"约定"落到代码里；后端由 config.notify 决定）
-  if (AUTO || SHARE) {
+  // 自主发言按 config.notify 报备。
+  if (AUTO) {
     try {
       // 2026-10-21（管理员定）：**主动搭话必须单独报备**，带【主动搭话】tag + 视频链接
       const isTa = !!TA
-      const link = ((SHARE || isTa) && bvid) ? `\nhttps://www.bilibili.com/video/${bvid}/` : ''
+      const link = (isTa && bvid) ? `\nhttps://www.bilibili.com/video/${bvid}/` : ''
       const msg = isTa
         ? `【主动搭话】wo 在评论区搭了一句：\n${message.slice(0, 120)}${link}`
-        : `[${SHARE ? '分享型·@主人' : '自主发言'}] 评论已发出 rpid=${rpid}\n目标：${bvid ? 'BV:' + bvid : 'oid:' + oid}${link}\n内容：${message.slice(0, 80)}`
+        : `[自主发言] 评论已发出 rpid=${rpid}\n目标：${bvid ? 'BV:' + bvid : 'oid:' + oid}${link}\n内容：${message.slice(0, 80)}`
       execFileSync(process.execPath,
-        [path.join(path.dirname(fileURLToPath(import.meta.url)), 'notify.mjs'), msg, '--title', isTa ? '主动搭话报备' : (SHARE ? '分享评论报备' : '自主发言报备')],
+        [path.join(path.dirname(fileURLToPath(import.meta.url)), 'notify.mjs'), msg, '--title', isTa ? '主动搭话报备' : '自主发言报备'],
         { stdio: 'inherit' })
     } catch (e) {
       console.log(`  [通知] 发出去了但报备失败：${String(e.message).slice(0, 120)}——请手动告诉使用者`)

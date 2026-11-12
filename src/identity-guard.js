@@ -29,7 +29,7 @@ export function findIdentityLeaks(text, { ids = [] } = {}) {
   // 1) 已知 ID 精确命中：这些号码本来就只在配置/对齐表里，不该出现在公开文本里。
   for (const value of ids ?? []) {
     const id = String(value ?? '').trim();
-    if (!/^\d{4,15}$/.test(id) || seen.has(id)) continue;
+    if (!/^\d{4,20}$/.test(id) || seen.has(id)) continue;
     seen.add(id);
     const index = raw.indexOf(id);
     if (index >= 0) hits.push({ kind: 'known-id', label: '账号标识', value: id, index });

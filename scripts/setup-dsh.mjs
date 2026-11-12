@@ -2,13 +2,13 @@
 // setup-dsh.mjs — 在目标设备上安装 qq-bridge 的 DSH 端配置
 //
 // 功能：
-//   1. 安装两套 agent preset：qq-chat、qq-chat-v2
+//   1. 安装三套 agent preset：qq-chat、qq-chat-v2、surfcore-diary
 //      （DSH 0.1.7 机制：作为 surfcore bundle 的 patch 层插入
 //        @deepseek-ai/dsh-agent-preset 行；~/.dsh/.agent-presets/ 目录已不再被读取）
 //   2. 在 DSH profile 的 cordis.patch.yml 中挂载三个 MCP server：
 //      mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe
 //   3. 在 profile package.json 中只注册一个 bundle：surfcore
-//      （surfcore = QQ 设置 + B站养鱼 + 两个 chat preset，全部在一个 bundle 里）
+//      （surfcore = QQ 设置 + B站养鱼 + 三个 preset，全部在一个 bundle 里）
 //
 // 用法：
 //   node scripts/setup-dsh.mjs [profile]

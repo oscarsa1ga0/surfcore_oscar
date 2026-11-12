@@ -19,6 +19,7 @@ import { currentGame, advanceRotation, GAMES } from '../lib/games.mjs'
 import { rememberKind } from '../lib/my-dynamics.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, stripLegacyPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
 import { config } from '../lib/config.mjs'
+import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { hasKindSignal } from '../lib/kind-signals.mjs'
 import { ownerOf, findVideoDynamic, createForward, verifyForward } from '../lib/forward.mjs'
@@ -236,34 +237,23 @@ if (n < K.minLen || n > K.maxLen) {
   process.exit(6)
 }
 
-// ── 公开发给所有人：正文里不许 @ 人 ───────────────────────────
-{
-  let ownerName = ''
-  let ownerTitle = ''
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(HOME, '.dsh', 'surfcore', 'bili.config.json'), 'utf8'))
-    ownerName = String(cfg?.owner?.name ?? '').trim()
-    ownerTitle = String(cfg?.persona?.ownerTitle ?? '').trim()
-  } catch {}
-  if (ownerName && BODY.includes('@' + ownerName)) {
-    console.error(`✗ 这条动态是**推给所有人**的 —— 不要 @ ${ownerName} ✗`)
-    process.exit(7)
-  }
-  if (/^\s*@|[@＠]\S/.test(BODY)) {
-    console.error('✗ 这条动态是**推给所有人**的 —— 正文里别 @ 人 ✗')
-    process.exit(7)
-  }
-  const mentionsOwner = (ownerName && BODY.includes(ownerName)) || (ownerTitle && BODY.includes(ownerTitle))
-  const toEveryone = /(大家|各位|所有人|看到的人|路过的|推荐|安利|一起看|都来)/.test(BODY)
-  if (mentionsOwner && !toEveryone) {
-    console.log(`  ⚠️ 读起来像只跟 ${ownerName} 说的 —— 动态是推给所有人的，建议换成"给大家…"的口吻 ✓`)
-  }
+// 四类公开动态继续禁止在正文 @ 人。
+if (/^\s*@|[@＠]\S/.test(BODY)) {
+  console.error('✗ 这条动态是推给所有人的，正文里别 @ 人。')
+  process.exit(7)
 }
 
 // 最终发出去的正文 = 固定前缀 + 正文 + **视频链接**（2026-10-21 管理员要求：动态必须能点开视频）
 //   ⚠️ 只发文字+链接，**不再配图** —— 图片不算分享视频（他删过一条只有图的 ✗）
 const VIDEO_URL = `https://www.bilibili.com/video/${bv}/`
 const TEXT = `${withPrefix(KIND, BODY, KINDS_NOW)}\n${VIDEO_URL}`
+try {
+  assertOutboundIdentitySafe(TEXT, { surface: 'B站 每日动态' })
+} catch (error) {
+  console.error(`✗ ${error.message}`)
+  process.exit(9)
+}
+
 
 // ── 旧配图工具（现在默认不用了；留着给 --image 之外的手动用）─────────
 function pickMeme() {

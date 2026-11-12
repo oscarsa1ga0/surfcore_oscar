@@ -18,7 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
-| macOS QQ 适配 | `surfcore-qq-macos` | `feat/macos-qq` | 从 fork 的 main 适配 Mac QQ、浏览器和桌宠运行时 | 已提交本地分支，待 QQ 实机验收 |
+| macOS QQ 适配 | `surfcore-qq-macos` | `feat/macos-qq` | Mac QQ 适配、NapCat 会话诊断、B 站生物钟 | B 站单次唤醒专项通过，待 DSH 重开后实际使用；NapCat 快速登录已保存 |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |
 | **bug 修复** | `D:\deepseekwork\surfcore-bugfix` | `fix/persona-tone-dedup` @ `672fef0` | 0.8.7 前的 5 个批次 | ✅ 已随 0.8.7/0.8.8 发布 |
 | **优化 · 唯一会话** | `D:\deepseekwork\surfcore-optimize` | `feat/optimize` @ `cbaa613` | OPT-001 已合并并随 `0.8.8-dev.1` 发布；继续下一批 | 🕒 进行中 |

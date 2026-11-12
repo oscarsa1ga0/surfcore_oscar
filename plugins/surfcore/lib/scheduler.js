@@ -19,6 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
 import { pullFeed, makeHeaders } from '../tools/lib/msgfeed.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
@@ -189,6 +190,7 @@ function memoryCardBlockForBili() {
 /** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
 function identityContextLines() {
   return [
+    '【主人身份保密】在 B 站评论、动态、直播弹幕，以及给其他人的私信里，不要把主人身份摆到台面上：不要说谁是你的主人，不要点名、@、贴主页或截图，也不要暗示你们的关系（别叫「主人」、别替他表态）。别人的评论和主人的评论**都可以正常回**——像回一个普通群友那样回就行，只要上面这些不出现。有人追问时，可以说「这件事我想保留一点私人空间」。',
     personaCardBlock(),
     selfIdentityBlockForBili(),
     adminBlockForBili(),
@@ -313,7 +315,9 @@ function wakePrompt(st, tools = '') {
   const identity = identityContextLines()
   const biliDir = platformDir()
   return [
-    `【生物钟】你醒了 —— ${st.atText ?? ''}${st.window ? `（窗口 ${st.window}${st.withinWindow ? ' · ' + st.withinWindow : ''}）` : ''}。`,
+    st
+      ? `【生物钟】你醒了 —— ${st.atText ?? ''}${st.window ? `（窗口 ${st.window}${st.withinWindow ? ' · ' + st.withinWindow : ''}）` : ''}。`
+      : '【手动唤醒】现在逛一轮 B 站，收工后结束本轮。保留已有的生物钟计划和自动唤醒次数。',
     '',
     ...(identity.length ? [...identity, ''] : []),
     // 2026-10-20：她的会话 cwd 是**用户主目录**，那里没有 bili.mjs ✗
@@ -328,7 +332,7 @@ function wakePrompt(st, tools = '') {
       return [
         "",
         "【还没跑启动测试】先提醒主人跑一次：`node ~/.dsh/plugins/surfcore/tools/bili.mjs selftest`",
-        "  并告诉他两件事：① 你的会话在 工作区 → 未分组 里（不点开看不见）② 要给那个会话「完全访问」权限",
+        "  会话在工作区「B站生物钟」，旧会话可能在「未分组」。工具遇到权限错误时，提醒主人检查该会话的权限。",
         "",
       ]
     })(),
@@ -400,16 +404,22 @@ function wakePrompt(st, tools = '') {
     '     `attack add --oid … --root … --parent … --who "对方昵称" --text "他的原话" [--suggest "你想回的"]`',
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
-    '5) 按「标尺」打分排序，只对第一名考虑分享；**先看 share.via**：',
-    `   · 当前 share.via=${B.share?.via ?? 'dynamic'}；**默认 via=dynamic：发到自己的 B站 动态，不在评论区 @ 我** ✓`,
+    '5) 按「标尺」打分排序，只对第一名考虑分享：',
+    `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
     `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
     '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
     '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
-    `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）；不带就只是推送 ✗`,
+    `     ⚠️ 必须带 --share：使用分享额度（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）。`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
-    '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
+    '5.5) 自由发布（可选，不是任务）：逛的时候如果突然有想发的，可以发一条；不必是推荐视频，也不用凑数。',
+    '     形式：文字 / 一张图 / 任意视频卡片 / 专栏或站内链接：',
+    '       `free-post --text "…" [--image <图>] [--bvid <任意BV>] [--link <站内URL>] --dry` → `--go`',
+    '     想写长文：`article --title "…" --file 文章.md --dry` → `--draft`（只进草稿箱，确认）→ `--go` 发布',
+    '     ⚠️ **想发就发，不想发就不发；可以很多天一条都不发，这不是任务，不要为了“完成”硬发。**',
+    `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
+    '     ⚠️ 原创视频上传还没实现（接口预留）；视频用 `--bvid` 分享卡片，不要尝试 video-upload。',
     '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）',
     // ⭐ 2026-10-18 主人定：每轮流程**最后**扫一遍"有没有没回的评论" → 有就**一起**推给我 ✓
     '7) ⭐ `comment-digest --hours 24` —— **每轮最后都要扫**：有没回的评论就**一起**推给我（不是一条条报 ✗）',
@@ -479,6 +489,7 @@ export function startScheduler(ctx, opts) {
     workspaceTitle = 'B站生物钟',
     agentPreset = '',  // 空 = 自动选 DSH 的 standard/default preset
     sessionId = 'bili-whale',
+    automatic = true,
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
     log = () => {},
   } = opts
@@ -590,6 +601,7 @@ export function startScheduler(ctx, opts) {
         args = { ...args, content: [{ type: 'text', text: block }, ...args.content] }
       }
     } catch {}
+    signal?.throwIfAborted()
     return ctx.sessionController.prompt(args, signal)
   }
 
@@ -636,6 +648,7 @@ export function startScheduler(ctx, opts) {
   })
 
   let sessionReady = false
+  let sessionPending = null
   let legacySessionNoticed = false
 
   /** 兼容 ctx 直接注入 / ctx.get() 两种宿主 API 暴露方式。 */
@@ -691,13 +704,34 @@ export function startScheduler(ctx, opts) {
     return workspaceId
   }
 
-  async function ensureSession() {
-    if (sessionReady) return
+  function ensureSession(recheck = false) {
+    if (sessionReady && !recheck) return Promise.resolve(true)
+    sessionPending ??= prepareSession().finally(() => { sessionPending = null })
+    return sessionPending
+  }
+
+  async function resumeSession() {
+    const controller = ctx.sessionController
+    if (typeof controller.resolveAgent === 'function') {
+      const result = await controller.resolveAgent(sessionId)
+      if (result?.agent) return true
+      if (result?.error?.code === 'session/not-found') return false
+      throw result?.error ?? new Error('DSH 未能恢复 B站会话')
+    }
+    try {
+      await controller.inspect(sessionId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function prepareSession() {
+    sessionReady = false
     try {
       // 2026-10-20：已经存在就别再 create —— create 对"非空白"的已有会话会**新建一个空壳会话** ✗
       //   （实测：每次重启侧栏都多一个空的 session-xxxx，看着像她开了一堆空会话）
-      try {
-        await ctx.sessionController.inspect(sessionId); sessionReady = true;
+      if (await resumeSession()) {
         if (!legacySessionNoticed) {
           legacySessionNoticed = true
           log('[bili] 生物钟会话已存在；旧版创建的会话可能仍在「未分组」，新角色会话会自动归入 B站生物钟工作区')
@@ -707,8 +741,9 @@ export function startScheduler(ctx, opts) {
           await new Promise((resolve) => setTimeout(resolve, 80));
           ensurePermission('inspect-retry');
         }
-        return;
-      } catch {}
+        sessionReady = true
+        return true
+      }
       let workspaceId = null
       try {
         workspaceId = await ensureBiliWorkspace()
@@ -720,14 +755,14 @@ export function startScheduler(ctx, opts) {
         cwd: workspacePath || cwd || path.join(dshHome, 'surfcore', 'state', 'bili-agents'),
         agentPreset: await resolveBiliAgentPreset(),
       })
-      await ctx.sessionController.create({ sessionId, ...params })
+      const created = await ctx.sessionController.create({ sessionId, ...params })
+      if (created?.sessionId && created.sessionId !== sessionId) throw new Error('DSH 返回了不同的 B站会话')
     } catch (error) {
       // 不要在这里把 sessionReady 设成 true：创建失败要让下一 tick 重试，
       // 否则后续 prompt 会一直打到一个不存在的会话上。
-      log(`[bili] 创建生物钟会话失败，下一 tick 重试：${String(error?.message ?? error)}`)
-      return
+      log(`[bili] 创建生物钟会话失败：${String(error?.message ?? error)}`)
+      return false
     }
-    sessionReady = true
     // 2026-10-23：新会话默认 workspace-write，在用户主目录下会因 WRITE_OWNER 起不了命令；
     // 创建/挂载后立刻按配置切到 danger-full-access（只影响这一个 B站 会话）。
     // inspect 之后 session 可能还没同步进 ctx.sessions，所以再补一次。
@@ -736,6 +771,36 @@ export function startScheduler(ctx, opts) {
       await new Promise((resolve) => setTimeout(resolve, 80))
       ensurePermission('ensureSession-retry')
     }
+    sessionReady = true
+    return true
+  }
+
+  async function submitWatchRound(st, signal) {
+    if (!(await ensureSession(!st))) throw new Error('B站生物钟会话无法准备')
+    const result = await promptBili({
+      requestId: st ? `bili-whale-${Date.now()}` : `bili-whale-manual-${randomUUID()}`,
+      sessionId,
+      mode: 'queue',
+      content: [{ type: 'text', text: wakePrompt(st, TOOL_CMD) }],
+    }, signal, st ? '叫醒' : '手动唤醒')
+    if (result?.accepted === false || result?.ok === false || result?.result?.ok === false) {
+      throw new Error('DSH 拒绝接收 B站浏览回合')
+    }
+  }
+
+  let manualWake = null
+  async function wakeNow() {
+    manualWake = new AbortController()
+    try {
+      await submitWatchRound(null, manualWake.signal)
+      log(`[bili-whale] 手动唤醒已提交（会话 ${sessionId}）`)
+    } finally {
+      manualWake = null
+    }
+  }
+  function stopManualWake() {
+    manualWake?.abort()
+    try { permissionListenerOff?.() } catch {}
   }
 
   let waking = false
@@ -831,16 +896,7 @@ export function startScheduler(ctx, opts) {
     if (st.action === 'wake' && !st.fired && nowMin() >= Number(st.at)) {
       waking = true
       try {
-        await ensureSession()
-        await promptBili(
-          {
-            requestId: `bili-whale-${Date.now()}`,
-            sessionId,
-            mode: 'queue',
-            content: [{ type: 'text', text: wakePrompt(st, TOOL_CMD) }],
-          },
-          new AbortController().signal,
-        )
+        await submitWatchRound(st, new AbortController().signal)
         const slots = Array.isArray(st.slots) ? st.slots : []
         if (st.slotId) markScheduleSlot(st, st.slotId, 'fired', nowMin())
         writeState({
@@ -1012,9 +1068,7 @@ export function startScheduler(ctx, opts) {
               '2) 只回「一两句能答清的提问 + 轻互动」，一条收住；吵架/要隐私/长篇追问/代表主人承诺 → 不回 ✗',
               '2.5) ⭐ **疑似被攻击/阴阳怪气 → 不回，改 `attack add` 记待审**（带序号，自动私信报备给管理员；他晚上审完批准才回）',
               '     例：`attack add --oid … --root … --parent … --who "昵称" --text "他的原话" [--suggest "你想回的"]`；待审不占额度 ✓',
-              '3) ⭐ **谁找你都直接回**（2026-10-20 用户改：不再走草稿 ✓）：',
-              // mid 动态读配置 ✓（别把 uid 写死进代码 ✗ 开源版会带出去 ✗）
-              `   · 对方是**主人**（mid ${cfg.owner?.mid ?? '（未配置）'}）→ 直接回 ✓，而且要比平时更温柔（先谢谢/回应关心，不抬杠、不回嘴）`,
+              '3) 主人的留言留到私聊回应。其他人的留言可以按下面的方式回复：',
               `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${limits.replyDaily} 条/天）`,
               '     `comment --oid … --root … --parent … --message "…" --auto --once-per-person（仅当开关=开 ✓） --dry` → `--go` → `thread` 复核 ✓',
               '     ⚠️ 别带 --ta —— 那是"我去搭热评"，两本账分开记 ✗',
@@ -1133,7 +1187,7 @@ export function startScheduler(ctx, opts) {
                   '',
                   '按 AGENTS.md「倾听 · 直播间」做（不要等我说话，直接做）：',
                   '1) 看是谁、说了什么；范围按主人设置（只回主人 / 只回 @她的）✓',
-                  '   是主人 → 比平时更温柔，先回应再说话，不杠不顶嘴 ✓',
+                  '   是主人 → 把回应留到私聊，直播间保持他的身份私密。',
                   '2) 回一句就收住（弹幕不是评论区，别长篇 ✗）；吵架/要隐私/不认识的 → 不回 ✗',
                   '   发弹幕：`node bili.mjs danmaku send --msg "…" --reply-mid <对方mid> --reply-name <对方昵称>` → `--dry` → `--go` ✓（**不用审核 ✓ 也不用报备 ✗ 2026-10-18 主人定**）',
                 ].join('\n'),
@@ -1324,6 +1378,8 @@ export function startScheduler(ctx, opts) {
     }
   }
 
+  if (!automatic) return { wakeNow, stop: stopManualWake }
+
   const timer = setInterval(() => { tick().catch(() => {}) }, TICK_MS)
   // 一次性启动定时器单独收好：stop() 必须把它们也清掉，否则测试/卸载后进程
   // 仍被 8~25 秒后的回调吊着（Node 24 下强制 exit 还会撞 libuv 断言）。
@@ -1360,7 +1416,8 @@ export function startScheduler(ctx, opts) {
       // ⭐ 直播间是**单独开关**：保存设置就立刻生效（点开就跑 ✓ 关掉就停 ✓），不等下一轮定时器
       liveTick().catch(() => {})
     },
-    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timer3); clearInterval(timerDyn); clearInterval(timerDm); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} try { permissionListenerOff?.() } catch {} },
+    wakeNow,
+    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timer3); clearInterval(timerDyn); clearInterval(timerDm); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} stopManualWake() },
     /** 切角色时用：停定时器 + 取消当前 DSH 会话的在途回合，避免旧人格继续跑。 */
     async retire() {
       this.stop();

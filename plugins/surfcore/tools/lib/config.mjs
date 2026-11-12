@@ -40,8 +40,7 @@ export const DEFAULTS = {
   // 沉默逛：只看不说。enabled=false 时禁止评论/回复/搭话/动态/分享/私信，但仍可看/评分/写日记。
   interact: { enabled: true, maxCommentAgeDays: 14 },
   aliases: [],                  // 历史昵称（兜底用；当前昵称仍从 nav 动态读）
-  // 使用者本人（分享型评论要 @ 的人）：mid 用于白名单/查询，name 用于正文里的 @昵称
-  // （acc/info 查询会风控，所以 name 缓存一份；改过就用 thread 的 `@到:` 验一下）
+  // 使用者本人：用于私信路由与对外发言的身份保护。
   owner: { mid: '', name: '' },
   quota: { shareDaily: 3 },
   // 四本账的硬闸门（2026-10-22 从代码搬到配置；设置页可改）。默认值与旧行为一致。
@@ -50,6 +49,11 @@ export const DEFAULTS = {
   // 四类动态（2026-10-22 可编辑）：总开关、两条之间的最小间隔、每类的时段/长度/开头。
   //   kinds 里只存"被改过的字段"；缺省值在 tools/lib/kinds.mjs 的 DEFAULT_KINDS。
   dynamics: { enabled: true, gapMin: 30, kinds: {} },
+  // 自由发布（2026-11-12 用户定）：逛 B 站时她想发就发，不是每日任务，不设每日上限；
+  // 和四类动态/分享/专栏共用 dynamics.gapMin 的间隔。
+  freePost: { enabled: true },
+  // 原创专栏：先 --draft 验证，再 --go；category=0 用 B站默认分类。
+  article: { enabled: true, category: 0 },
   // 2026-10-23 用户定：默认发自己的动态（视频卡片），不再默认评论区 @ 主人。
   share: { enabled: true, via: 'dynamic', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },  // 分享型开关与评分阈值
   // 倾听（2026-10-18 补默认值，与设置页对齐）：评论区 + 直播间
@@ -95,6 +99,7 @@ export function config() {
   let user = {}
   try { user = JSON.parse(fs.readFileSync(configPath, 'utf8')) } catch { /* 没配置就用默认 */ }
   cache = merge(DEFAULTS, user)
+  if (cache.share?.via === 'comment') cache.share.via = 'dm'
   cache.__hasUserFile = Object.keys(user).length > 0
   cacheKey = key
   return cache

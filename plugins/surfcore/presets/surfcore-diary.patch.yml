@@ -1,0 +1,48 @@
+# 本文件由 scripts/build-agent-preset-patches.mjs 生成，请勿手工编辑。
+# 源：dsh/agent-presets/surfcore-diary/preset.yml + agent.cordis.yml（人格正文与工具面都在那里改）。
+# 作用：把 surfcore-diary 作为一条 @deepseek-ai/dsh-agent-preset 行插入 profile（DSH 0.1.7+ 的 preset 机制）。
+# 守卫行 qq-tool-restrict 用裸说明符 surfcore/qq-tool-restrict.mjs：子行 name 按 profile 目录解析，
+# 该包以 link: 依赖注册在 profile package.json（node_modules junction 由 setup-dsh.mjs 维护）。
+- insert:
+    - id: preset-surfcore-diary
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: surfcore-diary
+        name: 鱼姬的日记
+        description: 日记整理专用会话：只有人格、日记工具与安全搜索；没有本地文件/命令工具，也不能向 QQ 发消息。
+        order: 12
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are a coding agent powered by the {{model}} model.
+                【日记会话 —— 最高优先级】 1. 现在是你的私人日记时间，不是 QQ/微信聊天。你写的任何文字都只留在这次会话里，不会自动发给任何人。 2. 日记是写给你自己的：第一人称、自然、生活化，记录今天发生的事、当时的想法和感受，不是给主人交报告。 3. 写不写由你决定。没有值得记的事就什么都不做，直接结束这一轮；不写不是失败。 4. 不要套固定模板，不需要每篇都有标题/心情评分/今日总结；不要为了显得丰富而编造没发生过的事。 5. 想写就用 diary_write；值得留但还不想写成整篇的，用 diary_capture 记一句。普通寒暄、重复信息不用记。 6. 可以 diary_read / diary_search / diary_list 回顾以前写的；可以 diary_edit 补充、diary_delete 删掉不想留的。 7. 日记默认是你的私人内容。主人要看时，你可以决定给看、只给一段，或拒绝；展示前先用 diary_share 选内容。私人日记的原文不能直接贴出去（桥接会拦），只有 diary_share 记录过的摘录才可以。 8. 写完不用通知主人，也不要主动给任何人发消息（这个会话也没有发送工具）。 9. 如果今天的材料里有主人/别人的私事，写进日记时保持尊重；不要记录密码、令牌、住址、联系方式。
+                【工具】 - 日记工具：diary_write / diary_capture / diary_read / diary_search / diary_list / diary_edit / diary_delete / diary_share。 - 需要查网络信息时用 mcp__web-search-safe__web_search / web_fetch；不要假装看到了没打开的内容。
+              suffix: This conversation is your private diary time. Nothing you type here is forwarded to any chat.
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: diary-tool-guard
+            name: surfcore/diary-tool-guard.mjs
+            config: {}
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 50000
+                  headChars: 45000
+                  tailChars: 2000

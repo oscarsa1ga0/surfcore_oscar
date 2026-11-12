@@ -58,9 +58,9 @@ assert.ok(cmd.includes('daily-dynamic.json'));
 const registry = fs.readFileSync(new URL('../plugins/surfcore/tools/bili.mjs', import.meta.url), 'utf8');
 assert.ok(registry.includes("'share-dynamic'"));
 
-// 默认分享方式 = dynamic；旧 comment/dm 仍保留
+// 默认分享方式为动态。旧评论分享设置读入后转为私信。
 assert.equal(normalizeBiliConfig({ share: { via: 'dynamic' } }).share.via, 'dynamic');
-assert.equal(normalizeBiliConfig({ share: { via: 'comment' } }).share.via, 'comment');
+assert.equal(normalizeBiliConfig({ share: { via: 'comment' } }).share.via, 'dm');
 assert.equal(normalizeBiliConfig({ share: { via: 'dm' } }).share.via, 'dm');
 assert.equal(normalizeBiliConfig({ share: {} }).share.via, 'dynamic');
 

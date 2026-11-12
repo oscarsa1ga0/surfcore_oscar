@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import {
   findIdentityLeaks, formatIdentityLeakError, maskLeakValue,
 } from '../src/identity-guard.js';
@@ -69,10 +71,10 @@ test('错误信息里的号码是打码的（错误本身也可能被贴进日�
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-guard-'));
 try {
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
-    admin: { qq: '3287064288', biliMid: '37634003', biliName: '主人' },
+    admin: { qq: '3287064288', biliMid: '1234567890123456', biliName: '测试用户Ａ' },
   }));
   fs.writeFileSync(path.join(temp, 'bili.config.json'), JSON.stringify({
-    owner: { mid: '37634003', name: '主人' },
+    owner: { mid: '37634003', name: '测试用户Ａ' },
     self: { mid: '1483638708', name: '小肥鱼' },
   }));
   fs.writeFileSync(path.join(temp, 'alignments.json'), JSON.stringify({
@@ -85,7 +87,7 @@ try {
 
   test('受保护名单 = 主人 QQ/mid + 对齐表里别人的号；自己的 B站 mid 不拦', () => {
     const ids = collectProtectedIdentities({ surfcoreDir: temp });
-    for (const wanted of ['3287064288', '37634003', '111222333', '99887766', '444555666']) {
+    for (const wanted of ['3287064288', '37634003', '1234567890123456', '111222333', '99887766', '444555666']) {
       assert.ok(ids.includes(wanted), `缺少 ${wanted}`);
     }
     assert.ok(!ids.includes('1483638708'), '自己的 B站 mid 不该被拦（那是公开资料）');
@@ -96,6 +98,71 @@ try {
     assert.throws(() => assertOutboundIdentitySafe('QQ 111222333', { surface: 'B站 私信', surfcoreDir: temp }), /B站 私信/);
     assert.equal(assertOutboundIdentitySafe('这视频真好看，2026 年还能看到', { surfcoreDir: temp }).ok, true);
     assert.equal(assertOutboundIdentitySafe('我的空间 space.bilibili.com/1483638708', { surfcoreDir: temp }).ok, true);
+  });
+
+  test('已配置的主人昵称、主页、关系表述和回复目标均受保护', () => {
+    for (const text of ['＠ 测试用户a 快来看', '测试用户Ａ发的', 'https://space.bilibili.com/1234567890123456', '我的主人叫某某']) {
+      assert.throws(() => assertOutboundIdentitySafe(text, { surfcoreDir: temp }), /暴露主人的身份/);
+    }
+    assert.throws(() => assertOutboundIdentitySafe('来看', { surfcoreDir: temp, targetMid: '37634003' }), /提及主人/);
+    assert.throws(() => assertOutboundIdentitySafe('来看', { surfcoreDir: temp, unverifiedTarget: true }), /无法核验/);
+    assert.equal(assertOutboundIdentitySafe('@普通网友 这个猫咪认得主人', { surfcoreDir: temp, targetMid: '99990000' }).ok, true);
+    assert.equal(assertOutboundIdentitySafe('测试用户Ａ，晚上好', { surfcoreDir: temp, privateRecipientMid: '37634003' }).ok, true);
+    assert.throws(() => assertOutboundIdentitySafe('测试用户Ａ是我主人', { surfcoreDir: temp, privateRecipientMid: '99990000' }), /暴露主人的身份/);
+  });
+
+  test('B站命令在实际发送入口拒绝点名、旧分享和公开回复主人', () => {
+    const dshHome = path.join(temp, 'dsh');
+    const surface = path.join(dshHome, 'surfcore');
+    fs.mkdirSync(path.join(surface, 'bili'), { recursive: true });
+    for (const file of ['config.json', 'bili.config.json']) fs.copyFileSync(path.join(temp, file), path.join(surface, file));
+    fs.writeFileSync(path.join(surface, 'bili', 'credentials.json'), JSON.stringify({
+      sessdata: 'fixture-only', bili_jct: 'fixture-only', buvid3: 'fixture-only',
+    }));
+    const mock = path.join(temp, 'mock-fetch.mjs');
+    fs.writeFileSync(mock, `
+      globalThis.fetch = async (input, options = {}) => {
+        const url = new URL(input);
+        if (options.method && options.method !== 'GET') throw new Error('fixture forbids network writes');
+        if (url.pathname === '/x/web-interface/nav') return Response.json({ code: 0, data: { isLogin: true, mid: 1483638708, uname: '鱼姬' } });
+        if (url.pathname === '/x/relation') return Response.json({ code: 0, data: { attribute: 6 } });
+        if (url.pathname === '/x/v2/reply/reply') {
+          const root = url.searchParams.get('root');
+          const rootMid = { '101': '37634003', '102': '99990000' }[root];
+          const row = rootMid ? { rpid_str: root, member: { mid: rootMid }, ctime: Date.now() / 1000 } : null;
+          return Response.json({ code: 0, data: { root: row, replies: [] } });
+        }
+        throw new Error('unmocked GET: ' + url.pathname);
+      };
+    `);
+    const cli = new URL('../plugins/surfcore/tools/bili.mjs', import.meta.url);
+    const run = (...args) => spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', 'plugins/surfcore/tools/bili.mjs'), ...args], {
+      env: { ...process.env, DSH_HOME: dshHome, SURFCORE_BILI_CONFIG: path.join(surface, 'bili.config.json'), NODE_OPTIONS: `--import=${pathToFileURL(mock)}` },
+      encoding: 'utf8', timeout: 10000,
+    });
+    const video = ['--oid', '55555', '--bvid', 'BV1Lpnr6wE59', '--message', '好看'];
+    const cases = [
+      { args: ['comment', ...video, '--share', '--auto'], error: /改用 B站私信/ },
+      { args: ['comment', ...video, '--root', '101', '--parent', '101'], error: /提及主人/ },
+      { args: ['comment', ...video, '--root', '103', '--parent', '103'], error: /无法核验/ },
+      { args: ['danmaku', 'send', '--room', '88888', '--msg', '好看', '--reply-mid', '37634003'], error: /提及主人/ },
+      { args: ['danmaku', 'send', '--room', '88888', '--msg', '好看', '--reply-dmid', '888'], error: /无法核验/ },
+      { args: ['dynamic-image', '--image', 'fixture.png', '--at', '37634003'], error: /提及主人/ },
+      { args: ['dynamic', 'post', '--text', '测试用户Ａ快来看'], error: /提及主人/ },
+      { args: ['share-dynamic', '--bvid', 'BV1Lpnr6wE59', '--text', '测试用户Ａ快来看'], error: /提及主人/ },
+      { args: ['dm', '--to', '99990000', '--msg', '我的主人叫某某'], error: /提及主人/ },
+    ];
+    for (const { args, error } of cases) {
+      const result = run(...args, '--go');
+      assert.equal(result.status, 9, `${cli.pathname} ${args.join(' ')}: ${result.stderr}`);
+      assert.match(result.stderr, error);
+    }
+    const publicReply = run('comment', ...video, '--root', '102', '--parent', '102', '--dry');
+    assert.equal(publicReply.status, 0, publicReply.stderr);
+    assert.match(publicReply.stdout, /\[dry\] 未发送/);
+    const privateReply = run('dm', '--msg', '测试用户Ａ，晚上好', '--dry');
+    assert.equal(privateReply.status, 0, privateReply.stderr);
+    assert.match(privateReply.stdout, /\[dry\]/);
   });
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
@@ -109,6 +176,10 @@ test('B站 写操作（评论/私信/动态/分享）都接了身份闸', () => 
     'dm.mjs': 'B站 私信',
     'dynamic.mjs': 'B站 动态',
     'share-dynamic.mjs': 'B站 动态',
+    'daily.mjs': 'B站 每日动态',
+    'dynamic-image.mjs': 'B站 图文动态',
+    'edit-dynamic.mjs': 'B站 动态编辑',
+    'danmaku.mjs': 'B站 直播弹幕',
   };
   for (const [file, surface] of Object.entries(files)) {
     const source = fs.readFileSync(path.join(root, 'plugins', 'surfcore', 'tools', 'commands', file), 'utf8');

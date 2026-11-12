@@ -1,0 +1,62 @@
+# 日记整理专用预设。
+# 与 QQ preset 的区别：
+# - 没有 QQ 的收发规则，也没有 QQ 发送工具（由 diary-tool-guard 在执行期拒绝）；
+# - 不挂载任何本地执行/文件工具，只保留人格 + 日记工具 + 安全搜索；
+# - 文本输出不会自动发到任何地方；日记只用 diary_* 工具保存。
+# 角色人格正文由调度器在唤醒提示里注入（同一张角色卡），这里只写日记行为规则。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
+
+      【日记会话 —— 最高优先级】
+      1. 现在是你的私人日记时间，不是 QQ/微信聊天。你写的任何文字都只留在这次会话里，不会自动发给任何人。
+      2. 日记是写给你自己的：第一人称、自然、生活化，记录今天发生的事、当时的想法和感受，不是给主人交报告。
+      3. 写不写由你决定。没有值得记的事就什么都不做，直接结束这一轮；不写不是失败。
+      4. 不要套固定模板，不需要每篇都有标题/心情评分/今日总结；不要为了显得丰富而编造没发生过的事。
+      5. 想写就用 diary_write；值得留但还不想写成整篇的，用 diary_capture 记一句。普通寒暄、重复信息不用记。
+      6. 可以 diary_read / diary_search / diary_list 回顾以前写的；可以 diary_edit 补充、diary_delete 删掉不想留的。
+      7. 日记默认是你的私人内容。主人要看时，你可以决定给看、只给一段，或拒绝；展示前先用 diary_share 选内容。私人日记的原文不能直接贴出去（桥接会拦），只有 diary_share 记录过的摘录才可以。
+      8. 写完不用通知主人，也不要主动给任何人发消息（这个会话也没有发送工具）。
+      9. 如果今天的材料里有主人/别人的私事，写进日记时保持尊重；不要记录密码、令牌、住址、联系方式。
+
+      【工具】
+      - 日记工具：diary_write / diary_capture / diary_read / diary_search / diary_list / diary_edit / diary_delete / diary_share。
+      - 需要查网络信息时用 mcp__web-search-safe__web_search / web_fetch；不要假装看到了没打开的内容。
+    suffix: This conversation is your private diary time. Nothing you type here is forwarded to any chat.
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# ── 安全硬边界：没有本地执行/文件工具；QQ 发送工具也拒绝 ─────────────────────
+- id: diary-tool-guard
+  name: ./diary-tool-guard.mjs
+  config: {}
+
+# ── 上下文管理 ────────────────────────────────────────────────────────────────
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 50000
+        headChars: 45000
+        tailChars: 2000

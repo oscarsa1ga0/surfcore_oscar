@@ -1555,19 +1555,23 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
     const anecdote = redactForMemory(entry.anecdote ?? '', { scope: 'bili', maxChars: 260 });
     const body = type === 'dynamic'
       ? redactForMemory(entry.text ?? entry.title ?? '', { scope: 'bili', maxChars: 400 })
-      : (type === 'comment'
-        ? `在 B 站评论：${redactForMemory(entry.note ?? entry.text ?? '', { scope: 'bili', maxChars: 300 })}`
-        : (reason || anecdote || redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 300 })));
+      : (type === 'article'
+        ? `在 B 站写了一篇专栏${title ? `《${title}》` : ''}：${redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 400 })}`
+        : (type === 'comment'
+          ? `在 B 站评论：${redactForMemory(entry.note ?? entry.text ?? '', { scope: 'bili', maxChars: 300 })}`
+          : (reason || anecdote || redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 300 }))));
     if (!title && !body) continue;
     const displayTitle = /^《.*》$/.test(title) ? title : `《${title}》`;
     const text = type === 'video'
       ? `在 B 站看了${short(displayTitle, 60)}${body ? `：${short(body, 260)}` : ''}`
       : body;
     const result = addMemoryRecord(card, {
-      source: `bili-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
+      source: type === 'article' ? 'bili-article' : `bili-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
       sourceId,
       text,
-      title: type === 'dynamic' ? `B站动态：${short(body || title, 30)}` : (type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40)),
+      title: type === 'article'
+        ? `B站专栏：${short(title || body, 30)}`
+        : (type === 'dynamic' ? `B站动态：${short(body || title, 30)}` : (type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40))),
       detail: anecdote && body !== anecdote ? anecdote : '',
       score: entry.score,
       favorite: entry.favorite === true,

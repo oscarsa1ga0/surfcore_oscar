@@ -30,6 +30,15 @@ function modelInputs(entry) {
   return mods.some((m) => IMAGE_RE.test(String(m?.id ?? m?.type ?? m)));
 }
 
+/** 目录省略能力字段表示未知；跟随默认模型切换 provider 不能把未知降成不支持。 */
+export function catalogImageInput(catalog, provider, model, fallback = {}) {
+  const entry = findCatalogModel(catalogChoices(catalog).models, provider, model);
+  if (entry) return entry.imageInput;
+  // 目录外第三方仍保守降级；保留历史配置默认模型的未知时尝试行为。
+  return provider === (fallback.provider || 'deepseek-official')
+    && model === (fallback.model || 'deepseek-flash') ? null : false;
+}
+
 function priceInfo(priceTable, model) {
   const off = priceTable?.models?.[model]?.off;
   if (!off) return { tier: 'unknown', label: '价目表未登记', cacheMiss: null, output: null };

@@ -52,6 +52,9 @@ const BIDI_DEFAULTS = {
   limits: { ...DEFAULT_LIMITS },
   // 四类动态（2026-10-22 可编辑）：默认值与 tools/lib/kinds.mjs 的 DEFAULT_KINDS 同源。
   dynamics: dynamicDefaults(),
+  // 自由发布 / 原创专栏（2026-11-12）：不是任务，不设每日上限；共用 dynamics.gapMin。
+  freePost: { enabled: true },
+  article: { enabled: true, category: 0 },
   diary: { push: true, enabled: true },
   notify: { type: 'none', url: '', template: 'text', cmd: '', args: [], timeoutMutes: [] },
   interact: { enabled: true, maxCommentAgeDays: 14 },
@@ -138,6 +141,18 @@ export const DEFAULT_UNIFIED = {
   },
   // 向量记忆（独立存储）：与 memoryCard 并列，各自有开关；memory.mode 决定读哪套。
   vectorMemory: { ...DEFAULT_VECTOR_MEMORY_CONFIG, packLinks: { ...DEFAULT_VECTOR_MEMORY_CONFIG.packLinks } },
+  // 日记：角色自己的生活记录（characters/<id>/diary/），和记忆卡分开。
+  // autoReview 由插件宿主的日记调度器执行；reviewAt 是本地时间。
+  diary: {
+    enabled: true,
+    autoReview: true,
+    reviewAt: '23:30',
+    catchUpHours: 6,
+    maxAttempts: 2,
+    captureEnabled: true,
+    leakGuard: true,
+    digestMaxChars: 8000,
+  },
   extensions: { enabled: true, disabled: [] },
   platforms: {
     enabled: ['qq', 'bili'],
@@ -541,9 +556,14 @@ export function normalizeBiliConfig(input) {
   cfg.limits = normalizeLimits(cfg.limits);
   // 四类动态：只保留可编辑字段（enabled/slot/minLen/maxLen/prefix），其他键丢掉。
   cfg.dynamics = normalizeDynamics(cfg.dynamics);
+  cfg.freePost = isPlainObject(cfg.freePost) ? cfg.freePost : {};
+  cfg.freePost.enabled = cfg.freePost.enabled !== false;
+  cfg.article = isPlainObject(cfg.article) ? cfg.article : {};
+  cfg.article.enabled = cfg.article.enabled !== false;
+  cfg.article.category = finiteNumber(cfg.article.category, 0, 0, 1000, { integer: true });
   cfg.share = isPlainObject(cfg.share) ? cfg.share : {};
-  // 2026-10-23 用户定：默认发自己的动态（视频卡片），不再默认去评论区 @ 主人。
-  cfg.share.via = ['dynamic', 'comment', 'dm'].includes(cfg.share.via) ? cfg.share.via : 'dynamic';
+  // 旧的评论分享改走私信，继续只把内容分享给原接收者。
+  cfg.share.via = ['comment', 'dm'].includes(cfg.share.via) ? 'dm' : 'dynamic';
   cfg.share.minScore = finiteNumber(cfg.share.minScore, 13, 0, 20, { integer: true });
   cfg.share.silentAfterDays = finiteNumber(cfg.share.silentAfterDays, 3, 0, 60, { integer: true });
   cfg.share.decayPerDay = finiteNumber(cfg.share.decayPerDay, 1, 0, 10, { integer: true });

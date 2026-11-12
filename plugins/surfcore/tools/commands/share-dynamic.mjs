@@ -51,6 +51,12 @@ if (text.length > 1000) { console.error('动态正文最多 1000 字'); process.
 if (dry && go) { console.error('--dry 和 --go 只能选一个'); process.exit(2) }
 if (!dry && !go) { console.error('必须显式 --dry 或 --go'); process.exit(2) }
 if (go && !assertInteractEnabled('分享动态')) process.exit(3)
+try {
+  assertOutboundIdentitySafe(text, { surface: 'B站 动态' })
+} catch (error) {
+  console.error(`✗ ${error.message}`)
+  process.exit(9)
+}
 
 const cfg = config()
 if (cfg.share?.enabled === false) {
@@ -116,16 +122,6 @@ if (!gate({ type: 'comment', target: `BV:${bvid}`, auto: true, share: true })) {
 if (dry) {
   console.log(`\n[dry] 未发布。${avDyn ? '真发会转发视频卡片。' : '真发会发文字 + 链接。'}`)
   process.exit(0)
-}
-
-// ── 发布 ─────────────────────────────────────────────────────────────────
-// 出站身份闸（2026-10-23 用户要求：只准自己互认，不许泄露主人和别人的信息）
-// 转发卡片/文字动态都是公开面；提示词只是概率约束，这里是硬拦。
-try {
-  assertOutboundIdentitySafe(finalText, { surface: 'B站 动态' })
-} catch (error) {
-  console.error(`\n✗ ${error.message}`)
-  process.exit(9)
 }
 let dynId = ''
 try {

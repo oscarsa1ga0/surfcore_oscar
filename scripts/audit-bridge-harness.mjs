@@ -12,10 +12,12 @@ import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
 import * as wait from '../src/v2-wait.js';
 import * as safeFetch from '../src/safe-fetch.js';
+import { downloadOneBotImageStream, isProbablySafeImageFileRef, uploadOneBotStickerImage } from '../src/onebot-image-stream.js';
 import * as forward from '../src/forward.js';
 import * as selfIdentity from '../src/self-identity.js';
 import * as slang from '../src/slang-learner.js';
 import * as sticker from '../src/sticker-lib.js';
+import * as stickerSemantics from '../src/sticker-semantics.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
@@ -58,8 +60,9 @@ import * as stateAcl from '../src/state-acl.mjs';
 import * as qqAt from '../src/qq-at.js';
 import * as modelOptions from '../src/model-options.js';
 import { createBiliMemory } from '../src/bili-memory.js';
-import { createOutbox } from '../src/outbox.js';
+import { createOutbox, historyAllowsReplay, neverDispatched } from '../src/outbox.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
+import { oneBotWsToken, usesExternalOneBot } from '../src/snowluma-conn.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -201,6 +204,11 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
+    sendMessagesV2, flushReplyOutbox, outbox, greetingFriendCheck, setAccountOnline,
+    setReplyOutboxAccount(id) {
+      replyOutboxAccount = String(id);
+      replyOutboxReady = true;
+    },
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     fishChatWindows, evaluateConversationFishGuard, fishGuardSendBlock, recordFishWindow,
     tokenGuardWakeBlock, tokenGuardSendBlock, bridgeDailyUsage, learnerBudgetBlock,
@@ -216,7 +224,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
-    settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
+    settingFromDshNamespace, selfIdentityTextV2, refreshQqSelfProfile, buildWakeReminderPromptV2,
+    checkOneBotSession, snowlumaHealthSnapshot,
     getMode() { return currentMode; },
     setSnowlumaHealth(patch = {}) { Object.assign(snowlumaHealth, patch); },
     setSelfIdentity(display, id) {
@@ -243,6 +252,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const context = vm.createContext({
     fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
     fetch: fakeFetch,
+    isProbablySafeImageFileRef, uploadOneBotStickerImage,
+    downloadOneBotImageStream: (options) => downloadOneBotImageStream({ ...options, request: fakeFetch }),
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
     execFileSync: () => '',
@@ -257,16 +268,17 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector, createBiliMemory, fetchVideoInfo,
     // DSH 端口兜底：isLoopbackBaseUrl 是真身（纯函数），两条探测是桩——
     // 测试不该在宿主机上真跑 netstat / 真去连 3080。
-    isLoopbackBaseUrl,
+    isLoopbackBaseUrl, oneBotWsToken, usesExternalOneBot,
     probeDshBaseUrl: async () => true,
     discoverDshBaseUrl: async () => null,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
+    ...stickerSemantics,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...qqAt,
     ...modelOptions,
     ...dshModelFollow,
     ...commandSpam,
-    createOutbox,
+    createOutbox, historyAllowsReplay, neverDispatched,
     ...voiceDiagnostics,
     ...allowlist,
     ...callname,

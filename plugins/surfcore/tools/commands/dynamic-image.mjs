@@ -12,6 +12,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 // 2026-10-21 补：line 144 用到 gate 却没 import，发动态会 ReferenceError
 import { gate } from '../lib/quota-gate.mjs'
+import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
 const argv = process.argv.slice(2)
 const args = new Map()
@@ -28,6 +29,12 @@ const isGo = args.has('go')
 
 if (!imagePath || typeof imagePath !== 'string') { console.error('需要 --image <路径>'); process.exit(2) }
 if (isDry === isGo) { console.error('必须且只能给一个 --dry 或 --go'); process.exit(2) }
+try {
+  assertOutboundIdentitySafe(text, { surface: 'B站 图文动态', targetMid: atMid, targetName: atName })
+} catch (error) {
+  console.error(`✗ ${error.message}`)
+  process.exit(9)
+}
 if (!fs.existsSync(imagePath)) { console.error(`图片不存在: ${imagePath}`); process.exit(2) }
 
 // ---- image sniffing --------------------------------------------------------

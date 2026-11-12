@@ -30,6 +30,8 @@
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
 | [guides/MEMORY_CARD.md](guides/MEMORY_CARD.md) | **记忆卡设计与使用**：衰减卡 vs 全量卡、重要度评分、「最初」30 天概率与初次相遇指定、清晰度/遗忘、80/90/100% 容量告警、压缩、全量存档/召回、隐私 scope、配置/API/验证 | ✅ 2026-10-22 新增 |
+| [guides/DIARY.md](guides/DIARY.md) | **日记（角色自己的生活记录）**：每角色独立存储、8 个 diary_* 工具、private/shareable 与摘要分享、桥接出站硬闸、每日 23:30 回顾/补执行/重试、设置页与验证、已知边界 | ✅ 2026-11-12 新增 |
+| [guides/BILI-PUBLISH.md](guides/BILI-PUBLISH.md) | **B站自由发布 / 原创专栏**：自由动态（文字/图/任意视频卡片/链接，不设每日上限、30 分钟间隔、不是任务）、原创专栏草稿/发布、视频上传预留接口、`bili-posts.jsonl` → 记忆卡/人格同步 | ✅ 2026-11-12 新增 |
 | [guides/VECTOR_MEMORY.md](guides/VECTOR_MEMORY.md) | **向量记忆（独立系统）**：与叙事记忆并列、两套存储各自继续、`memory.mode` 只影响读取；独立 JSONL/索引、三模型、检索打分与过滤、注入预算、配置/API/失败降级/回滚 | ✅ 2026-11-02 新增 |
 | [guides/EMBEDDING_PACKS.md](guides/EMBEDDING_PACKS.md) | **Embedding 按需安装包**：模型/运行时/云端三类包、pack.json 契约、state/embedding-packs 目录、安装/校验/卸载、云端 key 与隐私、与安装清单隔离；解决“不能把 1.2GB 权重塞进 SurfCore” | ✅ 2026-11-04 实现（runtime 自带 Ollama CPU，干净 VM 待跑） |
 | [guides/CHARACTER_PERSONA.md](guides/CHARACTER_PERSONA.md) | **角色人格系统**：每角色目录包（人格卡 + 记忆卡 + B站行为账本）、切换序列与隔离矩阵、12 槽自动存档/回档、旧数据迁移、API、已知边界 | ✅ 2026-10-23 新增 |

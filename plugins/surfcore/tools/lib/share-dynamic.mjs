@@ -53,3 +53,35 @@ export function mergeShareRecord(state = {}, record = {}) {
   }
   return next
 }
+
+/** 自由动态：写 state.free（保留四类/share/article），lastDynamicAt 会算进间隔。 */
+export function mergeFreeRecord(state = {}, record = {}) {
+  const next = state && typeof state === 'object' && !Array.isArray(state) ? { ...state } : {}
+  next.free = {
+    date: String(record.date ?? ''),
+    at: String(record.at ?? new Date().toISOString()),
+    atText: String(record.atText ?? ''),
+    kind: 'free',
+    bvid: String(record.bvid ?? ''),
+    dynId: String(record.dynId ?? ''),
+    card: record.card === true,
+    image: record.image === true,
+    chars: Number(record.chars) || 0,
+  }
+  return next
+}
+
+/** 原创专栏：写 state.article（同样参与任意两条动态之间的间隔）。 */
+export function mergeArticleRecord(state = {}, record = {}) {
+  const next = state && typeof state === 'object' && !Array.isArray(state) ? { ...state } : {}
+  next.article = {
+    date: String(record.date ?? ''),
+    at: String(record.at ?? new Date().toISOString()),
+    atText: String(record.atText ?? ''),
+    kind: 'article',
+    aid: String(record.aid ?? ''),
+    title: String(record.title ?? ''),
+    chars: Number(record.chars) || 0,
+  }
+  return next
+}
