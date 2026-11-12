@@ -38,3 +38,28 @@ NapCat 4.18.42 的 HTTP / WebSocket 仍可访问时，QQ 内核的资料查询�
 **验证**
 
 - 21:06 重启桥接加载修复，随后用只读脚本每分钟记录 `get_friend_list` 数量与 NapCat 的 `fetchUserDetailInfo` 超时条数，观察是否越过原定的 ~21:20 复发点。两小时验收仍按上文标准执行。
+
+## 2026-11-12 22:30 容器重建：快速登录 + 关掉 o3 包拦截
+
+**现场补充**：21:36 会话在 Mac 持续唤醒、没有 `KickedOffLine` 的情况下静默失效；21:45 重启容器后快速登录直接报「你的用户身份已失效」，只能扫码。手机「登录设备管理」确认只有 Linux 容器一台 PC 在线，没有第二台设备互踢；`machine-guid` 自 11-11 22:39 未变，设备指纹是稳定的，所以不是「每次都被当成新设备」。
+
+**改动（运维层，不在代码里）**：
+
+- 重建容器，补上 `ACCOUNT=3054943747` + `NAPCAT_QUICK_PASSWORD_MD5=<32 位 MD5>`。被踢后 NapCat 可以走「快速登录 → 密码回退」，不必每次人工扫码。
+- `napcat.json` 与 `napcat_3054943747.json` 的 `o3HookMode` 由 `1` 改为 `0`（NapCat 默认值；官方文档对频繁掉线的建议就是关掉 o3 包拦截）。
+- 两个 named volume（`surfcore-napcat-qq`、`surfcore-napcat-config`）原样挂回，登录态、配置、设备指纹都保留；重建后 22:30:34 自动快速登录成功，**没有再扫码**。
+
+```bash
+docker rm -f surfcore-napcat
+docker run -d --name surfcore-napcat --restart unless-stopped \
+  -e MODE=ws -e WEBUI_TOKEN=<webui token> -e TZ=Asia/Shanghai \
+  -e ACCOUNT=3054943747 -e NAPCAT_QUICK_PASSWORD_MD5=<32 位 MD5> \
+  -p 127.0.0.1:3000:3000 -p 127.0.0.1:3001:3001 -p 127.0.0.1:6099:6099 \
+  -v surfcore-napcat-qq:/app/.config/QQ \
+  -v surfcore-napcat-config:/app/napcat/config \
+  mlikiowa/napcat-docker:latest
+```
+
+> 密码只以 MD5 形式落在容器环境变量里，不进仓库。备份见 `/tmp/napcat-backup-*`（含旧 `container-inspect.json`）。
+
+**待验证**：o3Hook=0 是否真的减少被踢；快速登录票据失效时密码回退能否在无人值守下完成（20:44 的密码→验证码→新设备验证流程是自动走完的，有希望）。观察窗口 22:30–00:30，每分钟记录好友数、`fetchUserDetailInfo` 超时与踢线。
