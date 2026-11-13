@@ -20,24 +20,31 @@ after(() => { for (const dir of temps) { try { fs.rmSync(dir, { recursive: true,
 const TODAY = '2026-11-12';
 const at = (iso) => Date.parse(iso);
 
-test('planDueReview：到点、补执行窗口、同日去重、重试上限、开关', () => {
-  const config = normalizeDiaryConfig({ reviewAt: '23:30', catchUpHours: 6, maxAttempts: 2 });
-  assert.deepEqual(
-    planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: {} })?.due,
-    TODAY,
-  );
-  assert.equal(planDueReview({ now: at('2026-11-12T22:00:00+08:00'), config, state: {} }), null);
+test('planDueReview：14:30 / 23:30 两次、补执行、同日去重、重试上限、开关', () => {
+  const config = normalizeDiaryConfig({ reviewAt: '14:30', reviewAtEvening: '23:30', catchUpHours: 6, maxAttempts: 2 });
+  assert.deepEqual(config.reviewTimes, ['14:30', '23:30']);
+  assert.equal(planDueReview({ now: at('2026-11-12T14:31:00+08:00'), config, state: {} })?.slot, '14:30');
+  assert.equal(planDueReview({ now: at('2026-11-12T14:00:00+08:00'), config, state: {} }), null);
+  assert.equal(planDueReview({ now: at('2026-11-12T20:00:00+08:00'), config, state: {} })?.slot, '14:30');
+  // 14:30 已错过 6 小时，不在 21:16 突然补；等 23:30。
+  assert.equal(planDueReview({ now: at('2026-11-12T21:16:00+08:00'), config, state: {} }), null);
+  // 14:30 已经回顾过，23:30 仍要跑。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastReviewedSlot: `${TODAY}|14:30` } })?.slot, '23:30');
+  // 同一天同一时段只跑一次。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastReviewedSlot: `${TODAY}|23:30` } }), null);
+  // 补执行：第二天凌晨补前一天 23:30；超过窗口不补。
   assert.equal(planDueReview({ now: at('2026-11-13T01:00:00+08:00'), config, state: {} })?.due, TODAY);
   assert.equal(planDueReview({ now: at('2026-11-13T07:00:00+08:00'), config, state: {} }), null);
-  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastReviewedDay: TODAY } }), null);
-  // 手动整理在下午，不代表晚上 23:30 的定时回顾已经完成。
-  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T19:57:00+08:00' } })?.due, TODAY);
-  // 手动整理就在定时点前 30 分钟内 / 之后，才跳过定时，避免刚点完又跑一遍。
+  // 手动整理不在时段前 30 分钟内，不跳过；在 30 分钟内才跳过。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T19:57:00+08:00' } })?.slot, '23:30');
   assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T23:20:00+08:00' } }), null);
-  assert.equal(planDueReview({ now: at('2026-11-12T23:40:00+08:00'), config, state: { lastManualAt: '2026-11-12T23:36:00+08:00' } }), null);
-  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { attempts: { [TODAY]: 2 } } }), null);
-  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config: { ...config, enabled: false }, state: {} }), null);
-  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config: { ...config, autoReview: false }, state: {} }), null);
+  assert.equal(planDueReview({ now: at('2026-11-12T14:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T14:00:00+08:00' } }), null);
+  // 重试上限按时段记；旧配置 23:30 自动迁移成两次。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { attempts: { [`${TODAY}|23:30`]: 2 } } }), null);
+  const old = normalizeDiaryConfig({ reviewAt: '23:30' });
+  assert.deepEqual(old.reviewTimes, ['14:30', '23:30']);
+  assert.equal(planDueReview({ now: at('2026-11-12T14:31:00+08:00'), config: { ...config, enabled: false }, state: {} }), null);
+  assert.equal(planDueReview({ now: at('2026-11-12T14:31:00+08:00'), config: { ...config, autoReview: false }, state: {} }), null);
 });
 
 test('buildDailyDigest：只取当天，包含聊天/候选/B站事件', () => {
@@ -123,6 +130,7 @@ test('buildReviewPrompt：给原材料和边界，不规定必须写', () => {
   assert.match(prompt, /编造/);
   assert.match(prompt, /diary_write/);
   assert.match(prompt, /char-x/);
+  assert.match(prompt, /同一篇日记/);
 });
 
 function fakeCtx({ failPrompt = false } = {}) {
@@ -177,10 +185,34 @@ test('每日回顾：到点提交一次、写状态、归档候选；同日不�
   assert.match(fx.prompts[0].content[0].text, /日记时间/);
   assert.equal(fx.created[0].agentPreset, 'surfcore-diary');
   assert.equal(readSchedulerState(path.join(fx.characterDir, 'diary')).lastReviewedDay, TODAY);
+  assert.equal(readSchedulerState(path.join(fx.characterDir, 'diary')).lastReviewedSlot, `${TODAY}|23:30`);
   const second = await fx.sched.tick();
   assert.equal(second.skipped, 'not-due');
   assert.equal(fx.prompts.length, 1);
   assert.equal(fs.existsSync(path.join(fx.characterDir, 'diary', 'candidates', 'processed', `${TODAY}.jsonl`)), true);
+  fx.sched.stop();
+});
+
+test('每日两次：14:30 和 23:30 各提交一次，同一会话同一篇日记', async () => {
+  const nowRef = { value: at('2026-11-12T14:31:00+08:00') };
+  const fx = schedulerFixture({ nowRef });
+  const first = await fx.sched.tick();
+  assert.equal(first.ok, true);
+  assert.equal(first.slot, '14:30');
+  assert.equal(fx.prompts.length, 1);
+  assert.match(fx.prompts[0].content[0].text, /14:30/);
+  assert.match(fx.prompts[0].content[0].text, /同一篇日记/);
+  assert.equal(readSchedulerState(path.join(fx.characterDir, 'diary')).lastReviewedSlot, `${TODAY}|14:30`);
+
+  nowRef.value = at('2026-11-12T23:31:00+08:00');
+  const second = await fx.sched.tick();
+  assert.equal(second.ok, true);
+  assert.equal(second.slot, '23:30');
+  assert.equal(fx.prompts.length, 2);
+  assert.match(fx.prompts[1].content[0].text, /23:30/);
+  assert.match(fx.prompts[1].content[0].text, /diary_edit/);
+  assert.equal(readSchedulerState(path.join(fx.characterDir, 'diary')).lastReviewedSlot, `${TODAY}|23:30`);
+  assert.equal(fx.created.length, 1);
   fx.sched.stop();
 });
 
@@ -191,7 +223,7 @@ test('提交失败：记错误、重试到上限后不再调用模型', async ()
   assert.equal(first.ok, false);
   assert.equal(fx.prompts.length, 1);
   const state = readSchedulerState(path.join(fx.characterDir, 'diary'));
-  assert.equal(state.attempts[TODAY], 1);
+  assert.equal(state.attempts[`${TODAY}|23:30`], 1);
   assert.match(state.lastError, /prompt failed/);
   const second = await fx.sched.tick();
   assert.equal(second.ok, false);

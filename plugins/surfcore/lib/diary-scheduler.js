@@ -28,7 +28,17 @@ export function normalizeDiaryConfig(raw = {}) {
   const out = {};
   out.enabled = raw?.enabled !== false;
   out.autoReview = raw?.autoReview !== false;
-  out.reviewAt = /^\d{1,2}:\d{2}$/.test(String(raw?.reviewAt ?? '')) ? String(raw.reviewAt) : '23:30';
+  const validClock = (value) => /^\d{1,2}:\d{2}$/.test(String(value ?? '')) ? String(value) : '';
+  let afternoon = validClock(raw?.reviewAt) || '14:30';
+  let evening = validClock(raw?.reviewAtEvening) || '23:30';
+  // 旧配置只有 reviewAt='23:30'：自动补出下午 14:30，迁移成两次。
+  if (!validClock(raw?.reviewAtEvening) && afternoon === '23:30') afternoon = '14:30';
+  out.reviewAt = afternoon;
+  out.reviewAtEvening = evening;
+  out.reviewTimes = [...new Set([afternoon, evening])].sort((a, b) => {
+    const pa = parseClock(a); const pb = parseClock(b);
+    return (pa.hour * 60 + pa.minute) - (pb.hour * 60 + pb.minute);
+  });
   out.catchUpHours = Math.max(0, Math.min(72, Number(raw?.catchUpHours ?? 6) || 0));
   out.maxAttempts = Math.max(1, Math.min(5, Math.round(Number(raw?.maxAttempts ?? 2) || 2)));
   out.captureEnabled = raw?.captureEnabled !== false;
@@ -48,8 +58,10 @@ function parseClock(text) {
 }
 
 function localReviewAt(day, clock) {
+  const parsed = typeof clock === 'string' ? parseClock(clock) : clock;
+  if (!parsed) return NaN;
   const [y, m, d] = day.split('-').map(Number);
-  return new Date(y, m - 1, d, clock.hour, clock.minute, 0, 0).getTime();
+  return new Date(y, m - 1, d, parsed.hour, parsed.minute, 0, 0).getTime();
 }
 
 /**
@@ -59,25 +71,36 @@ function localReviewAt(day, clock) {
 export function planDueReview({ now = Date.now(), config = {}, state = {} } = {}) {
   const cfg = normalizeDiaryConfig(config);
   if (cfg.enabled === false || cfg.autoReview === false) return null;
-  const clock = parseClock(cfg.reviewAt);
-  if (!clock) return null;
   const today = localDay(now);
-  const yesterday = localDay(now - DAY_MS);
-  const todayAt = localReviewAt(today, clock);
-  const yesterdayAt = localReviewAt(yesterday, clock);
-  let due = '';
-  if (now >= todayAt) due = today;
-  else if (now - yesterdayAt <= cfg.catchUpHours * 60 * 60 * 1000) due = yesterday;
-  if (!due) return null;
-  if (state?.lastReviewedDay === due) return null;
-  // 手动「立即整理」不等于完成了当天的定时回顾：下午点过一次，晚上 23:30 仍应照常整理。
-  // 只有手动整理发生在定时点前 30 分钟内（或定时点之后）时，才跳过这次定时，避免刚点完又跑一遍。
+  const times = cfg.reviewTimes;
+  const catchUp = cfg.catchUpHours * 60 * 60 * 1000;
+  const todayCandidates = [];
+  for (const slot of times) {
+    const at = localReviewAt(today, slot);
+    // 当天的时段也套补执行窗口：14:30 错过 6 小时后不再在 21:00 突然补，
+    // 等 23:30 的正常时段；否则重启后会立刻补一个“下午”回顾。
+    if (now >= at && now - at <= catchUp) todayCandidates.push({ day: today, slot, at });
+  }
+  let chosen = todayCandidates.length ? todayCandidates[todayCandidates.length - 1] : null;
+  if (!chosen) {
+    const yesterday = localDay(now - DAY_MS);
+    const yesterdayCandidates = [];
+    for (const slot of times) {
+      const at = localReviewAt(yesterday, slot);
+      if (now >= at && now - at <= catchUp) yesterdayCandidates.push({ day: yesterday, slot, at });
+    }
+    chosen = yesterdayCandidates.length ? yesterdayCandidates[yesterdayCandidates.length - 1] : null;
+  }
+  if (!chosen) return null;
+  const slotKey = `${chosen.day}|${chosen.slot}`;
+  if (state?.lastReviewedSlot === slotKey) return null;
+  // 手动「立即整理」不等于完成了当天的定时回顾：下午点过一次，23:30 仍应照常整理。
+  // 只有手动整理发生在该时段前 30 分钟内（或之后）时，才跳过这次定时，避免刚点完又跑一遍。
   const manualAt = Date.parse(String(state?.lastManualAt ?? ''));
-  const dueAt = due === today ? todayAt : yesterdayAt;
-  if (Number.isFinite(manualAt) && localDay(manualAt) === due && manualAt >= dueAt - 30 * 60 * 1000) return null;
-  const attempts = Number(state?.attempts?.[due] ?? 0) || 0;
+  if (Number.isFinite(manualAt) && localDay(manualAt) === chosen.day && manualAt >= chosen.at - 30 * 60 * 1000) return null;
+  const attempts = Number(state?.attempts?.[slotKey] ?? state?.attempts?.[chosen.day] ?? 0) || 0;
   if (attempts >= cfg.maxAttempts) return null;
-  return { due, at: dueAt, attempts };
+  return { due: chosen.day, at: chosen.at, attempts, slot: chosen.slot };
 }
 
 function readJson(file, fallback = null) {
@@ -274,10 +297,13 @@ export function buildDailyDigest({
 
 /** 给日记会话的唤醒提示：只给原材料和边界，不规定她必须写什么。 */
 export function buildReviewPrompt({
-  day, characterId = '', characterName = '', persona = '', memory = '', digest = '', reviewAt = '23:30',
+  day, characterId = '', characterName = '', persona = '', memory = '', digest = '', reviewAt = '23:30', reviewTimes = [],
 } = {}) {
   const blocks = [];
-  blocks.push(`【日记时间】${day} ${reviewAt}，这一天要收尾了。`);
+  const clock = parseClock(reviewAt);
+  const hour = clock?.hour ?? 23;
+  const phase = hour >= 18 ? '晚上收尾' : (hour >= 12 ? '下午先记一笔' : '今天先记一笔');
+  blocks.push(`【日记时间】${day} ${reviewAt}，${phase}。`);
   if (characterName) blocks.push(`【你是谁】${characterName}`);
   if (persona) blocks.push(`【你的人格（节选）】\n${String(persona).slice(0, 4000)}`);
   if (memory) blocks.push(`【你记得的事（节选）】\n${String(memory).slice(0, 2500)}`);
@@ -288,6 +314,7 @@ export function buildReviewPrompt({
     '- 写就用自己的第一人称、平时的口吻，写给自己，不是给主人交报告；不要套模板，不要为了显得丰富而编造。',
     '- 值得留、但还不想写成整篇的，用 diary_capture 记一句；想写就用 diary_write 保存（可传 source: "diary"）。',
     '- 可以翻自己以前的日记（diary_read / diary_search / diary_list）；想补写哪一天就传 date。',
+    `- 今天 ${reviewTimes.length ? reviewTimes.join(' / ') : '14:30 / 23:30'} 是同一篇日记的两次提醒：下午写过，晚上就用 diary_edit 追加到同一篇；下午没写，晚上再 diary_write。不要新建第二篇重复的。`,
     '- 如果今天已经写过、但漏了上午/某些事，优先 diary_edit 追加，不要重写整篇或再写一篇重复的。',
     '- 日记默认是私人的。主人要看时，你可以决定给看、只给一段，或拒绝；要展示先 diary_share。',
     '- 写完不用通知主人，也不要给任何人发消息。',
@@ -408,11 +435,13 @@ export function startDiaryScheduler(ctx, {
     } catch { return ''; }
   }
 
-  async function submitReview(day, { force = false } = {}) {
+  async function submitReview(day, { force = false, slot = '' } = {}) {
     const conf = cfg();
     const state = readSchedulerState(diaryDir);
-    if (!force && state.lastReviewedDay === day) return { ok: true, skipped: 'already-reviewed' };
-    const attempts = Number(state.attempts?.[day] ?? 0) || 0;
+    const slotKey = slot ? `${day}|${slot}` : '';
+    if (!force && slotKey && state.lastReviewedSlot === slotKey) return { ok: true, skipped: 'already-reviewed' };
+    const attemptKey = slotKey || `${day}|manual`;
+    const attempts = Number(state.attempts?.[attemptKey] ?? (slotKey ? state.attempts?.[day] : 0) ?? 0) || 0;
     if (!force && attempts >= conf.maxAttempts) return { ok: true, skipped: 'max-attempts' };
     if (await budgetBlocked()) return { ok: false, skipped: 'token-budget', error: lastError };
     if (!(await ensureSession())) return { ok: false, error: lastError };
@@ -440,11 +469,12 @@ export function startDiaryScheduler(ctx, {
       persona: personaText(),
       memory: memoryText(),
       digest: digest.text,
-      reviewAt: conf.reviewAt,
+      reviewAt: slot || hhmm(now()),
+      reviewTimes: conf.reviewTimes,
     });
     const nextState = {
       ...state,
-      attempts: { ...(state.attempts || {}), [day]: attempts + 1 },
+      attempts: { ...(state.attempts || {}), [attemptKey]: attempts + 1 },
       lastAttemptAt: new Date(now()).toISOString(),
       lastError: '',
     };
@@ -464,8 +494,11 @@ export function startDiaryScheduler(ctx, {
       const stamp = new Date(now()).toISOString();
       writeSchedulerState(diaryDir, {
         ...nextState,
-        // 手动整理不占「今天的定时回顾已完成」：下午手动整理过，23:30 仍会照常跑。
+        // 手动整理不占「今天的定时回顾已完成」；正常回顾按 day|slot 记账，
+        // 14:30 和 23:30 各算一次，但写的是同一篇日记。
         lastReviewedDay: force ? state.lastReviewedDay : day,
+        lastReviewedSlot: force ? state.lastReviewedSlot : (slotKey || state.lastReviewedSlot || ''),
+        lastReviewedAt: force ? state.lastReviewedAt : stamp,
         lastManualAt: force ? stamp : state.lastManualAt,
         submittedAt: stamp,
         lastError: '',
@@ -474,12 +507,12 @@ export function startDiaryScheduler(ctx, {
         log(`[diary] 归档候选失败：${String(error?.message ?? error)}`);
       }
       log(`[diary] 已提交 ${day} 的日记回顾（会话 ${sid}）`);
-      return { ok: true, day, sessionId: sid, chars: prompt.length, digest: digest.counters };
+      return { ok: true, day, slot, sessionId: sid, chars: prompt.length, digest: digest.counters };
     } catch (error) {
       lastError = String(error?.message ?? error).slice(0, 500);
       writeSchedulerState(diaryDir, { ...nextState, lastError });
       log(`[diary] 提交 ${day} 回顾失败：${lastError}`);
-      return { ok: false, day, error: lastError };
+      return { ok: false, day, slot, error: lastError };
     }
   }
 
@@ -493,7 +526,7 @@ export function startDiaryScheduler(ctx, {
       const state = readSchedulerState(diaryDir);
       const plan = planDueReview({ now: now(), config: conf, state });
       if (!plan) return { ok: true, skipped: 'not-due' };
-      return await submitReview(plan.due);
+      return await submitReview(plan.due, { slot: plan.slot });
     } catch (error) {
       lastError = String(error?.message ?? error).slice(0, 500);
       log(`[diary] tick 失败：${lastError}`);
@@ -508,9 +541,18 @@ export function startDiaryScheduler(ctx, {
     return submitReview(day, { force: true });
   }
 
+  function nextReviewClock(at = now(), conf = cfg()) {
+    const day = localDay(at);
+    for (const slot of conf.reviewTimes) {
+      if (localReviewAt(day, slot) > at) return slot;
+    }
+    return conf.reviewTimes[0] || '';
+  }
+
   function status() {
     let plan = null;
     try { plan = planDueReview({ now: now(), config: cfg(), state: readSchedulerState(diaryDir) }); } catch {}
+    const conf = cfg();
     return {
       running: !stopped,
       sessionId: sid,
@@ -519,7 +561,11 @@ export function startDiaryScheduler(ctx, {
       lastTickAt,
       lastError,
       due: plan?.due ?? null,
-      nextReviewAt: cfg().reviewAt,
+      dueSlot: plan?.slot ?? null,
+      reviewAt: conf.reviewAt,
+      reviewAtEvening: conf.reviewAtEvening,
+      reviewTimes: conf.reviewTimes,
+      nextReviewAt: nextReviewClock(now(), conf),
       state: readSchedulerState(diaryDir),
     };
   }

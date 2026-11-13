@@ -150,7 +150,8 @@ export const DEFAULT_UNIFIED = {
   diary: {
     enabled: true,
     autoReview: true,
-    reviewAt: '23:30',
+    reviewAt: '14:30',
+    reviewAtEvening: '23:30',
     catchUpHours: 6,
     maxAttempts: 2,
     captureEnabled: true,

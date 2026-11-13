@@ -6908,8 +6908,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.enabled !== false, onChange: (e) => set("enabled", e.target.checked) })),
           h(Row, { label: "每日自动回顾", hint: "到点叫醒一个专用日记会话；不会打断 QQ 聊天。" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.autoReview !== false, onChange: (e) => set("autoReview", e.target.checked) })),
-          h(Row, { label: "回顾时间（本地）", hint: "默认 23:30。改完点底部保存，下一 tick 生效。" },
-            h("input", { className: "qbw-input", type: "time", value: cfg.reviewAt ?? "23:30", onChange: (e) => set("reviewAt", e.target.value) })),
+          h(Row, { label: "下午回顾（本地）", hint: "默认 14:30；和晚上那次写同一篇日记。" },
+            h("input", { className: "qbw-input", type: "time", value: scheduler?.reviewAt ?? cfg.reviewAt ?? "14:30", onChange: (e) => set("reviewAt", e.target.value) })),
+          h(Row, { label: "晚上回顾（本地）", hint: "默认 23:30；下午写过就用 diary_edit 追加到同一篇。" },
+            h("input", { className: "qbw-input", type: "time", value: scheduler?.reviewAtEvening ?? cfg.reviewAtEvening ?? "23:30", onChange: (e) => set("reviewAtEvening", e.target.value) })),
           h(Row, { label: "离线补执行窗口（小时）", hint: "程序在回顾时间没运行，恢复后在这个窗口内会补一次；默认 6。" },
             h("input", { className: "qbw-input", type: "number", min: 0, max: 72, value: cfg.catchUpHours ?? 6, onChange: (e) => set("catchUpHours", Number(e.target.value) || 0) })),
           h(Row, { label: "失败重试上限", hint: "同一天的回顾提交失败最多重试几次；默认 2。" },
@@ -6923,11 +6925,11 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("h4", null, "状态"),
           h("div", { className: "qbw-hint" },
             scheduler?.running
-              ? `回顾运行中 · 会话 ${scheduler.sessionId || "—"} · 下一次 ${scheduler.nextReviewAt || cfg.reviewAt || "23:30"}`
+              ? `回顾运行中 · 会话 ${scheduler.sessionId || "—"} · 下一次 ${scheduler.nextReviewAt || `${cfg.reviewAt || "14:30"} / ${cfg.reviewAtEvening || "23:30"}`}`
               : `回顾未运行（${data?.reason || scheduler?.reason || "未启动"}）`),
           status ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
             `共 ${status.entries} 篇 · 今天候选 ${status.candidates} 条 · 已分享记录 ${status.shares} 次`,
-            status.scheduler?.lastReviewedDay ? ` · 上次回顾 ${status.scheduler.lastReviewedDay}` : " · 还没回顾过",
+            status.scheduler?.lastReviewedSlot ? ` · 上次回顾 ${status.scheduler.lastReviewedSlot.replace("|", " ")}` : (status.scheduler?.lastReviewedDay ? ` · 上次回顾 ${status.scheduler.lastReviewedDay}` : " · 还没回顾过"),
             status.scheduler?.lastError ? ` · 上次错误：${status.scheduler.lastError}` : "") : null,
           status?.lastEntry ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
             `最近一篇：${status.lastEntry.date}「${status.lastEntry.title || "无题"}」${status.lastEntry.visibility === "shareable" ? "（可分享）" : "（私人）"}`) : null,
