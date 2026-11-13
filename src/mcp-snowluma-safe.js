@@ -632,9 +632,10 @@ server.tool(
     messages: z.union([z.array(z.string()).min(1), z.string()]).describe('要发送的内容：字符串=一条，数组=多条（一次最多 8 条）'),
     summary: z.string().max(200).optional().describe('这次收在哪（一句话，给下次的自己看）'),
     nextOpening: z.string().max(120).optional().describe('下次可以怎么自然接（一句话，可选）'),
+    memorySummary: z.string().max(700).optional().describe('这次对话的记忆摘要（400~550 字，第一人称；给 B站 上线前用；不写 QQ 号/群号/联系方式）'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('已读水位，用已查看结果里的 readThroughSeq')
   },
-  async ({ key, token, messages, summary, nextOpening, throughSeq }) => {
+  async ({ key, token, messages, summary, nextOpening, memorySummary, throughSeq }) => {
     try {
       let finalMessages = messages;
       if (typeof finalMessages === 'string') {
@@ -658,7 +659,7 @@ server.tool(
       try {
         closed = await agentApi('/api/socialV2/close', {
           method: 'POST',
-          body: JSON.stringify({ key, throughSeq, summary, nextOpening }),
+          body: JSON.stringify({ key, throughSeq, summary, nextOpening, memorySummary }),
           headers: { 'x-agent-token': token }
         });
       } catch (error) {
@@ -751,13 +752,14 @@ server.tool(
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('可同时确认已读水位：使用已查看结果中的 readThroughSeq；不传则只确认已经展示给你的那部分'),
     reason: z.enum(['natural', 'topic-done', 'explicit-end', 'busy', 'tired', 'other']).optional().describe('收尾原因：natural=自然收尾 / topic-done=话题聊完 / explicit-end=对方道别 / busy=各自去忙 / tired=聊累了 / other=其它'),
     summary: z.string().max(200).optional().describe('这次收在哪（一句话，给下次的自己看）'),
-    nextOpening: z.string().max(120).optional().describe('下次可以怎么自然接（一句话，可选）')
+    nextOpening: z.string().max(120).optional().describe('下次可以怎么自然接（一句话，可选）'),
+    memorySummary: z.string().max(700).optional().describe('这次对话的记忆摘要（400~550 字，第一人称；给 B站 上线前用；不写 QQ 号/群号/联系方式）')
   },
-  async ({ key, token, throughSeq, reason, summary, nextOpening }) => {
+  async ({ key, token, throughSeq, reason, summary, nextOpening, memorySummary }) => {
     try {
       const data = await agentApi('/api/socialV2/close', {
         method: 'POST',
-        body: JSON.stringify({ key, throughSeq, reason, summary, nextOpening }),
+        body: JSON.stringify({ key, throughSeq, reason, summary, nextOpening, memorySummary }),
         headers: { 'x-agent-token': token }
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };

@@ -1,7 +1,7 @@
 // 选题器：照"她自己的偏好"挑今天该看什么。**只读网络**，只写一份「最近推过」备忘。
 //
 // 用法: node feed.mjs [--n 6] [--per 2] [--pages 3] [--recent-days 3] [--seed 2026-10-23]
-//                      [--source all|search|popular|rank|following] [--no-remember] [--json]
+//                      [--source all|search|popular|rank|following] [--follow-days 7] [--follow-quota N] [--follow-pages 3] [--no-remember] [--json]
 // 数据来源：bili.config.json 的 preferences（like / keywords / weights）
 //          + 日记 / 评论审计表 / 观看历史 / B站 记忆 / 收藏 / 反馈 的「看过」名单。
 //
@@ -24,8 +24,8 @@ import { accountBili, biliState } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 import { readWatchHistory } from '../lib/watch-history.mjs'
 import {
-  bvSetFromTexts, candidateScore, filterRecentlyPicked, normalizePreferences,
-  preferenceHits, prunePickedMap, safeNumber, searchPlan, selectDiverse,
+  bvSetFromTexts, candidateScore, filterRecentlyPicked, followAgeDays, normalizePreferences,
+  pickFollowingNew, preferenceHits, prunePickedMap, safeNumber, searchPlan, selectDiverse,
 } from '../lib/feed-core.mjs'
 
 const argv = process.argv.slice(2)
@@ -42,6 +42,12 @@ const N = Math.max(1, Math.min(30, Number(opt.n ?? 6) || 6))
 const PER = Math.max(1, Math.min(N, Number(opt.per ?? Math.max(2, Math.ceil(N / 2))) || 2))
 const PAGES = Math.max(1, Math.min(3, Number(opt.pages ?? 3) || 3))
 const RECENT_DAYS = Math.max(0, Math.min(30, Number(opt['recent-days'] ?? 3) || 0))
+// 2026-11-13 用户要求：优先刷关注动态里 N 天内没看过的新视频；不够再补搜索/热门/排行。
+const FOLLOW_DAYS = Math.max(1, Math.min(30, Number(opt['follow-days'] ?? 7) || 7))
+const FOLLOW_PAGES = Math.max(1, Math.min(5, Number(opt['follow-pages'] ?? 3) || 3))
+const FOLLOW_QUOTA = opt['follow-quota'] !== undefined
+  ? Math.max(0, Math.min(N, Number(opt['follow-quota']) || 0))
+  : N
 const SOURCE = String(opt.source ?? 'all')
 const SEED = String(opt.seed ?? new Date().toLocaleDateString('sv-SE'))
 const REMEMBER = opt['no-remember'] !== true
@@ -125,26 +131,32 @@ const toNum = (value) => safeNumber(String(value ?? '').replace(/,/g, ''))
 const pool = []
 let searchRequests = 0
 const plan = searchPlan(enabled, { seed: SEED, pages: [1, 2, 3].slice(0, PAGES) })
-for (const item of plan) {
-  try {
-    const params = wbi({ search_type: 'video', keyword: item.label, order: item.order, page: item.page })
-    const j = await (await fetch(`https://api.bilibili.com/x/web-interface/wbi/search/type?${params}`, { headers: H })).json()
-    searchRequests += 1
-    for (const it of (j?.data?.result ?? [])) {
-      pool.push({
-        bv: String(it.bvid ?? ''),
-        t: String(it.title ?? '').replace(/<[^>]+>/g, ''),
-        d: secs(it.duration),
-        dm: toNum(it.danmaku),
-        play: toNum(it.play),
-        up: String(it.author ?? ''),
-        kw: item.label,
-      })
-    }
-  } catch { /* 这个词没结果就跳过 */ }
-  await new Promise((r) => setTimeout(r, 250))
+if (['search', 'all'].includes(SOURCE)) {
+  for (const item of plan) {
+    try {
+      const params = wbi({ search_type: 'video', keyword: item.label, order: item.order, page: item.page })
+      const j = await (await fetch(`https://api.bilibili.com/x/web-interface/wbi/search/type?${params}`, { headers: H })).json()
+      searchRequests += 1
+      for (const it of (j?.data?.result ?? [])) {
+        pool.push({
+          bv: String(it.bvid ?? ''),
+          t: String(it.title ?? '').replace(/<[^>]+>/g, ''),
+          d: secs(it.duration),
+          dm: toNum(it.danmaku),
+          play: toNum(it.play),
+          up: String(it.author ?? ''),
+          kw: item.label,
+          via: 'search',
+          pubTs: Number(it.pubdate) ? Number(it.pubdate) * 1000 : 0,
+        })
+      }
+    } catch { /* 这个词没结果就跳过 */ }
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  console.error(`[搜索] ${plan.length} 个偏好 × 1 次（排序/页码按种子 ${SEED} 轮换，成功 ${searchRequests} 次）`)
+} else {
+  console.error(`[搜索] 跳过（--source ${SOURCE} 不含搜索）`)
 }
-console.error(`[搜索] ${plan.length} 个偏好 × 1 次（排序/页码按种子 ${SEED} 轮换，成功 ${searchRequests} 次）`)
 
 // ── #3 更多来源（2026-10-18 加：只搜关键词 = 只刷"搜索"，不是刷 B 站）──────
 //   --source search（默认）| popular（热门）| rank（排行）| following（关注）| all
@@ -153,27 +165,40 @@ async function fetchPopular() {
   const j = await (await fetch(`https://api.bilibili.com/x/web-interface/popular?pn=${popularPage}&ps=20`, { headers: H })).json()
   for (const it of (j?.data?.list ?? [])) {
     pool.push({ bv: String(it.bvid ?? ''), t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '热门' })
+      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), upMid: Number(it.owner?.mid) || 0, kw: '热门', via: 'popular',
+      pubTs: Number(it.pubdate) ? Number(it.pubdate) * 1000 : 0 })
   }
 }
 async function fetchRank() {
   const j = await (await fetch('https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all', { headers: H })).json()
   for (const it of (j?.data?.list ?? []).slice(0, 20)) {
     pool.push({ bv: String(it.bvid ?? ''), t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '排行' })
+      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), upMid: Number(it.owner?.mid) || 0, kw: '排行', via: 'rank',
+      pubTs: Number(it.pubdate) ? Number(it.pubdate) * 1000 : 0 })
   }
 }
-// 关注的人发了什么（2026-10-18 加）：真人才会"刷关注"——只搜关键词等于只刷"搜索"，不像人
+// 关注的人最近发了什么（2026-10-18 加；2026-11-13 改成最多翻 FOLLOW_PAGES 页，
+// 并记录发布时间，供「一周内优先」筛选）：真人才会"刷关注"——只搜关键词等于只刷"搜索"，不像人。
 async function fetchFollowing() {
-  const j = await (await fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all?type=video&page=1', { headers: H })).json()
-  if (j?.code !== 0) throw new Error(`code=${j?.code} ${j?.message ?? ''}`)
-  for (const it of (j?.data?.items ?? [])) {
-    const a = it?.modules?.module_author
-    const ar = it?.modules?.module_dynamic?.major?.archive
-    if (!ar?.bvid) continue
-    const dt = String(ar.duration_text ?? '')
-    pool.push({ bv: String(ar.bvid), t: String(ar.title ?? '').replace(/<[^>]+>/g, ''), d: secs(dt),
-      dm: 0, play: toNum(ar.stat?.play), up: String(a?.name ?? ''), kw: '关注' })
+  const seenBv = new Set()
+  for (let page = 1; page <= FOLLOW_PAGES; page += 1) {
+    const j = await (await fetch(`https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all?type=video&page=${page}`, { headers: H })).json()
+    if (j?.code !== 0) throw new Error(`code=${j?.code} ${j?.message ?? ''}`)
+    const items = Array.isArray(j?.data?.items) ? j.data.items : []
+    if (!items.length) break
+    for (const it of items) {
+      const a = it?.modules?.module_author
+      const ar = it?.modules?.module_dynamic?.major?.archive
+      if (!ar?.bvid || seenBv.has(String(ar.bvid))) continue
+      seenBv.add(String(ar.bvid))
+      const dt = String(ar.duration_text ?? '')
+      const rawTs = Number(a?.pub_ts ?? it?.pub_ts ?? 0)
+      const pubTs = rawTs > 0 ? (rawTs < 1e12 ? rawTs * 1000 : rawTs) : 0
+      pool.push({ bv: String(ar.bvid), t: String(ar.title ?? '').replace(/<[^>]+>/g, ''), d: secs(dt),
+        dm: 0, play: toNum(ar.stat?.play), up: String(a?.name ?? ''), upMid: Number(a?.mid) || 0, kw: '关注', via: 'following', pubTs })
+    }
+    if (j?.data?.has_more === false) break
+    await new Promise((r) => setTimeout(r, 200))
   }
 }
 try { if (['popular', 'all'].includes(SOURCE)) await fetchPopular() } catch { console.error('（热门源取不到，跳过）') }
@@ -206,12 +231,36 @@ try {
   const fj = JSON.parse(fs.readFileSync(biliState('favorites.json'), 'utf8'))
   favItems = (fj.items ?? []).filter((x) => x && x.bv)
 } catch {}
-const learnedTokens = [...new Set([
-  ...likedEvents.flatMap((e) => learnTokens(String(e.videoTitle ?? '') + ' ' + String(e.comment ?? ''))),
-  ...favItems.flatMap((x) => learnTokens(String(x.title ?? '') + ' ' + String(x.reason ?? ''))),
-])]
-const learnedHitsOf = (title) => learnedTokens.filter((tok) => title.toLowerCase().includes(tok)).length
-const boostOf = (title) => Math.min(7.5, learnedHitsOf(title) * 2.5)
+
+// 她自己的视频点赞 / 投币（2026-11-13）：和收藏一样回流口味，但权重不同：
+//   点赞 1.0 < 收藏 2.5 < 投 1 枚 4.0 < 投 2 枚 5.5（同一主题词取最大权重）。
+let likeVideoEvents = []
+let coinEvents = []
+try {
+  const q = JSON.parse(fs.readFileSync(biliState('quota.json'), 'utf8'))
+  const rows = Array.isArray(q?.log) ? q.log : []
+  const bvOf = (target) => (String(target ?? '').match(/BV[0-9A-Za-z]{10}/) ?? [])[0] ?? ''
+  likeVideoEvents = rows.filter((x) => x?.type === 'like-video' && bvOf(x.target))
+  coinEvents = rows.filter((x) => x?.type === 'coin' && bvOf(x.target))
+  for (const e of [...likeVideoEvents, ...coinEvents]) seen.add(bvOf(e.target))
+} catch {}
+
+const tokenWeights = new Map()
+const addTokenWeight = (text, weight) => {
+  for (const tok of learnTokens(String(text ?? ''))) {
+    tokenWeights.set(tok, Math.max(tokenWeights.get(tok) ?? 0, weight))
+  }
+}
+for (const e of likedEvents) addTokenWeight(`${e.videoTitle ?? ''} ${e.comment ?? ''}`, 1.0)
+for (const x of favItems) addTokenWeight(`${x.title ?? ''} ${x.reason ?? ''}`, 2.5)
+for (const e of likeVideoEvents) addTokenWeight(e.note, 1.0)
+for (const e of coinEvents) addTokenWeight(e.note, (Number(e.amount) || 1) >= 2 ? 5.5 : 4.0)
+const learnedTokens = [...tokenWeights.keys()]
+const boostOf = (title) => {
+  let boost = 0
+  for (const tok of learnedTokens) if (title.toLowerCase().includes(tok)) boost += tokenWeights.get(tok) || 0
+  return Math.min(12, boost)
+}
 
 // ── ⑤ 过滤 + 打分 + 按权重分配名额 ────────────────────────────────────────
 const selfName = String(cfg.self?.name ?? '')
@@ -227,14 +276,19 @@ const candidates = recentFiltered.map((x) => {
 })
 
 const genericCap = enabled.length ? (Number.isFinite(Number(opt.generic)) ? Number(opt.generic) : 1) : N
-const selection = selectDiverse(candidates, enabled, { n: N, perPref: PER, generic: genericCap, seed: SEED })
+// 关注新视频优先：先按发布时间取「关注 + FOLLOW_DAYS 天内 + 未看过」的，最多 FOLLOW_QUOTA 条；
+// 不够 N 条再交给偏好分配补搜索/热门/排行/旧关注。
+const followingNew = pickFollowingNew(candidates, { n: FOLLOW_QUOTA, days: FOLLOW_DAYS, now: Date.now() })
+const remaining = Math.max(0, N - followingNew.picked.length)
+const selection = selectDiverse(followingNew.rest, enabled, { n: remaining, perPref: PER, generic: genericCap, seed: SEED })
+const picked = [...followingNew.picked, ...selection.picked]
 
 // ── ⑥ 记住「推过但没看」的，避免明晚原样再来 ─────────────────────────────
-if (REMEMBER && selection.picked.length) {
+if (REMEMBER && picked.length) {
   try {
     const next = prunePickedMap(pickMap, { now: Date.now(), days: 60 })
     const at = new Date().toISOString()
-    for (const item of selection.picked) if (item.bv) next[item.bv] = at
+    for (const item of picked) if (item.bv) next[item.bv] = at
     fs.mkdirSync(path.dirname(feedPicks), { recursive: true })
     fs.writeFileSync(feedPicks, `${JSON.stringify({ version: 1, updatedAt: at, picks: next }, null, 2)}\n`)
   } catch { /* 备忘写不进去不影响本次选题 */ }
@@ -252,6 +306,9 @@ const payload = {
   perPref: PER,
   sources: SOURCE,
   recentDays: RECENT_DAYS,
+  followDays: FOLLOW_DAYS,
+  followQuota: FOLLOW_QUOTA,
+  followPages: FOLLOW_PAGES,
   preferences: enabled.map((entry) => ({ label: entry.label, weight: entry.weight, kind: entry.kind })),
   disabled: disabled.map((entry) => entry.label),
   quotas: Object.fromEntries(selection.quotas),
@@ -264,10 +321,12 @@ const payload = {
     seenFromWatchHistory: watchSeen,
     recentlyPickedSkipped: uniq.length - recentFiltered.length,
     learnedTokens: learnedTokens.length,
+    followingEligible: followingNew.eligible,
+    followingPicked: followingNew.picked.length,
   },
-  items: selection.picked.map((x) => ({
-    bv: x.bv, title: x.t, up: x.up, duration: x.d, danmaku: x.dm, play: x.play,
-    score: Math.round(x._score * 100) / 100, via: x._via, hits: (x._hits ?? []).map((h) => h.label),
+  items: picked.map((x) => ({
+    bv: x.bv, title: x.t, up: x.up, upMid: x.upMid || 0, duration: x.d, danmaku: x.dm, play: x.play,
+    score: Math.round(x._score * 100) / 100, via: x._via, ageDays: x._followAgeDays ?? followAgeDays(x.pubTs), hits: (x._hits ?? []).map((h) => h.label),
   })),
 }
 if (opt.json) {
@@ -280,18 +339,22 @@ if (opt.json) {
   console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV（其中观看历史补 ${watchSeen} 个）`)
   if (RECENT_DAYS > 0) console.log(`最近 ${RECENT_DAYS} 天推过但没看的（本轮避开）: ${uniq.length - recentFiltered.length} 个`)
   console.log(`候选池: ${pool.length} 条 → 去重去已看/最近推过后 ${candidates.length} 条`)
+  console.log(`关注新视频（${FOLLOW_DAYS} 天内没看过）: 可用 ${followingNew.eligible} 条 → 优先 ${followingNew.picked.length} 条（上限 ${FOLLOW_QUOTA}）`)
   console.log(`本轮配额（共 ${N} 条，每条偏好最多 ${PER} 条）: ${quotaText.join(' · ') || '（没有命中偏好的候选）'}`)
   for (const miss of selection.shortfall) {
     console.log(`  ⚠️ ${miss.label} 只有 ${miss.have} 条候选（配额 ${miss.want}）→ 名额让给其他偏好`)
   }
   console.log(`\n今天可以看这几条（按权重分配，偏好之间轮转）：`)
   let shown = 0
-  for (const x of selection.picked) {
+  for (const x of picked) {
     if (shown >= N) break
     shown += 1
     const hits = x._hits?.length ? `[${x._hits.map((h) => `${h.label}×${h.weight}`).join(' + ')}]` : ''
-    console.log(`  ${String(shown).padStart(2)}. ${x.bv}  ${String(safeNumber(x.d)).padStart(4)}s  弹幕${String(safeNumber(x.dm)).padStart(7)}  播放${String(safeNumber(x.play)).padStart(9)}  ${String(x.t).slice(0, 40)}  @${x.up} ${hits}`)
+    const age = x._followAgeDays ?? followAgeDays(x.pubTs)
+    const ageTag = x._via === 'following' && age !== null ? `  [关注·${age}天]` : ''
+    const upMid = x.upMid ? `（mid ${x.upMid}）` : ''
+    console.log(`  ${String(shown).padStart(2)}. ${x.bv}  ${String(safeNumber(x.d)).padStart(4)}s  弹幕${String(safeNumber(x.dm)).padStart(7)}  播放${String(safeNumber(x.play)).padStart(9)}  ${String(x.t).slice(0, 40)}  @${x.up}${upMid} ${hits}${ageTag}`)
   }
-  if (!selection.picked.length) console.log('  （没有可看的了：候选都被看过/最近推过；把 --recent-days 调小或等新视频）')
+  if (!picked.length) console.log('  （没有可看的了：候选都被看过/最近推过；把 --recent-days 调小或等新视频）')
   console.log('\n看完跑：node bili.mjs debrief <BV>   → 然后把"想法"写进日记的「想说」区（不发）')
 }

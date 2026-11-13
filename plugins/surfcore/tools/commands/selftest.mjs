@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url'
 
 const HOME = (process.env.USERPROFILE || process.env.HOME || '/')
 const DSH = path.join(HOME, '.dsh')
-const CFG = path.join(DSH, 'bili.config.json')
+// 2026-11-12 修：配置早就不在 ~/.dsh 根下，改到 ~/.dsh/surfcore/（与 lib/config.mjs 的 configPath 对齐），
+//   否则 selftest 永远报「没有配置文件」，把一个假红灯挂在真绿的系统上。
+const CFG = process.env.SURFCORE_BILI_CONFIG || path.join(DSH, 'surfcore', 'bili.config.json')
 const CRED = accountBili('credentials.json')
 const OK = '✓'
 const NO = '✗'

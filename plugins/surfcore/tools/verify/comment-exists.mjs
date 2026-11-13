@@ -16,13 +16,25 @@ import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const RPID = process.argv[2]
-const AID = process.argv[3]
-const BVID = process.argv[4]
+const argv = process.argv.slice(2)
+const opt = {}
+const pos = []
+for (let i = 0; i < argv.length; i += 1) {
+  if (argv[i].startsWith('--')) {
+    const k = argv[i].slice(2)
+    if (argv[i + 1] && !argv[i + 1].startsWith('--')) { opt[k] = argv[i + 1]; i += 1 } else opt[k] = true
+  } else pos.push(argv[i])
+}
+const RPID = String(opt.rpid || pos[0] || '')
+const AID = String(opt.oid || opt.aid || pos[1] || '')
+const BVID = String(opt.bvid || pos[2] || '')
+const TYPE = String(opt.type || (BVID ? '1' : '12'))
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const REF = BVID ? `https://www.bilibili.com/video/${BVID}/` : 'https://www.bilibili.com/'
+const REF = String(opt.referer || (TYPE === '12'
+  ? `https://www.bilibili.com/read/cv${AID}`
+  : (BVID ? `https://www.bilibili.com/video/${BVID}/` : 'https://www.bilibili.com/')))
 
-if (!RPID || !AID) { console.error('用法: node comment-exists.mjs <rpid> <aid> [bvid]'); process.exit(2) }
+if (!RPID || !AID) { console.error('用法: node comment-exists.mjs <rpid> <aid|cvid> [bvid] [--type 12]'); process.exit(2) }
 
 const a = BVID ? await fetch(`https://www.bilibili.com/video/${BVID}/`, {
   headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/', 'accept-language': 'zh-CN,zh;q=0.9' },
@@ -38,7 +50,7 @@ if (a) {
   console.log('[a] 没给 bvid，跳过视频页检查')
 }
 
-const b = await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=1&oid=${AID}&root=${RPID}&pn=1&ps=20`, {
+const b = await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=${encodeURIComponent(TYPE)}&oid=${AID}&root=${RPID}&pn=1&ps=20`, {
   headers: { 'user-agent': UA, referer: REF },
 })
 const bd = await b.json()
@@ -62,7 +74,7 @@ if (bd.code === 0) {
 let foundInMain = false
 try {
   for (let pn = 1; pn <= 3 && !foundInMain; pn += 1) {
-    const u = `https://api.bilibili.com/x/v2/reply?type=1&oid=${AID}&pn=${pn}&ps=20&sort=2`
+    const u = `https://api.bilibili.com/x/v2/reply?type=${encodeURIComponent(TYPE)}&oid=${AID}&pn=${pn}&ps=20&sort=2`
     const r = await fetch(u, { headers: { 'user-agent': UA, referer: REF } })   // 匿名
     const rd = await r.json()
     const list = rd.data?.replies ?? []
@@ -92,7 +104,7 @@ if (foundInMain) {
 try {
   const cred = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))
   const cookie = `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`
-  const c = await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=1&oid=${AID}&root=${RPID}&pn=1&ps=20`, {
+  const c = await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=${encodeURIComponent(TYPE)}&oid=${AID}&root=${RPID}&pn=1&ps=20`, {
     headers: { 'user-agent': UA, referer: REF, cookie },
   })
   const cd = await c.json()

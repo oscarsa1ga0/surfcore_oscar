@@ -12,7 +12,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import crypto from 'node:crypto'
 // 2026-10-18 修：send 分支用了 `gate(...)` 但**从来没导入过** ✗（一跑到那儿就 ReferenceError）
-import { gate } from '../lib/quota-gate.mjs'
+import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
@@ -157,6 +157,7 @@ if (mode === 'send') {
   console.log(`  HTTP ${out.status}  code=${b.code} ${b.message ?? b.msg ?? ''}`)
   console.log(`  ${hints[b.code] ?? ''}`)
   if (b.code !== 0) console.log(`  原始: ${JSON.stringify(b).slice(0, 300)}`)
+  if (b.code === 0) recordQuota({ type: 'danmaku', target: `room:${args.get('room') ?? ''}`, note: msg.slice(0, 30), auto: process.argv.includes('--auto') })
   process.exit(0)
 }
 

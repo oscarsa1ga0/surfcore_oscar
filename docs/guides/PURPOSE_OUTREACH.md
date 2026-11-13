@@ -437,11 +437,16 @@ confidence = 0.15
 
 `purpose-outreach.json`：
 
+- `countToday` = 今天的**轮次**（用于每日上限，含她选择沉默的轮）；
+- `sentToday` = 真正**送达**的次数（设置页「已投递」显示这个）；
+- 投递失败（网关/桥接没送到）会回滚 `countToday`，不吃当天额度。
+
 ```json
 {
   "version": 1,
   "day": "2026-10-24",
   "countToday": 1,
+  "sentToday": 1,
   "lastRunAt": 1792784000000,
   "lastAttemptAt": 1792784000000,
   "lastSentAt": 1792784000000,

@@ -34,7 +34,8 @@ const bvid = args.get('bvid') ? String(args.get('bvid')) : ''
 const type = String(args.get('type') ?? '1')
 const jsonOut = args.get('json') === true
 const dry = args.get('dry') === true
-if (sub === 'like' && !dry && !assertInteractEnabled('给鱼点赞')) process.exit(3)
+const any = args.get('any') === true
+if (sub === 'like' && !dry && !assertInteractEnabled(any ? '给评论点赞' : '给鱼点赞')) process.exit(3)
 
 const cfg = normalizeBiliFishGuard(config().fishGuard)
 const state = loadFishGuardState()
@@ -66,7 +67,7 @@ async function aidFromBvid(bv) {
 
 if (!oid && bvid) oid = await aidFromBvid(bvid)
 if (!oid) {
-  console.error('usage: fish-guard status|plan|like --bvid BV... | --oid <aid> [--type 1] [--json] [--dry]')
+  console.error('usage: fish-guard status|plan|like --bvid BV... | --oid <aid> [--type 1] [--any] [--json] [--dry]')
   process.exit(2)
 }
 
@@ -79,6 +80,7 @@ const plan = await planFishGuard({
   config: cfg,
   state,
   cred,
+  any,
 })
 const summary = fishGuardStateSummary(state, cfg)
 
@@ -103,6 +105,7 @@ if (sub === 'plan') {
     error: plan.error,
     loggedIn: plan.loggedIn,
     flooded: plan.flooded,
+    any,
     gather: plan.gatherTarget,
     like: plan.likeTargets,
     summary,

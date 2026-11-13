@@ -197,6 +197,18 @@ const biliReply = (rpid, root, uname, { mid = rpid, ctime = now } = {}) => ({
   assert.ok(!result.gatherTarget || result.gatherTarget.rpid !== '2', '回复太多的鱼楼不该被聚拢');
 }
 
+// ── B站：--any 不只给鱼点赞，也给普通评论点赞 ─────────────────────────────
+{
+  const topLevel = [
+    biliComment(1, '真人甲', { like: 20 }),
+    biliComment(2, '测试肥鱼', { like: 5 }),
+    biliComment(3, '真人乙', { like: 10 }),
+  ];
+  const result = assessFishFlood({ topLevel, repliesByRoot: {}, config: DEFAULT_BILI_FISH_GUARD, selfMid: '999', ownerMid: '888', any: true });
+  assert.ok(result.likeTargets.some((x) => x.rpid === '1'), '--any 应给普通人点赞');
+  assert.ok(result.likeTargets.some((x) => x.rpid === '2'), '--any 也应保留鱼');
+}
+
 // ── B站：2026-10-23 强制聚拢 ───────────────────────────────────────────────
 // 所有鱼楼都不满足“回复少/新鲜”的条件，但 forceGather=true 时仍要选一条；
 // forceGather=false 时保持旧行为（没有合适鱼楼 → null）。
@@ -259,6 +271,23 @@ assert.equal(normalizeBiliFishGuard({ forceGather: false }).forceGather, false);
   });
   assert.equal(result.liked.length, 1);
   assert.equal(state.liked['1'], undefined);
+}
+
+// ── B站：点赞日上限 0 = 不限（不是「一条都不点」）────────────────────────
+{
+  const day = new Date().toLocaleDateString('sv-SE');
+  const state = { version: 1, liked: {}, gathered: {}, daily: { [day]: { likes: 99 } } };
+  const result = await likeFishComments({
+    targets: [{ rpid: '1', uname: '普通人', kind: 'root' }],
+    oid: '123',
+    cred: { sessdata: 'x', bili_jct: 'x', buvid3: 'x' },
+    state,
+    stateFile: tmpState(),
+    config: normalizeBiliFishGuard({ ...DEFAULT_BILI_FISH_GUARD, maxLikesPerDay: 0, maxLikesPerRun: 4, likeGapMinMs: 0, likeGapMaxMs: 0 }),
+    dry: true,
+    fetchImpl: () => { throw new Error('dry-run 不应访问网络'); },
+  });
+  assert.equal(result.liked.length, 1, 'maxLikesPerDay=0 应视为不限');
 }
 
 // ── B站：抓取必须带 cookie（否则游客态只回 0~3 条评论）─────────────────

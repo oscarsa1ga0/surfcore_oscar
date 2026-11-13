@@ -54,6 +54,14 @@ export const DEFAULTS = {
   freePost: { enabled: true },
   // 原创专栏：先 --draft 验证，再 --go；category=0 用 B站默认分类。
   article: { enabled: true, category: 0 },
+  // 视频弹幕（2026-11-13）：不是任务；本地防刷只做最小间隔/日上限/同视频同文去重。
+  danmaku: { enabled: true, minGapSec: 30, dailyMax: 20 },
+  // 关注/取关（2026-11-13）：只对站内用户；不能取关主人/自己；关注与取关共用最小间隔。
+  follow: { enabled: true, dailyMax: 3, unfollowDailyMax: 3, minGapMin: 30 },
+  // 视频点赞（2026-11-13 用户定）：每天最多 10 个，每次最多 5 个。
+  likeVideo: { enabled: true, dailyMax: 10, perRunMax: 5 },
+  // 投币（2026-11-13 用户定）：每天最多 5 枚，单视频可选 1/2 枚；先看余额，只对特别好的视频投。
+  coin: { enabled: true, dailyMax: 5, perVideoMax: 2, oneMinScore: 16, twoMinScore: 18 },
   // 2026-10-23 用户定：默认发自己的动态（视频卡片），不再默认评论区 @ 主人。
   share: { enabled: true, via: 'dynamic', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },  // 分享型开关与评分阈值
   // 倾听（2026-10-18 补默认值，与设置页对齐）：评论区 + 直播间

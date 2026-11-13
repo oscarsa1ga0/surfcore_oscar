@@ -55,6 +55,10 @@ const BIDI_DEFAULTS = {
   // 自由发布 / 原创专栏（2026-11-12）：不是任务，不设每日上限；共用 dynamics.gapMin。
   freePost: { enabled: true },
   article: { enabled: true, category: 0 },
+  danmaku: { enabled: true, minGapSec: 30, dailyMax: 20 },
+  follow: { enabled: true, dailyMax: 3, unfollowDailyMax: 3, minGapMin: 30 },
+  likeVideo: { enabled: true, dailyMax: 10, perRunMax: 5 },
+  coin: { enabled: true, dailyMax: 5, perVideoMax: 2, oneMinScore: 16, twoMinScore: 18 },
   diary: { push: true, enabled: true },
   notify: { type: 'none', url: '', template: 'text', cmd: '', args: [], timeoutMutes: [] },
   interact: { enabled: true, maxCommentAgeDays: 14 },
@@ -561,6 +565,25 @@ export function normalizeBiliConfig(input) {
   cfg.article = isPlainObject(cfg.article) ? cfg.article : {};
   cfg.article.enabled = cfg.article.enabled !== false;
   cfg.article.category = finiteNumber(cfg.article.category, 0, 0, 1000, { integer: true });
+  cfg.danmaku = isPlainObject(cfg.danmaku) ? cfg.danmaku : {};
+  cfg.danmaku.enabled = cfg.danmaku.enabled !== false;
+  cfg.danmaku.minGapSec = finiteNumber(cfg.danmaku.minGapSec, 30, 5, 600, { integer: true });
+  cfg.danmaku.dailyMax = finiteNumber(cfg.danmaku.dailyMax, 20, 0, 200, { integer: true });
+  cfg.follow = isPlainObject(cfg.follow) ? cfg.follow : {};
+  cfg.follow.enabled = cfg.follow.enabled !== false;
+  cfg.follow.dailyMax = finiteNumber(cfg.follow.dailyMax, 3, 0, 50, { integer: true });
+  cfg.follow.unfollowDailyMax = finiteNumber(cfg.follow.unfollowDailyMax, 3, 0, 50, { integer: true });
+  cfg.follow.minGapMin = finiteNumber(cfg.follow.minGapMin, 30, 0, 1440, { integer: true });
+  cfg.likeVideo = isPlainObject(cfg.likeVideo) ? cfg.likeVideo : {};
+  cfg.likeVideo.enabled = cfg.likeVideo.enabled !== false;
+  cfg.likeVideo.dailyMax = finiteNumber(cfg.likeVideo.dailyMax, 10, 0, 10, { integer: true });
+  cfg.likeVideo.perRunMax = finiteNumber(cfg.likeVideo.perRunMax, 5, 1, 5, { integer: true });
+  cfg.coin = isPlainObject(cfg.coin) ? cfg.coin : {};
+  cfg.coin.enabled = cfg.coin.enabled !== false;
+  cfg.coin.dailyMax = finiteNumber(cfg.coin.dailyMax, 5, 0, 10, { integer: true });
+  cfg.coin.perVideoMax = finiteNumber(cfg.coin.perVideoMax, 2, 1, 2, { integer: true });
+  cfg.coin.oneMinScore = finiteNumber(cfg.coin.oneMinScore, 16, 0, 20, { integer: true });
+  cfg.coin.twoMinScore = finiteNumber(cfg.coin.twoMinScore, 18, 0, 20, { integer: true });
   cfg.share = isPlainObject(cfg.share) ? cfg.share : {};
   // 旧的评论分享改走私信，继续只把内容分享给原接收者。
   cfg.share.via = ['comment', 'dm'].includes(cfg.share.via) ? 'dm' : 'dynamic';

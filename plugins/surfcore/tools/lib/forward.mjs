@@ -32,11 +32,15 @@ export async function ownerOf(bvid) {
 }
 
 /** 在 UP 主的空间动态里找"这条视频的 AV 动态"，返回 { id, title } 或 null */
-export async function findVideoDynamic(bvid, upMid, pages = 2) {
+export async function findVideoDynamic(bvid, upMid, pages = 4) {   // 2 → 4：视频的动态常常排在第 3 页之后（2026-11-13）
   if (!upMid) return null
   const c = cred()
+  // 2026-11-13 修：翻页要用上一页返回的 offset **token**，不能自己算 p*20。
+  //   原来写 `offset=${p*20}`，第二页永远拿不到数据 → 视频的动态只要不在前 20 条就判「没找到」，
+  //   于是退化成「文字+链接」（还容易被新号审核卡住）。实测修完就能翻到 10-14 天前的投稿动态。
+  let offsetToken = ''
   for (let p = 0; p < pages; p += 1) {
-    const offset = p === 0 ? '' : `&offset=${p * 20}`
+    const offset = offsetToken ? `&offset=${encodeURIComponent(offsetToken)}` : ''
     const u = `https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid=${upMid}${offset}`
     let j = {}
     try {
@@ -49,6 +53,8 @@ export async function findVideoDynamic(bvid, upMid, pages = 2) {
       if (arch?.bvid === bvid) return { id: String(it.id_str), title: String(arch.title ?? '') }
     }
     if (!(j.data?.items ?? []).length) break
+    offsetToken = String(j.data?.offset ?? '')
+    if (!offsetToken || j.data?.has_more === false) break
   }
   return null
 }

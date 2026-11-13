@@ -138,6 +138,10 @@ export async function fetchVideoInfo(bv, { home = os.homedir(), timeoutMs = 8000
         view: Number(d.stat?.view ?? 0) || 0,
         danmaku: Number(d.stat?.danmaku ?? 0) || 0,
         reply: Number(d.stat?.reply ?? 0) || 0,
+        like: Number(d.stat?.like ?? 0) || 0,
+        favorite: Number(d.stat?.favorite ?? 0) || 0,
+        coin: Number(d.stat?.coin ?? 0) || 0,
+        share: Number(d.stat?.share ?? 0) || 0,
       },
     };
   } catch (error) {
@@ -147,4 +151,85 @@ export async function fetchVideoInfo(bv, { home = os.homedir(), timeoutMs = 8000
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+/**
+ * 她自己发布的专栏列表（公开数据；只读）。
+ * 返回 stats（浏览/点赞/收藏/投币/评论/分享）和封面；正文另用 fetchArticleContent 取全文。
+ */
+export async function fetchMyArticles({ home = os.homedir(), timeoutMs = 15000 } = {}) {
+  const account = loadBiliAccount({ home });
+  if (!account.mid) return { ok: false, items: [], why: '配置里没有 self.mid' };
+  if (!account.hasCredentials) return { ok: false, items: [], why: '缺少 B 站凭据' };
+  try {
+    const r = await fetch(`https://api.bilibili.com/x/space/article?mid=${encodeURIComponent(account.mid)}&pn=1&ps=20`, {
+      headers: account.headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j?.code !== 0) return { ok: false, items: [], why: `space/article code=${j?.code ?? r.status}` };
+    const items = (Array.isArray(j?.data?.articles) ? j.data.articles : [])
+      .map((a) => {
+        const id = String(a?.id ?? '').trim();
+        const ts = Number(a?.publish_time ?? 0) || 0;
+        const stats = a?.stats ?? {};
+        return {
+          id,
+          title: String(a?.title ?? '').trim(),
+          summary: String(a?.summary ?? '').trim(),
+          cover: String(a?.banner_url || a?.image_urls?.[0] || a?.origin_image_urls?.[0] || '').trim(),
+          url: id ? `https://www.bilibili.com/read/cv${id}` : '',
+          date: ts ? new Date(ts * 1000).toLocaleDateString('sv-SE') : '',
+          at: ts ? new Date(ts * 1000).toISOString() : '',
+          words: Number(a?.words ?? 0) || 0,
+          stats: {
+            view: Number(stats.view ?? 0) || 0,
+            like: Number(stats.like ?? 0) || 0,
+            favorite: Number(stats.favorite ?? 0) || 0,
+            coin: Number(stats.coin ?? 0) || 0,
+            reply: Number(stats.reply ?? 0) || 0,
+            share: Number(stats.share ?? 0) || 0,
+          },
+        };
+      })
+      .filter((a) => a.id);
+    return { ok: true, items };
+  } catch (error) {
+    return { ok: false, items: [], why: String(error?.message ?? error).slice(0, 120) };
+  }
+}
+
+/** 取一篇专栏的全文和最新数据（只读）。B站 article/view 的 content 是纯文本。 */
+export async function fetchArticleContent(id, { home = os.homedir(), timeoutMs = 15000 } = {}) {
+  if (!/^\d+$/.test(String(id ?? ''))) return { ok: false, why: '专栏 id 格式不对' };
+  const account = loadBiliAccount({ home });
+  try {
+    const r = await fetch(`https://api.bilibili.com/x/article/view?id=${encodeURIComponent(String(id))}`, {
+      headers: account.headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j?.code !== 0) return { ok: false, why: `article/view code=${j?.code ?? r.status}` };
+    const d = j.data ?? {};
+    const stats = d.stats ?? {};
+    return {
+      ok: true,
+      id: String(d.id ?? id),
+      title: String(d.title ?? '').trim(),
+      content: String(d.content ?? '').trim(),
+      summary: String(d.summary ?? '').trim(),
+      cover: String(d.banner_url || d.image_urls?.[0] || d.origin_image_urls?.[0] || '').trim(),
+      words: Number(d.words ?? 0) || 0,
+      stats: {
+        view: Number(stats.view ?? 0) || 0,
+        like: Number(stats.like ?? 0) || 0,
+        favorite: Number(stats.favorite ?? 0) || 0,
+        coin: Number(stats.coin ?? 0) || 0,
+        reply: Number(stats.reply ?? 0) || 0,
+        share: Number(stats.share ?? 0) || 0,
+      },
+    };
+  } catch (error) {
+    return { ok: false, why: String(error?.message ?? error).slice(0, 120) };
+  }
 }

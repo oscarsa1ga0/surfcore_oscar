@@ -12,7 +12,7 @@
 //   POST https://api.bilibili.com/x/article/creative/article/upcover   → 封面
 //   POST https://member.bilibili.com/x/web/draft/delete                → 删草稿
 //
-// 和自由动态共用 `daily-dynamic.json` 的 30 分钟间隔；不设每日上限。
+// 和自由动态共用 `daily-dynamic.json` 的 30 分钟间隔；B站每天最多 5 篇，代码也会挡第 6 篇。
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -100,6 +100,43 @@ try {
 } catch (error) {
   console.error(`✗ ${error.message}`)
   process.exit(9)
+}
+
+// B站平台每天最多 5 篇专栏；代码也挡一道，避免第 6 篇白建草稿再被服务端拒。
+// 统计去重：quota 账本 + bili-posts（手动发布的也能算进来）。
+function articleIdsToday() {
+  const today = new Date().toLocaleDateString('sv-SE')
+  const ids = new Set()
+  try {
+    const q = JSON.parse(fs.readFileSync(biliState('quota.json'), 'utf8'))
+    for (const item of (Array.isArray(q?.log) ? q.log : [])) {
+      if (item?.type !== 'article') continue
+      if (new Date(item.at).toLocaleDateString('sv-SE') !== today) continue
+      const id = String(item.target ?? '').replace(/^cv:/, '').trim()
+      if (id) ids.add(id)
+    }
+  } catch {}
+  try {
+    const text = fs.readFileSync(biliState('bili-posts.jsonl'), 'utf8')
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const item = JSON.parse(line)
+        if (item?.type !== 'article' || item?.date !== today) continue
+        const id = String(item.id ?? '').replace(/^article:/, '').trim()
+        if (id) ids.add(id)
+      } catch {}
+    }
+  } catch {}
+  return ids.size
+}
+
+if (go) {
+  const published = articleIdsToday()
+  if (published >= 5) {
+    console.error(`✗ 今天已经发过 ${published} 篇专栏（B站每天最多 5 篇）—— 剩下的明天再发；可以先 --draft 存草稿`)
+    process.exit(3)
+  }
 }
 
 // 专栏也参与「任意两条动态之间」的间隔；草稿不算发布。

@@ -93,7 +93,7 @@ if (view.code !== 0) { console.error(`view 失败 code=${view.code} ${view.messa
 const d = view.data, cid = d.cid, aid = d.aid, dur = d.duration
 console.log('══════════ ① 元信息（它自称是什么）══════════')
 console.log(`标题: ${d.title}`)
-console.log(`UP: ${d.owner.name}   时长: ${fmt(dur)}   分区: ${d.tname || '-'}   发布: ${new Date(d.pubdate * 1000).toLocaleDateString('zh-CN')}`)
+console.log(`UP: ${d.owner.name}${d.owner.mid ? `（mid ${d.owner.mid}）` : ''}   时长: ${fmt(dur)}   分区: ${d.tname || '-'}   发布: ${new Date(d.pubdate * 1000).toLocaleDateString('zh-CN')}`)
 console.log(`播放 ${d.stat.view}  点赞 ${d.stat.like}  收藏 ${d.stat.favorite}  投币 ${d.stat.coin}  弹幕 ${d.stat.danmaku}  评论 ${d.stat.reply}`)
 if (d.desc) console.log(`简介: ${d.desc.replace(/\n+/g, ' / ').slice(0, 300)}`)
 

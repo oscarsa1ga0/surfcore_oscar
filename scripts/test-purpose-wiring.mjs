@@ -52,6 +52,7 @@ await test('强制投递：落到 private:owner，状态先记 pending', async (
   assert.equal(h.calls.prompts.length, 1);
   assert.equal(h.calls.prompts[0].sessionId, h.state.sessions['private:123']);
   assert.equal(h.purposeState.countToday, 1);
+  assert.equal(h.purposeState.sentToday, 0);
   assert.equal(h.purposeState.lastOutcome, 'pending');
   assert.equal(h.purposeState.nextFireAt, 0);
   assert.ok(r.selected?.text);
@@ -68,6 +69,7 @@ await test('回合回执：真发了 = sent；内部备忘的「待续」进 pen
     text: '【目的】关心一下面试\n【类型】关心\n【状态】待续\n【待续】面试结果出来再问一次',
   }, true);
   assert.equal(h.purposeState.lastOutcome, 'sent');
+  assert.equal(h.purposeState.sentToday, 1);
   assert.equal(h.purposeState.attempts, 0);
   assert.ok(h.purposeState.lastSentAt > 0);
   assert.ok(h.purposeState.nextFireAt > Date.now());

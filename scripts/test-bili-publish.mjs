@@ -8,6 +8,7 @@ import { markdownToHtml, htmlToPlain } from '../plugins/surfcore/tools/lib/artic
 import { appendBiliPost, readBiliPosts } from '../plugins/surfcore/tools/lib/bili-posts.mjs'
 import { dynamicGapWait, mergeFreeRecord, mergeArticleRecord } from '../plugins/surfcore/tools/lib/share-dynamic.mjs'
 import { createEmptyCard, ingestBiliEntries } from '../src/memory-card.js'
+import { createBiliMemory } from '../src/bili-memory.js'
 
 const temps = []
 function tempDir() {
@@ -47,10 +48,15 @@ test('B站作品 JSONL：追加/读取/去重不依赖 bili-memory 刷新', () =
   const file = path.join(dir, 'bili-posts.jsonl')
   appendBiliPost(file, { id: 'article:1', type: 'article', title: '专栏一', text: '正文', url: 'https://www.bilibili.com/read/cv1', at: '2026-11-12T12:00:00+08:00', date: '2026-11-12' })
   appendBiliPost(file, { id: 'dynamic:2', type: 'dynamic', title: '自由动态', text: '今天想发点东西', url: 'https://t.bilibili.com/2', at: '2026-11-12T13:00:00+08:00', date: '2026-11-12' })
+  appendBiliPost(file, { id: 'video:3', type: 'video', bvid: 'BV1xx411c7mD', title: '原创视频', text: '简介', summary: '发布时写好的详细概括', cover: 'https://i0.hdslb.com/cover.jpg', url: 'https://www.bilibili.com/video/BV1xx411c7mD', at: '2026-11-12T14:00:00+08:00', date: '2026-11-12' })
   const posts = readBiliPosts(file)
-  assert.equal(posts.length, 2)
+  assert.equal(posts.length, 3)
   assert.equal(posts[0].type, 'article')
   assert.equal(posts[1].url, 'https://t.bilibili.com/2')
+  assert.equal(posts[2].type, 'video')
+  assert.equal(posts[2].bvid, 'BV1xx411c7mD')
+  assert.equal(posts[2].summary, '发布时写好的详细概括')
+  assert.equal(posts[2].cover, 'https://i0.hdslb.com/cover.jpg')
 })
 
 test('自由动态/专栏共用 30 分钟间隔状态', () => {
@@ -75,4 +81,42 @@ test('原创专栏入库：记忆卡能读出“我写了一篇专栏”', () =>
   assert.match(record.text, /在 B 站写了一篇专栏/)
   assert.match(record.text, /猫/)
   assert.ok(record.tags.includes('article'))
+})
+
+test('B站记忆 brief：关注/取关/点赞/投币都进最近活动', async () => {
+  const dir = tempDir()
+  fs.writeFileSync(path.join(dir, 'quota.json'), JSON.stringify({ log: [
+    { at: '2026-11-13T10:00:00+08:00', type: 'follow', target: 'mid:353782040', note: 'oscarsaigao' },
+    { at: '2026-11-13T10:01:00+08:00', type: 'unfollow', target: 'mid:999999', note: '某人' },
+    { at: '2026-11-13T10:02:00+08:00', type: 'like-video', target: 'BV:BV1xx411c7mD', note: '测试视频' },
+    { at: '2026-11-13T10:03:00+08:00', type: 'coin', target: 'BV:BV1xx411c7mD', note: '测试视频：真的很好', amount: 2 },
+  ] }))
+  const memory = createBiliMemory({ stateDir: dir, biliDir: dir, log: () => {} })
+  const stats = await memory.refresh({ force: true })
+  assert.equal(stats.ok, true, `记忆生成失败：${stats.error ?? ''}`)
+  const brief = fs.readFileSync(path.join(dir, 'bili-memory-brief.md'), 'utf8')
+  assert.match(brief, /【关注】/)
+  assert.match(brief, /【取关】/)
+  assert.match(brief, /【点赞】/)
+  assert.match(brief, /【投币】/)
+  assert.match(brief, /真的很好/)
+  assert.match(brief, /2 枚/)
+})
+
+test('记忆卡：关注/点赞/投币成为独立记忆', () => {
+  const now = Date.parse('2026-11-13T12:00:00+08:00')
+  const card = createEmptyCard(now)
+  const result = ingestBiliEntries(card, [
+    { id: 'activity:follow:1', type: 'follow', title: 'oscarsaigao', text: '', date: '2026-11-13', at: '2026-11-13T10:00:00+08:00' },
+    { id: 'activity:like:1', type: 'like', title: '测试视频', text: '', date: '2026-11-13', at: '2026-11-13T10:02:00+08:00' },
+    { id: 'activity:coin:1', type: 'coin', title: '测试视频', text: '真的很好', amount: 2, date: '2026-11-13', at: '2026-11-13T10:03:00+08:00' },
+  ], {}, now)
+  assert.equal(result.added, 3)
+  const follow = card.records.find((r) => r.source === 'bili-follow')
+  const like = card.records.find((r) => r.source === 'bili-like')
+  const coin = card.records.find((r) => r.source === 'bili-coin')
+  assert.ok(follow && like && coin)
+  assert.match(follow.text, /关注了/)
+  assert.match(like.text, /点了赞/)
+  assert.match(coin.text, /投了 2 枚硬币/)
 })

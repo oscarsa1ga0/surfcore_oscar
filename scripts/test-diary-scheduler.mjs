@@ -30,6 +30,11 @@ test('planDueReview：到点、补执行窗口、同日去重、重试上限、�
   assert.equal(planDueReview({ now: at('2026-11-13T01:00:00+08:00'), config, state: {} })?.due, TODAY);
   assert.equal(planDueReview({ now: at('2026-11-13T07:00:00+08:00'), config, state: {} }), null);
   assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastReviewedDay: TODAY } }), null);
+  // 手动整理在下午，不代表晚上 23:30 的定时回顾已经完成。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T19:57:00+08:00' } })?.due, TODAY);
+  // 手动整理就在定时点前 30 分钟内 / 之后，才跳过定时，避免刚点完又跑一遍。
+  assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { lastManualAt: '2026-11-12T23:20:00+08:00' } }), null);
+  assert.equal(planDueReview({ now: at('2026-11-12T23:40:00+08:00'), config, state: { lastManualAt: '2026-11-12T23:36:00+08:00' } }), null);
   assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config, state: { attempts: { [TODAY]: 2 } } }), null);
   assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config: { ...config, enabled: false }, state: {} }), null);
   assert.equal(planDueReview({ now: at('2026-11-12T23:31:00+08:00'), config: { ...config, autoReview: false }, state: {} }), null);
@@ -228,6 +233,18 @@ test('关闭开关：不创建会话、不调用模型', async () => {
   assert.equal(result.skipped, 'disabled');
   assert.equal(fake.prompts.length, 0);
   sched.stop();
+});
+
+test('手动立即整理：不把当天定时回顾标记为已完成', async () => {
+  const nowRef = { value: at('2026-11-12T20:00:00+08:00') };
+  const fx = schedulerFixture({ nowRef });
+  writeSchedulerState(path.join(fx.characterDir, 'diary'), { lastReviewedDay: null, attempts: {} });
+  const result = await fx.sched.reviewNow();
+  assert.equal(result.ok, true);
+  const state = readSchedulerState(path.join(fx.characterDir, 'diary'));
+  assert.equal(state.lastReviewedDay, null, '手动整理不应吞掉 23:30 的定时回顾');
+  assert.ok(state.lastManualAt, '手动整理应记录 lastManualAt');
+  fx.sched.stop();
 });
 
 test('手动立即整理：绕过去重，但同样记录状态', async () => {

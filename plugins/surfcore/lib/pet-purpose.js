@@ -36,6 +36,7 @@ import {
   normalizePurposeConfig,
   normalizePurposeState,
   planNextFire,
+  rollbackPurposeDelivered,
   selectPurpose,
   summarizePurposeState,
 } from '../../../src/purpose-engine.js';
@@ -525,6 +526,8 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
       const delivered = await chat.proactive({ text, modality: p.modality, purpose: selection.purpose });
       if (!delivered.ok) {
+        // 网关/桌宠没送到：不吃当天额度（和 QQ 桥接的 delivery-failed 回滚保持一致）。
+        rollbackPurposeDelivered(state, { now: Date.now() });
         applyPurposeOutcome(state, {
           now: Date.now(), config: p.config, outcome: 'failed', text: '', planned: selection.purpose,
         });

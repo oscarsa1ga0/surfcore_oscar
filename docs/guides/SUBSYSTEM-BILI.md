@@ -252,7 +252,7 @@
 
 | 命令 | 作用 | 关键参数 | 对外副作用 | 额度/闸门 | 代码 |
 | --- | --- | --- | --- | --- | --- |
-| `comment` | 发一条视频评论 / 二级回复 / 动态回复 | `--oid --bvid\|--referer --message [--type 1\|11\|17] [--root --parent] [--auto] [--share] [--ta] [--mine k] [--once-per-person] [--force-gather\|--no-fish-gather] --dry\|--go` | ✅ 公开评论、点赞（鱼）、私信报备 | **6 道**：分享前置判据 → 攻击待审 → 鱼群 → 自由发言（四本账+全局冷却）→ 限额闸 → 出站身份闸 | `tools/commands/comment.mjs:125-174`、`:337-423`、`:440-528` |
+| `comment` | 发一条视频评论 / 二级回复 / 动态回复 | `--oid --bvid\|--referer --message [--type 1\|11\|12\|17] [--root --parent] [--auto] [--share] [--ta] [--mine k] [--once-per-person] [--force-gather\|--no-fish-gather] --dry\|--go` | ✅ 公开评论、点赞（鱼）、私信报备 | **6 道**：分享前置判据 → 攻击待审 → 鱼群 → 自由发言（四本账+全局冷却）→ 限额闸 → 出站身份闸 | `tools/commands/comment.mjs:125-174`、`:337-423`、`:440-528` |
 | `comment-del` | 删自己发的一条评论 | `--oid --rpid [--bvid] --dry\|--go` | ✅ 删除公开内容 | 无（只能删自己的；`type` 写死 1） | `tools/commands/comment-del.mjs:26-45` |
 | `dm` | 私信（专属通道 + 陌生人回复通道） | `--msg [--share --target] --dry\|--go`；`--to <mid>`；`--status` | ✅ 私信 | 写死三条（一天一个收信人 / 只发主人 / 必须互关）+ 陌生人 3 条/人/天、30 条/天 + `--share` 才过限额闸 + 出站身份闸 | `tools/commands/dm.mjs:71-76`、`:141-199`、`:201-243` |
 | `dynamic` | 发 / 删 / 查动态 | `post --text`；`rm --id`；`check --id`；`list` | ✅ 动态 | 限额闸（`gate`）+ 出站身份闸 | `tools/commands/dynamic.mjs:103`、`:107` |
@@ -261,8 +261,8 @@
 | `daily` | 四类动态各一天一条（best/game/anime/gaming） | `--kind --text [--bvid] [--image] [--catchup] --dry\|--go` | ✅ 公开动态（转发视频卡片或文字+链接） | 类开关 → 一天一条 → **30 分钟间隔** → 时段 → 质量门槛 → 字数 → 不许 @ | `tools/commands/daily.mjs:54-73`、`:97-115`、`:140-147`、`:174-227`、`:229-258` |
 | `share-dynamic` | 每日分享 → **自己的动态**（视频卡片） | `--bvid --text --score 0-20 --reason --dry\|--go [--allow-text]` | ✅ 公开动态（转发） | 评分 ≥ `share.minScore` → 间隔 → **必须有卡片** → 限额闸（分享账）→ 出站身份闸 | `tools/commands/share-dynamic.mjs:53-74`、`:76-99`、`:109`、`:123` |
 | `danmaku` | 直播弹幕：`pre` / `send` / `history` / `live` | `--room`；`send --msg [--reply-mid --reply-name --reply-dmid] --dry\|--go` | ✅ 弹幕（公开） | 限额闸（`type=danmaku`，target `room:<房间号>`） | `tools/commands/danmaku.mjs:89-144` |
-| `fav` | 收藏（"我想留着"） | `<BV> --reason --dry\|--go [--kind] [--better]`；`--list`；`--check` | ✅ B站 收藏夹（私有但有账号痕迹） | 5 条判据（理由≥6 字 / 3 条/天 / 30 天不重复 / 同类≥2 需 `--better` / 先 dry 后 go） | `tools/commands/fav.mjs:93-108`、`:137-165` |
-| `fish-guard` | 鱼群保护 `status/plan/like` | `--bvid\|--oid [--type] [--json] [--dry] [--max]` | ⚠️ `like` 会**点赞**（公开） | 日 6 / 次 4 / 随机间隔 / 风控熔断（§7） | `tools/commands/fish-guard.mjs:119-143` |
+| `fav` | 收藏（可选，不是任务） | `<BV> --reason [--kind] [--folder "夹名"] [--create] --dry\|--go`；`<BV> --move-to "夹名" [--create] --dry\|--go`；`<BV> --remove --dry\|--go`；`--folders`；`--mkdir`；`--rename --to`；`--list`；`--check` | ✅ B站 收藏夹（新夹公开；可自建/改名/移动/删除） | 新收藏：理由≥6 字 / 3 条/天 / 30 天不重复 / 先 dry 后 go；**移动/删除不占新收藏 30 天规则**；显式建夹、默认夹保护、重名/长度校验 | `tools/commands/fav.mjs`、`tools/lib/fav-folders.mjs` |
+| `fish-guard` | 评论区点赞/鱼群保护 `status/plan/like` | `--bvid\|--oid [--type] [--any] [--json] [--dry] [--max]` | ⚠️ `like` 会**点赞**（公开）；`--any` 不限鱼 | 日不限 / 次 10 / 随机间隔 / 风控熔断（§7） | `tools/commands/fish-guard.mjs:119-143` |
 | `notify` | 通知分发（把"自主发言必须报备"落到代码） | `"正文" [--title] [--dry]`；`--test` | ⚠️ 桌面通知 / Webhook / 自定义命令（非 B站） | 无（`config.notify`） | `tools/commands/notify.mjs:44-70` |
 | `attack` | 疑似被攻击的待审队列 | `add/list/show/approve/reject/nudge` | ⚠️ 间接：`add` 会**私信报备**主人 | 记录不占额度；回复前 `comment` 会拦 pending/rejected | `tools/commands/attack.mjs:33-56`、`tools/lib/attacks.mjs:90-97` |
 | `reply-draft` | 待审回复队列（B 档：发前审核） | `add/list/show/drop/take` | ⚠️ 间接：`add` 会推送报备 | 不入队就不能发；`comment` 侧仍有全套闸门 | `tools/commands/reply-draft.mjs:44-81` |
@@ -405,7 +405,10 @@
 
 | 命令 | 作用 | 关键参数 | 写盘 | 代码 |
 | --- | --- | --- | --- | --- |
-| `feed` | 选题器：按偏好权重分配名额、排除看过的/最近推过的 | `--n 6 --per 2 --pages 3 --source all\|search\|popular\|rank\|following --recent-days 3 --seed --generic --no-remember --json` | `feed-picks.json` | `tools/commands/feed.mjs:41-47`、`:232-241` |
+| `feed` | 选题器：按偏好权重分配名额、排除看过的/最近推过的 | `--n 6 --per 2 --pages 3 --source all\|search\|popular\|rank\|following --follow-days 7 --follow-quota N --follow-pages 3 --recent-days 3 --seed --generic --no-remember --json` | `feed-picks.json` | `tools/commands/feed.mjs:41-47`、`:232-241` |
+| `follow` | 关注/取关：`--list` / `--mid <mid> --status` / `--mid <mid> [--unfollow] --dry\|--go`；不能取关主人/自己，关注与取关共用间隔 | `quota.json` | `tools/commands/follow.mjs` |
+| `like-video` | 视频点赞 | `--bvid BV1,BV2 [--unlike] [--max 5] --dry\|--go` | 每天 10 个 / 每次 5 个 | `quota.json` | `tools/commands/like-video.mjs` |
+| `coin` | 投币 | `--bvid BV... --reason "…" [--count 1\|2] --dry\|--go` | 先查余额；每天最多 5 枚；1 枚需评分 ≥16，2 枚 ≥18 | `quota.json` | `tools/commands/coin.mjs` |
 | `gamefeed` | 候选池：今天轮到的游戏 / `--for anime\|gaming` | `--for --days --n [--game] [--next] [--no-remember]` | `gamefeed-picks.json` | `tools/commands/gamefeed.mjs:27-29`、`:169-182` |
 | `prefs` | 一键抓取偏好候选（只发 GET） | `scan --target fish\|owner\|both --sources history,favorites,local --limit --json` | ❌ 不落盘（只在设置页显示） | `tools/commands/prefs.mjs:19-58`、`tools/lib/pref-scan.mjs:1-15` |
 | `search` | 关键词搜视频（WBI + cookie） | `<关键词> [页码]` | ❌ | `tools/commands/search.mjs:31-46` |
@@ -422,6 +425,16 @@
 | `selftest` | 启动测试（配置/凭据/登录态/目录/deps + 下一步两件事） | 无 | `selftest-passed.json` | `tools/commands/selftest.mjs:29-106` |
 | `deps` | 依赖体检（cookie 真请求 nav / ffmpeg / Node / 目录可写） | `--json` | ❌ | `tools/commands/deps.mjs:19-84` |
 
+### 4.0 四类动态的 dynTick（2026-11-13 改）
+
+到点提醒（08/12/16/20 等）不再只发一条动态，而是**先走完整逛 B 站流程**：
+`deps → 日记 → feed → debrief → 收藏/点赞/评论/搭话 → 记分 → 收件箱`，最后才发这一类动态。
+完整流程里的 4.95/4.97 两类日常动态被抑制，避免同一天重复；dynTick 只负责当前这一类。
+
+好处：12:00 发游戏动态时也会顺手 `comment-digest`，不会再漏掉主人对动态的评论。
+
+日记固定放在流程最后（7.8）：`comment-digest` → `quota react` → **写两本日记** → notify → 收工；dynTick 也一样。
+
 ### 4.1 选题（`feed`）：从"关键词搜索"升级成"按口味配额"
 
 纯逻辑在 `tools/lib/feed-core.mjs`（无网络/无文件/可单测）：
@@ -437,6 +450,10 @@
 
 `feed.mjs` 只负责取数与"看过名单"：日记 + 审计表 + **观看历史** + bili-memory + 收藏 + 反馈，
 最近 3 天推过但没看的也排除（`tools/commands/feed.mjs:64-102`、`:216-241`）。
+
+**2026-11-13 起：关注动态优先。** `feed` 先取关注动态（最多 3 页）里 **7 天内、没看过** 的新视频，
+按发布时间新→旧优先占名额（默认最多 N 条，`--follow-quota` 可调）；不够再按口味配额补搜索/热门/排行/旧关注。
+`--source following` 现在真的只取关注（以前会偷偷混入搜索）。没有 `pub_ts` 的候选不算“一周内”。
 
 ### 4.2 候选池（`gamefeed`）
 
@@ -649,7 +666,7 @@
 | 额度 | 值 | 位置 |
 | --- | --- | --- |
 | 给鱼点赞 | 6/天 · 4/次 · 间隔 1.5–4 s · 发完评论后等 12 s 再点 | `tools/lib/fish-guard.mjs:45-52` |
-| 收藏 | 3/天 · 同视频 30 天一次 · 同类 ≥2 需 `--better` | `tools/commands/fav.mjs:96-107` |
+| 收藏 | 3/天 · 同视频 30 天一次 | `tools/commands/fav.mjs:92-105` |
 | 首次评论初筛 | 一次醒来最多 `night.maxVideos`（默认 5）条 | `tools/lib/config.mjs:52` |
 | 动态间隔 | `dynamics.gapMin`（默认 30 分钟），四类 + 分享共用 | `tools/lib/kinds.mjs:88-91` |
 

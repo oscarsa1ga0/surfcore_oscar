@@ -378,6 +378,38 @@ export function bvSetFromTexts(texts = []) {
 }
 
 /** 最近推荐过、但还没看的视频：短期不再推（默认 3 天）。 */
+/** 关注动态的发布时间（秒/毫秒都接受）→ 天数；没有时间返回 null。 */
+export function followAgeDays(pubTs, now = Date.now()) {
+  const raw = Number(pubTs);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const ms = raw < 1e12 ? raw * 1000 : raw;
+  return Math.max(0, Math.floor((now - ms) / 86400000));
+}
+
+/**
+ * 关注动态优先（2026-11-13 用户要求）：
+ * 从候选里取「via=following + days 天内 + 调用方已经排除看过」的视频，按发布时间新→旧；
+ * 最多 n 条，剩余候选原样返回给 selectDiverse 补位。
+ * 没有发布时间的不算“一周内”（避免把旧视频当成新视频）。
+ */
+export function pickFollowingNew(candidates, { n = 5, days = 7, now = Date.now() } = {}) {
+  const total = Math.max(0, Math.floor(safeNumber(n, 5)));
+  const maxDays = Math.max(1, Math.floor(safeNumber(days, 7)));
+  const list = (candidates ?? []).filter((item) => item && item.via === 'following' && followAgeDays(item.pubTs, now) !== null && followAgeDays(item.pubTs, now) <= maxDays);
+  list.sort((a, b) => Number(b.pubTs) - Number(a.pubTs) || safeNumber(b._score) - safeNumber(a._score));
+  const picked = [];
+  const pickedBv = new Set();
+  for (const item of list) {
+    if (picked.length >= total) break;
+    const bv = String(item.bv ?? '');
+    if (bv && pickedBv.has(bv)) continue;
+    if (bv) pickedBv.add(bv);
+    picked.push({ ...item, _via: 'following', _followAgeDays: followAgeDays(item.pubTs, now) });
+  }
+  const rest = (candidates ?? []).filter((item) => !(item?.bv && pickedBv.has(String(item.bv))));
+  return { picked, rest, eligible: list.length };
+}
+
 export function filterRecentlyPicked(candidates, pickedMap = {}, { now = Date.now(), days = 3 } = {}) {
   const windowMs = Math.max(0, safeNumber(days, 3)) * 86400000;
   if (!windowMs) return candidates;

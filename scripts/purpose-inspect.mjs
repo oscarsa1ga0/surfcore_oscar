@@ -81,7 +81,7 @@ const selection = selectPurpose({
 });
 
 const summary = summarizePurposeState({
-  day: '', countToday: 0, pending: [], history: [],
+  day: '', countToday: 0, sentToday: 0, pending: [], history: [],
   drives: derived.drives, drivesAt: derived.drivesAt, goals: formed.goals, observations: formed.observations,
   lastEmotion: '', lastEmotionText: '', lastGoalId: '',
 }, { config, now });

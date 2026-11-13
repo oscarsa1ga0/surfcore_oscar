@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
+import { fetchArticleContent, fetchMyArticles, fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
 import { characterPersonaMeta, readCurrentCharacter } from './character-persona.js';
 
 const BV_RE = /\bBV[0-9A-Za-z]{10}\b/;
@@ -267,6 +267,77 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     return items;
   }
 
+  /**
+   * 给她自己发的专栏/视频补两样东西：
+   *   1. 专栏全文 + 封面 + 最新数据（浏览/点赞/收藏/投币）；
+   *   2. 视频的标题/封面/简介 + 最新数据。
+   * 只读公开接口；失败不阻塞整次刷新。
+   */
+  async function enrichOwnPosts(items) {
+    const articleIds = new Set();
+    for (const item of items) {
+      if (item.type !== 'article') continue;
+      const id = String(item.id ?? '').replace(/^article:/, '');
+      if (/^\d+$/.test(id)) articleIds.add(id);
+    }
+
+    const articleList = await fetchMyArticles({ home });
+    const byArticleId = new Map();
+    if (articleList.ok) {
+      for (const article of articleList.items) byArticleId.set(String(article.id), article);
+    } else if (articleList.why) {
+      log(`[B站记忆] 专栏列表读取失败：${articleList.why}`);
+    }
+    for (const id of byArticleId.keys()) articleIds.add(id);
+    for (const id of articleIds) {
+      const full = await fetchArticleContent(id, { home });
+      const meta = byArticleId.get(id);
+      const target = items.find((item) => item.type === 'article' && String(item.id) === `article:${id}`);
+      const existing = target ?? {
+        id: `article:${id}`,
+        type: 'article',
+        own: true,
+        ownKind: 'article',
+        bvid: '',
+        title: '',
+        text: '',
+        url: '',
+        date: '',
+        at: '',
+      };
+      if (!target) items.push(existing);
+      existing.title = existing.title || meta?.title || full?.title || '';
+      existing.text = full?.content || existing.text || meta?.summary || '';
+      existing.summary = meta?.summary || full?.summary || '';
+      existing.cover = meta?.cover || full?.cover || '';
+      existing.url = existing.url || meta?.url || `https://www.bilibili.com/read/cv${id}`;
+      existing.date = existing.date || meta?.date || '';
+      existing.at = existing.at || meta?.at || '';
+      existing.words = meta?.words || full?.words || 0;
+      existing.stats = meta?.stats || full?.stats || existing.stats;
+      if (!full.ok && full.why) log(`[B站记忆] 专栏 ${id} 正文读取失败：${full.why}`);
+    }
+
+    for (const item of items) {
+      if (item.ownKind !== 'video') continue;
+      const bvid = item.bvid || extractBv(item.url);
+      if (!bvid) continue;
+      const info = await fetchVideoInfo(bvid, { home });
+      if (!info.ok) {
+        log(`[B站记忆] 视频 ${bvid} 数据读取失败：${info.why}`);
+        continue;
+      }
+      item.bvid = bvid;
+      item.title = item.title || info.title;
+      item.desc = info.desc || '';
+      item.text = item.text || info.desc || '';
+      item.cover = info.pic || item.cover || '';
+      item.stats = info.stat || item.stats;
+      if (!item.date && info.pubdate) item.date = localDate(info.pubdate * 1000);
+      if (!item.at && info.pubdate) item.at = new Date(info.pubdate * 1000).toISOString();
+    }
+  }
+
   async function collect({ force = false } = {}) {
     const config = cfg();
     const diaryRaw = (() => {
@@ -307,7 +378,44 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       }))
       .filter((it) => BV_RE.test(it.bv));
 
+    // 关注/取关/视频点赞/投币是「行为」，不是评论；单独成 activityItems，
+    // 不能混进 commentItems 被当成公开评论引用。
+    const ACTIVITY_TYPES = new Set(['follow', 'unfollow', 'like-video', 'coin']);
+    const activityItems = (Array.isArray(quotaRaw?.log) ? quotaRaw.log : [])
+      .filter((it) => ACTIVITY_TYPES.has(String(it?.type ?? '')))
+      .map((it) => {
+        const type = String(it.type);
+        const target = String(it?.target ?? '');
+        const bv = extractBv(target);
+        const mid = (target.match(/mid:(\d+)/) ?? [])[1] ?? '';
+        const note = redactOwner(cleanText(it?.note ?? ''));
+        const label = type === 'follow' ? 'follow' : type === 'unfollow' ? 'unfollow' : type === 'coin' ? 'coin' : 'like';
+        const title = type === 'follow' || type === 'unfollow'
+          ? (note.split('：')[0] || note || `mid ${mid}`)
+          : (note.split('：')[0] || note || bv);
+        // 去掉重复的标题/名字前缀：brief 里标题已经单独显示了。
+        let text = note;
+        if (type === 'follow' || type === 'unfollow' || type === 'coin') {
+          const i = text.indexOf('：');
+          if (i >= 0) text = text.slice(i + 1).trim();
+        }
+        if (type === 'like' && text === title) text = '';
+        const url = bv ? `https://www.bilibili.com/video/${bv}` : (mid ? `https://space.bilibili.com/${mid}` : '');
+        return {
+          id: `activity:${type}:${target}:${String(it?.at ?? '')}`,
+          type: label,
+          bvid: bv,
+          title,
+          text,
+          url,
+          amount: Number(it?.amount) || 1,
+          date: localDate(it?.at),
+          at: String(it?.at ?? ''),
+        };
+      })
+      .filter((it) => it.title || it.text);
     const commentItems = (Array.isArray(quotaRaw?.log) ? quotaRaw.log : [])
+      .filter((it) => !ACTIVITY_TYPES.has(String(it?.type ?? '')))
       .map((it) => ({
         bv: extractBv(it?.target),
         target: String(it?.target ?? ''),
@@ -342,12 +450,19 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
           try {
             const item = JSON.parse(line);
             if (!item || typeof item !== 'object') continue;
-            const type = String(item.type ?? 'dynamic') === 'article' ? 'article' : 'dynamic';
+            const rawType = String(item.type ?? 'dynamic');
+            const type = rawType === 'article' ? 'article' : 'dynamic';
             out.push({
               id: String(item.id ?? `${type}:${out.length}`),
               type,
+              // 这份文件只记「她自己发出去的作品」；简报要给它们留固定名额。
+              own: true,
+              ownKind: rawType === 'video' ? 'video' : rawType === 'article' ? 'article' : 'dynamic',
+              bvid: String(item.bvid ?? '').trim(),
               title: redactOwner(cleanText(item.title ?? '')),
               text: redactOwner(cleanText(item.text ?? '')),
+              summary: redactOwner(cleanText(item.summary ?? '')),
+              cover: String(item.cover ?? '').trim(),
               url: String(item.url ?? ''),
               date: String(item.date ?? '').slice(0, 10) || localDate(item.at),
               at: String(item.at ?? ''),
@@ -357,6 +472,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       } catch {}
       return out;
     })();
+
+    await enrichOwnPosts(postItems);
 
     const blocks = parseDiaryBlocks(diaryRaw, fallbackDate);
     const anecdotes = [];
@@ -392,6 +509,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       scoreItems,
       favoriteItems,
       commentItems,
+      activityItems,
       dynamicItems,
       postItems,
       anecdotes,
@@ -530,6 +648,17 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
         shareable: false,
       });
     }
+    // 关注/取关/点赞/投币：独立行为条目，不参与视频卡去重，也不进分享池。
+    for (const a of (Array.isArray(data.activityItems) ? data.activityItems : [])) {
+      entries.push({
+        ...a,
+        quote: '',
+        score: 0,
+        favorite: false,
+        priority: 6,
+        shareable: false,
+      });
+    }
     return entries;
   }
 
@@ -573,12 +702,21 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       // 政治/娱乐圈相关：记忆可以知道“看过”，但不把具体内容写进注入文本，
       // 避免群里聊起来时被带出去（用户明确要求分享避开这两类）。
       if (isBlocked(`${e.title} ${e.text} ${e.quote}`)) continue;
+      const actLabel = { follow: '关注', unfollow: '取关', like: '点赞', coin: '投币' }[e.type];
       const head = e.type === 'dynamic'
         ? `- ${e.date || ''} B站动态：${short(e.text, 260)}`
         : e.type === 'article'
           ? `- ${e.date || ''} B站专栏《${short(e.title, 60)}》：${short(e.text, 260)}`
-          : `- ${e.date || ''}${e.score ? ` [${e.score}分]` : ''} ${e.title}${e.bvid ? ` ${e.bvid}` : ''}`;
+          : actLabel
+            ? `- ${e.date || ''} B站${actLabel}：${short(e.title, 60)}${e.type === 'coin'
+              ? `（${Number(e.amount) || 1} 枚${e.text ? `：${short(e.text, 140)}` : ''}）`
+              : (e.text && e.text !== e.title ? `（${short(e.text, 160)}）` : '')}`
+            : `- ${e.date || ''}${e.score ? ` [${e.score}分]` : ''} ${e.title}${e.bvid ? ` ${e.bvid}` : ''}`;
       lines.push(head);
+      if (e.own === true && e.stats && (e.type === 'article' || e.ownKind === 'video')) {
+        const n = (value) => Number(value) || 0;
+        lines.push(`  - 数据：浏览 ${n(e.stats.view)} · 点赞 ${n(e.stats.like)} · 收藏 ${n(e.stats.favorite)} · 投币 ${n(e.stats.coin)}`);
+      }
       if (e.type !== 'dynamic') {
         if (e.reason) lines.push(`  - 当时的判断：${short(e.reason, 260)}`);
         if (e.quote) lines.push(`  - 我的公开评论：「${short(e.quote, 200)}」`);
@@ -616,33 +754,118 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push(`我自己的 B 站主页：「${selfName}」${selfSpace ? `（${selfSpace}；截图里可能只显示昵称和头像）` : ''}。别人发来的截图/图片里只要出现这个昵称、我的头像或 B 站个人主页/资料卡，那就是**我自己**——先认出「这是 wo」，再聊内容；不要用「那张主页」这种口吻把我说成别人。`);
     lines.push(`我的口味：${(prefs.like ?? []).slice(0, 8).join('、') || 'AI 工具、鲸鱼娘、可爱+荒诞的短整活'}；不喜欢 ${(prefs.dislike ?? []).slice(0, 6).join('、') || '带货、擦边、标题党'}。`);
     lines.push('');
-    lines.push('最近在 B 站（真实看过/发过，细节以这里为准，不要编）：');
-    const seen = new Set();
-    const picks = [];
     const sorted = entries
-      .filter((e) => ['video', 'favorite', 'diary', 'dynamic', 'article'].includes(e.type))
+      .filter((e) => ['video', 'favorite', 'diary', 'dynamic', 'article', 'follow', 'unfollow', 'like', 'coin'].includes(e.type))
       .filter((e) => e.date && !isBlocked(`${e.title} ${e.text} ${e.quote}`))
       .filter((e) => !String(e.title ?? '').includes('未取到标题'))
       .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.score || 0) - (a.score || 0));
-    for (const e of sorted) {
-      const key = e.bvid || e.id;
-      if (key && seen.has(key)) continue;
+
+    const ownWorkKind = (entry) => {
+      if (entry.own !== true) return '';
+      const kind = String(entry.ownKind ?? entry.type);
+      return kind === 'article' || kind === 'video' ? kind : '';
+    };
+
+    // 自己发的专栏/视频：全部单独列在最近动态前面，不参与前 10 条竞争。
+    // 这样不管当天有多少条高分视频/动态，都不会把它们挤掉。
+    const ownSeen = new Set();
+    const ownWorks = sorted.filter((entry) => {
+      if (!ownWorkKind(entry)) return false;
+      const key = entry.bvid || entry.id;
+      if (key && ownSeen.has(key)) return false;
+      if (key) ownSeen.add(key);
+      return true;
+    });
+    if (ownWorks.length) {
+      const statsText = (stats) => {
+        if (!stats) return '暂缺（本轮没取到）';
+        const n = (value) => Number(value) || 0;
+        return `浏览 ${n(stats.view)} · 点赞 ${n(stats.like)} · 收藏 ${n(stats.favorite)} · 投币 ${n(stats.coin)}`;
+      };
+      lines.push('我自己发过的作品（全部保留，按时间）：');
+      for (const e of ownWorks) {
+        const kind = ownWorkKind(e);
+        const link = e.url || (e.bvid ? `https://www.bilibili.com/video/${e.bvid}` : '');
+        if (kind === 'article') {
+          lines.push(`- ${e.date}【我发的专栏】${short(e.title, 60)}`);
+          if (e.cover) lines.push(`  封面：${e.cover}`);
+          lines.push(`  正文：${e.text || e.summary || '（正文未取到）'}`);
+          lines.push(`  数据：${statsText(e.stats)}`);
+          if (link) lines.push(`  链接：${link}`);
+        } else {
+          lines.push(`- ${e.date}【我发的视频】${short(e.title, 60)}`);
+          if (e.cover) lines.push(`  封面：${e.cover}`);
+          if (e.desc) lines.push(`  简介：${e.desc}`);
+          const summary = e.summary || (e.text && e.text !== e.desc ? e.text : '');
+          if (summary) lines.push(`  概括：${summary}`);
+          lines.push(`  数据：${statsText(e.stats)}`);
+          if (link) lines.push(`  链接：${link}`);
+        }
+      }
+      lines.push('');
+    }
+    lines.push('最近在 B 站（真实看过/发过，细节以这里为准，不要编）：');
+
+    const seen = new Set();
+    const picks = [];
+    const takePick = (entry) => {
+      const activity = ['follow', 'unfollow', 'like', 'coin'].includes(entry.type);
+      const key = activity ? entry.id : (entry.bvid || entry.id);
+      if (key && seen.has(key)) return false;
       if (key) seen.add(key);
-      picks.push(e);
+      picks.push(entry);
+      return true;
+    };
+    for (const entry of sorted) {
       if (picks.length >= 10) break;
+      if (ownWorkKind(entry)) continue;
+      takePick(entry);
     }
     for (const e of picks) {
-      const label = e.type === 'dynamic' ? '动态' : e.type === 'article' ? '专栏' : e.score ? `${e.score}分` : e.favorite ? '收藏' : '看过';
-      const body = e.type === 'dynamic' || e.type === 'article'
-        ? short(e.text, 110)
-        : short(e.quote || e.reason || e.anecdote || '', 100);
+      const ownKind = e.own === true ? String(e.ownKind ?? e.type) : '';
+      const label = ownKind === 'article' ? '我发的专栏'
+        : ownKind === 'video' ? '我发的视频'
+          : ownKind === 'dynamic' ? '我发的动态'
+            : e.type === 'dynamic' ? '动态'
+              : e.type === 'article' ? '专栏'
+                : e.type === 'follow' ? '关注'
+                  : e.type === 'unfollow' ? '取关'
+                    : e.type === 'like' ? '点赞'
+                      : e.type === 'coin' ? '投币'
+                        : e.score ? `${e.score}分` : e.favorite ? '收藏' : '看过';
+      const body = e.type === 'coin'
+        ? short(`${Number(e.amount) || 1} 枚${e.text ? `：${e.text}` : ''}`, 110)
+        : ['dynamic', 'article', 'follow', 'unfollow', 'like'].includes(e.type)
+          ? short(e.text, 110)
+          : short(e.quote || e.reason || e.anecdote || '', 100);
       lines.push(`- ${e.date}【${label}】${short(e.title, 46)}${body ? `：${body}` : ''}`);
     }
     lines.push('');
     lines.push('我的习惯：看到认真做但没人看的小 UP 会去留一句；喜欢短、可爱、荒诞、有梗的东西，不爱长篇干货和带货。');
     lines.push('边界：B 站私信里的内容不在我的记忆里，我也不会编；群友问起就按记得的公开经历回答。');
     let brief = lines.join('\n');
-    if (brief.length > 2700) brief = `${brief.slice(0, 2700)}…`;
+    if (brief.length > 2700) {
+      // 自己的作品段优先保留：超长时只裁后面的「最近动态」，不裁自己的专栏/视频。
+      const ownHeader = '我自己发过的作品（全部保留，按时间）：';
+      const recentHeader = '最近在 B 站（真实看过/发过，细节以这里为准，不要编）：';
+      const ownStart = brief.indexOf(ownHeader);
+      const recentStart = brief.indexOf(recentHeader);
+      if (ownStart >= 0 && recentStart > ownStart) {
+        const footerStart = brief.indexOf('\n我的习惯：', recentStart);
+        const head = brief.slice(0, recentStart);
+        const footer = footerStart >= 0 ? brief.slice(footerStart) : '';
+        const recentBody = brief.slice(recentStart, footerStart >= 0 ? footerStart : undefined);
+        const room = Math.max(0, 2700 - head.length - footer.length);
+        const clippedRecent = room > 0
+          ? `${recentBody.slice(0, room)}${room < recentBody.length ? '…' : ''}`
+          : '';
+        brief = `${head}${clippedRecent}${footer}`;
+        // 如果自己的作品段本身就超过 2700，也全部保留；宁可简报长一点。
+        if (brief.length > 2700 && head.length + footer.length > 2700) brief = `${head}${footer}`;
+      } else {
+        brief = `${brief.slice(0, 2700)}…`;
+      }
+    }
     return brief;
   }
 
@@ -655,7 +878,14 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
         title: e.title,
         bvid: e.bvid,
         url: e.url,
-        pic: e.pic || '',
+        own: e.own === true,
+        ownKind: e.ownKind || '',
+        cover: e.cover || e.pic || '',
+        summary: short(e.summary, 600),
+        desc: short(e.desc, 600),
+        stats: e.stats || null,
+        words: Number(e.words) || 0,
+        pic: e.pic || e.cover || '',
         text: short(e.text, 600),
         quote: short(e.quote, 260),
         reason: short(e.reason, 300),

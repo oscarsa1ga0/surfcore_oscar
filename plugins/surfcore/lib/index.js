@@ -398,6 +398,7 @@ export function apply(ctx) {
       sessionId,
       automatic,
       tokenBudget,
+      chat: petChat,
       log: (message) => pluginLog(message),
     });
   }

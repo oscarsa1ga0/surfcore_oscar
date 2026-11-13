@@ -9,7 +9,7 @@
 //   1) GET  https://member.bilibili.com/preupload?name=...&size=...&r=upos&profile=ugcfx/bup
 //   2) 按返回的 chunk_size 分片 PUT 上传
 //   3) POST https://member.bilibili.com/x/vu/web/add/v3?csrf=...（标题/简介/分区/标签/封面/版权）
-//   4) 发布后走 notify + appendBiliPost({type:'video'})，让记忆卡/B站 brief 记住
+//   4) 发布后走 notify + appendBiliPost({type:'video', bvid, cover, summary, text})，让记忆卡/B站 brief 记住
 //
 // 安全约定与 free-post/article 相同：--dry 先看、--go 才发、interact 守卫、身份闸、
 // 30 分钟间隔、notify 报备、bili-posts.jsonl 记忆同步。

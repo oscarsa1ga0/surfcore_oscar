@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   allocateQuotas, bvSetFromTexts, candidateScore, clampWeight, filterRecentlyPicked,
-  normalizePreferences, preferenceHits, prunePickedMap, searchPlan, selectDiverse, splitTokens,
+  followAgeDays, normalizePreferences, pickFollowingNew, preferenceHits, prunePickedMap, searchPlan, selectDiverse, splitTokens,
 } from '../plugins/surfcore/tools/lib/feed-core.mjs';
 
 const byKey = (entries) => Object.fromEntries(entries.map((entry) => [entry.key, entry]));
@@ -182,6 +182,29 @@ function quotaTester(labels, weights, n, perPref = 3, seed = 1) {
   assert.deepEqual(Object.keys(pruned), ['BVedge']);
 }
 
+// ── 关注新视频优先：只看 7 天内、按发布时间新→旧、最多 n 条 ──────────────
+{
+  const now = Date.parse('2026-11-13T12:00:00+08:00');
+  const day = 86400000;
+  const cands = [
+    { bv: 'BVnew1', via: 'following', pubTs: now - 1 * day, _score: 1 },
+    { bv: 'BVold', via: 'following', pubTs: now - 8 * day, _score: 9 },
+    { bv: 'BVnew2', via: 'following', pubTs: now - 3 * day, _score: 2 },
+    { bv: 'BVsearch', via: 'search', pubTs: now - 1 * day, _score: 8 },
+    { bv: 'BVunknown', via: 'following', pubTs: 0, _score: 9 },
+  ];
+  const r = pickFollowingNew(cands, { n: 2, days: 7, now });
+  assert.deepEqual(r.picked.map((x) => x.bv), ['BVnew1', 'BVnew2']);
+  assert.ok(r.picked.every((x) => x._via === 'following' && x._followAgeDays <= 7));
+  assert.equal(r.eligible, 2);
+  const rest = new Set(r.rest.map((x) => x.bv));
+  assert.ok(!rest.has('BVnew1') && !rest.has('BVnew2'), '已优先的不能留在补位池');
+  assert.ok(rest.has('BVold') && rest.has('BVsearch') && rest.has('BVunknown'));
+  assert.equal(followAgeDays(now - 7 * day, now), 7);
+  assert.equal(followAgeDays(0, now), null);
+  assert.equal(pickFollowingNew(cands, { n: 0, days: 7, now }).picked.length, 0);
+}
+
 // ── 接线契约：feed.mjs 必须真的接上观看历史/偏好权重/最近推过 ─────────────
 {
   const source = fs.readFileSync(new URL('../plugins/surfcore/tools/commands/feed.mjs', import.meta.url), 'utf8');
@@ -190,6 +213,10 @@ function quotaTester(labels, weights, n, perPref = 3, seed = 1) {
   assert.ok(source.includes('preferences?.weights'), 'feed 没有读 preferences.weights');
   assert.ok(source.includes('normalizePreferences'), 'feed 没有走偏好清洗（大小写变体会叠分）');
   assert.ok(source.includes('searchPlan'), 'feed 没有走搜索轮换');
+  assert.ok(source.includes('pickFollowingNew'), 'feed 没有接关注新视频优先');
+  assert.ok(source.includes("follow-days"), 'feed 缺少 --follow-days');
+  assert.ok(source.includes('like-video') && source.includes("type === 'coin'"), 'feed 没有接点赞/投币回流');
+  assert.ok(source.includes('5.5') && source.includes('4.0') && source.includes('2.5') && source.includes('1.0'), 'feed 的点赞/收藏/投币权重不完整');
 }
 
 // ── 游戏候选取样器也必须排除看过的视频（2026-10-23 原神/鸣潮又推旧片）──

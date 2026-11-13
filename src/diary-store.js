@@ -791,6 +791,7 @@ export function readSchedulerState(diaryDir) {
     lastReviewedDay: typeof state.lastReviewedDay === 'string' ? state.lastReviewedDay : null,
     attempts: state.attempts && typeof state.attempts === 'object' ? state.attempts : {},
     lastAttemptAt: typeof state.lastAttemptAt === 'string' ? state.lastAttemptAt : '',
+    lastManualAt: typeof state.lastManualAt === 'string' ? state.lastManualAt : '',
     lastError: typeof state.lastError === 'string' ? state.lastError : '',
     submittedAt: typeof state.submittedAt === 'string' ? state.submittedAt : '',
   };

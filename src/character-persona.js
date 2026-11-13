@@ -193,6 +193,8 @@ export function legacyMemoryPaths() {
     fullMarkdown: path.join(LEGACY_MEMORY_DIR, 'memory-card-full.md'),
     qqForBili: path.join(LEGACY_MEMORY_DIR, 'qq-for-bili.md'),
     biliForQq: path.join(LEGACY_MEMORY_DIR, 'bili-for-qq.md'),
+    qqLastContext: path.join(LEGACY_MEMORY_DIR, 'qq-last-context.json'),
+    qqForBiliLast: path.join(LEGACY_MEMORY_DIR, 'qq-for-bili-last.md'),
   };
 }
 
@@ -214,6 +216,8 @@ export function activeMemoryPaths() {
     fullMarkdown: p.memoryFullMd,
     qqForBili: path.join(p.memoryDir, 'qq-for-bili.md'),
     biliForQq: path.join(p.memoryDir, 'bili-for-qq.md'),
+    qqLastContext: path.join(p.memoryDir, 'qq-last-context.json'),
+    qqForBiliLast: path.join(p.memoryDir, 'qq-for-bili-last.md'),
   };
 }
 

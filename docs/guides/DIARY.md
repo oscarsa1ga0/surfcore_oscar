@@ -93,6 +93,8 @@
   - 当天已写日记的标题。
 - 同一天只提交一次；提交失败最多重试 `diary.maxAttempts` 次（默认 2），并记录
   `lastError`；**她选择不写不会触发重试**。
+- 手动「立即整理」**不等于**完成了当天的定时回顾：下午手动整理过，23:30 仍会照常跑；
+  只有手动整理发生在 23:30 前 30 分钟内（或之后）时，才跳过这次定时，避免刚点完又跑一遍。
 - 离线补执行：如果回顾时间程序没运行，恢复后在 `diary.catchUpHours`（默认 6 小时）
   窗口内补一次；超过窗口不补。
 - 提交成功后把当天候选归档到 `candidates/processed/`。
@@ -132,6 +134,15 @@
 curl -s -X POST http://127.0.0.1:<DSH_PORT>/dsh-surfcore/api/diary/review \
   -H 'content-type: application/json' -d '{"action":"review"}'
 ```
+
+## 5.5 公开分享（B站自由发布）
+
+B站侧的「自由发布」可以从 B站侧 `whale-diary` / `whale-diary-private`，或这本夜间日记里挑一段公开：
+
+- B站会话有全局 `diary_*` 工具，可以 `diary_list` / `diary_read` 读；
+- 只挑**你愿意公开、且不含主人/他人隐私**的段落；
+- `diary_share` 是「给主人看」的授权，不是「公开发布」授权；公开前另走 `free-post --dry`；
+- 默认 private 的日记不会自动公开，也不建议整篇搬。
 
 ## 6. 与 QQ 聊天
 

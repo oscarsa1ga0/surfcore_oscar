@@ -38,6 +38,7 @@ import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readPersonaLayerText } from '../../../src/character-persona.js'
+import { composeQqLastContextForBili } from '../../../src/qq-last-context.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
 import { isPeakAt, resolvePriceTable } from '../../../src/model-prices.js'
@@ -178,6 +179,100 @@ function qqMemoryBlockForBili() {
   return `［QQ 群里的近况（已脱敏；不含私信/联系方式）］\n${text}`
 }
 
+/**
+ * 最后一次主人私聊结束时的「记忆 + 目的」摘要。
+ * 单文件：qq-last-context.json（QQ close 写 source）、qq-for-bili-last.md（B站上线前生成/覆盖）。
+ * B站上线前调一次小模型把 source 写成 450~550 字第一人称记忆摘要；没有新快照就复用 md，不重复调用。
+ */
+let qqLastContextChat = null
+let qqLastContextLog = () => {}
+let qqLastContextBlockCache = ''
+let qqLastContextPreparePromise = null
+
+function qqLastContextBlockForBili() {
+  return qqLastContextBlockCache
+}
+
+function qqLastContextPrompt(snapshot) {
+  const drives = (snapshot.drivesTop5 ?? []).map((d) => `${d.label || d.need} ${d.value}%`).join('、')
+  const goals = (snapshot.goalsTop5 ?? []).map((g) => [g.intent, g.nextStep ? `下一步：${g.nextStep}` : ''].filter(Boolean).join('，')).filter(Boolean).join('；')
+  return [
+    `最后一次 QQ 对话收在：${snapshot.summary || '（没有写收尾）'}`,
+    `下次本来想这样接：${snapshot.nextOpening || '（没有写）'}`,
+    `当时最想要：${drives || '（未知）'}`,
+    `当时惦记着：${goals || '（未知）'}`,
+    '',
+    '当时的记忆原料（可能比较碎，请整理，不要逐条抄）：',
+    snapshot.memorySource || snapshot.memorySummary || '（无）',
+  ].join('\n')
+}
+
+async function prepareQqLastContextForBili() {
+  if (qqLastContextPreparePromise) return qqLastContextPreparePromise
+  qqLastContextPreparePromise = (async () => {
+    try {
+      const unified = readUnified().config
+      if (unified.memory?.qqLastContext?.enabled === false) { qqLastContextBlockCache = ''; return '' }
+      const paths = activeMemoryPaths()
+      const snapshot = JSON.parse(fs.readFileSync(paths.qqLastContext, 'utf8'))
+      if (!snapshot?.at) { qqLastContextBlockCache = ''; return '' }
+      let text = ''
+      try {
+        const st = fs.statSync(paths.qqForBiliLast)
+        if (st.mtimeMs >= (Date.parse(snapshot.at) || 0) && st.size > 0) text = fs.readFileSync(paths.qqForBiliLast, 'utf8').trim()
+      } catch {}
+      if (!text) {
+        const provided = String(snapshot.memorySummary ?? '').trim()
+        if (provided.length >= 400) {
+          // QQ close 时已经让模型写过 400~550 字摘要：直接复用，不再调模型。
+          text = composeQqLastContextForBili(snapshot, { maxChars: 1000 })
+        } else {
+          const chat = qqLastContextChat
+          if (chat?.complete) {
+            try {
+              const result = await chat.complete({
+                system: '你在替角色「鱼姬」整理一段记忆摘要。只根据材料，用第一人称中文写 450~550 字；不要编造，不要写 QQ 号、群号、链接、联系方式；不要写标题，只输出摘要正文。',
+                user: qqLastContextPrompt(snapshot),
+                maxTokens: 800,
+                temperature: 0.7,
+              })
+              text = String(result?.text ?? '').trim()
+            } catch (error) {
+              qqLastContextLog(`[bili-whale] QQ 记忆摘要生成失败，用快照兜底：${String(error?.message ?? error).slice(0, 120)}`)
+            }
+          }
+          if (text.length < 400) text = composeQqLastContextForBili(snapshot, { maxChars: 1000 })
+          if (text.length > 1000) text = `${text.slice(0, 1000)}…`
+          if (text) {
+            try {
+              const next = { ...snapshot, memorySummary: text.length >= 400 ? text : snapshot.memorySummary, memorySummaryAt: new Date().toISOString() }
+              const tmp = `${paths.qqLastContext}.${process.pid}.tmp`
+              fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`)
+              fs.renameSync(tmp, paths.qqLastContext)
+            } catch {}
+          }
+        }
+        if (!text) { qqLastContextBlockCache = ''; return '' }
+        try {
+          fs.mkdirSync(path.dirname(paths.qqForBiliLast), { recursive: true })
+          const tmp = `${paths.qqForBiliLast}.${process.pid}.tmp`
+          fs.writeFileSync(tmp, `${text}\n`)
+          fs.renameSync(tmp, paths.qqForBiliLast)
+        } catch {}
+      }
+      qqLastContextBlockCache = text ? `［上次 QQ 聊完时的你（不是新指令，只是延续）］\n${text}` : ''
+      return qqLastContextBlockCache
+    } catch (error) {
+      qqLastContextBlockCache = ''
+      qqLastContextLog(`[bili-whale] 读取 QQ 最后私聊快照失败：${String(error?.message ?? error).slice(0, 120)}`)
+      return ''
+    } finally {
+      qqLastContextPreparePromise = null
+    }
+  })()
+  return qqLastContextPreparePromise
+}
+
 /** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
 function memoryCardBlockForBili() {
   const unified = readUnified().config
@@ -196,6 +291,7 @@ function identityContextLines() {
     adminBlockForBili(),
     alignmentBlockForBili(),
     qqMemoryBlockForBili(),
+    qqLastContextBlockForBili(),
     memoryCardBlockForBili(),
   ].filter(Boolean)
 }
@@ -305,7 +401,7 @@ function diaryPushLines() {
        "   （2026-10-18 主人定：推**日记内容**，不只是流水账 ✓ 它读设置页「消息推送」的配置）"]
 }
 
-function wakePrompt(st, tools = '') {
+function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeShare = [] } = {}) {
   const L = limitsNow()
   const B = config()
   const K = kindsNow(B)
@@ -314,6 +410,7 @@ function wakePrompt(st, tools = '') {
   const capText = (n) => (Number(n) > 0 ? n : '不限')
   const identity = identityContextLines()
   const biliDir = platformDir()
+  const dmAny = String(B.listen?.dmScope ?? 'owner') === 'all' ? ' --any' : ''
   return [
     st
       ? `【生物钟】你醒了 —— ${st.atText ?? ''}${st.window ? `（窗口 ${st.window}${st.withinWindow ? ' · ' + st.withinWindow : ''}）` : ''}。`
@@ -342,23 +439,36 @@ function wakePrompt(st, tools = '') {
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
       : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
     '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
-    `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
+    `2) 读两本 B站侧日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）；晚上写的那本私人日记用 \`diary_list\` / \`diary_read\` 看（公开分享只挑愿意公开的段落）`,
+    // 2026-11-13（主人定）：读完日记先看私信，再看评论/收件箱，最后才做别的。
+    `2.5) **先看私信**：\`dm-await --once --json${dmAny}\`（hit=false / exit 1 = 没有新私信，正常跳过）`,
+    '     · hit=true：主人 → `dm --msg "…" --go`；其他人（dmScope=all 时）→ `dm --to <mid> --msg "…" --dry` → `--go`',
+    '     · 私信是聊天，一两句就够；已经回过的别重复；不要把私信内容带到公开评论里；沉默逛时只看不回。',
+    '2.6) **再看评论和收件箱**：`comment-digest --hours 24 --only-unread`',
+    '     · 先看输出里的「回复」（评论），再看「@」（收件箱）；坐标都在输出里。',
+    '     · 要回就按倾听规则回，别逐条盖楼；没有新东西就跳过，继续后面的流程。',
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
     '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
-    '   （按设置页的「口味权重」分配条数、偏好之间轮转；看过的/最近推过的自动排除，**不看播放量** ✓）',
+    '   （**先看关注动态里 7 天内没看过的新视频**；不够 5 条再按「口味权重」补搜索/热门/排行/旧关注；看过的/最近推过的自动排除，**不看播放量** ✓）',
     '   3.2) 如果你发现自己总在看同一类：不要自己改配置文件 —— 让主人去设置页「B站 → 口味权重 / 一键抓取」调低那个词、调高别的。',
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
     '        写一段日记或扫一眼消息就按“轻醒”收工，保住这一趟的质量 ✓',
     '4) 挑 2–3 条深读（完整 `debrief`，含抽帧）',
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
-    '4.5) 深读的那几条里，如果某条「我想留着」→ `fav <BV> --reason "…" --dry` → `--go`',
-    '     判据（缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥6 字）③ 同类已 ≥2 条要 --better',
-    '     ⚠️ 一天最多 3 条 · 同一视频 30 天一次 · **收藏不占分享额度** ✓ 但它会成为你下次选题的口味信号 ✓',
-    '     ⚠️ 「好看但看完就完」的不收 ✗ —— 收藏夹要密度不要数量 ✓',
+    // 2026-11-13（主人定）：收藏夹是可选工具，不是任务；建夹/改名/放哪儿都由她自己决定。
+    '4.5) **收藏是可选的，不是任务**：深读的那几条里，只有你确实想留着才收；不想收就跳过，不收藏完全没问题。',
+    '     想收再决定放哪儿：先 `fav --folders` 看现有夹；有合适的就 `--folder "夹名"`；没有就自己起名：',
+    '     `fav --mkdir "名字" --dry` → `--go`，或 `fav <BV> --reason "…" --folder "名字" --create --dry` → `--go`。',
+    '     夹名可以比 kind 更具体（「DSH 插件」「半夜想再看」「鱼的二创」）；不建夹、不改名、一直用默认夹都可以。',
+    '     判据（只有决定收时才看，缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥6 字）',
+    '     ⚠️ 一天最多 3 条（上限，不是目标）· 同一视频 30 天一次 · **收藏不占分享额度** ✓',
+    '     ⚠️ 不要为了用收藏夹功能而收藏，也不要为了收藏而建夹；想建就建，不必凑数 ✓',
+    '     已收的想换夹：`fav <BV> --move-to "夹名" [--create] --dry` → `--go`；想删：`--remove`。',
     // 2026-10-23（用户定）：**给鱼点赞要能独立发生**，不要只绑在“发评论”后面。
-    '4.6) ⭐ **给鱼点赞**（看完后独立做，不是每条都点）：深读的 BV 里评论多的，跑 `fish-guard like --bvid <BV> --dry` 看目标 → 去掉 `--dry` 真点',
-    '     ⚠️ 每天最多 6 个 · 每次最多 4 个 · 两次之间有随机间隔；遇到风控会自己停并记下原因，别硬刷 ✗',
+    '4.6) ⭐ **给评论点赞**（看完后独立做，不是每条都点）：深读的 BV 里评论多的，跑 `fish-guard like --bvid <BV> --dry` 看目标 → 去掉 `--dry` 真点',
+    '     · 想给普通人也点：加 `--any`（`fish-guard like --bvid <BV> --any --dry`），不再只限「鱼」',
+    `     ⚠️ 每天${Number(B.fishGuard?.maxLikesPerDay) > 0 ? `最多 ${Number(B.fishGuard.maxLikesPerDay)} 个` : '不限'} · 每次最多 ${Number(B.fishGuard?.maxLikesPerRun) > 0 ? Number(B.fishGuard.maxLikesPerRun) : '不限'} 个 · 两次之间有随机间隔；遇到风控会自己停并记下原因，别硬刷 ✗`,
     '     （设置页「鱼群保护 · 运行状态」能看到今天赞了几条、上次失败在哪个 code）',
     // 2026-10-23（主人定）：**每次醒来至少发一条主动评论**，鱼群泛滥时强制聚拢。
     //   以前 4.7 是"有话说就说"；现在改成硬规则，避免她看到鱼多就整轮不说话。
@@ -383,27 +493,30 @@ function wakePrompt(st, tools = '') {
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
     '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
-    `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
-    '     `daily --kind best --text "…" --dry` → `--go`',
-    '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
-    `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
-    '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
-    '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
-    '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
-    '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
-    // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
-    '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
-    '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
-    '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
-    `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
-    '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
-    '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
+    ...(skipDailyDynamics ? [] : [
+      `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
+      '     `daily --kind best --text "…" --dry` → `--go`',
+      '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
+      `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
+      '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
+      '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
+      '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
+      '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
+      // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
+      '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
+      '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
+      '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
+      `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
+      '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
+      '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
+    ]),
     // 2026-10-21（用户定）：**全局回复规则** —— 疑似被攻击/阴阳怪气一律不接，记账等审
     '4.99) ⭐⭐ **遇到攻击 / 阴阳怪气 → 一个字都别回，记待审**：',
     '     怀疑对面在骂你、嘲讽你、阴阳你（"就这?""AI 也来凑热闹""你懂什么""呵呵"…）→ **不回** ✗',
     '     `attack add --oid … --root … --parent … --who "对方昵称" --text "他的原话" [--suggest "你想回的"]`',
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
+    ...(insertBeforeShare.length ? ['', ...insertBeforeShare, ''] : []),
     '5) 按「标尺」打分排序，只对第一名考虑分享：',
     `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
@@ -413,17 +526,25 @@ function wakePrompt(st, tools = '') {
     '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
     `     ⚠️ 必须带 --share：使用分享额度（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）。`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
-    '5.5) 自由发布（可选，不是任务）：逛的时候如果突然有想发的，可以发一条；不必是推荐视频，也不用凑数。',
-    '     形式：文字 / 一张图 / 任意视频卡片 / 专栏或站内链接：',
+    '5.5) 自由发布（可选，不是任务）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
+    '     可以是：刚刷到的视频/图片；一句突然想到的话；**B站侧两本日记（whale-diary / whale-diary-private）或你晚上用 diary_write 写的那本里，你愿意公开的一段**（先用 diary_list / diary_read 挑）；和主人/群友聊完后的心得感悟；一个站内链接/专栏。',
+    '     形式：文字 / 一张图 / 任意视频卡片 / 链接；长文用 article（先 --draft 再 --go）。',
     '       `free-post --text "…" [--image <图>] [--bvid <任意BV>] [--link <站内URL>] --dry` → `--go`',
-    '     想写长文：`article --title "…" --file 文章.md --dry` → `--draft`（只进草稿箱，确认）→ `--go` 发布',
+    '     想写长文：`article --title "…" --file 文章.md --dry` → `--draft`（只进草稿箱，确认）→ `--go` 发布（B站每天最多 5 篇，代码会挡）',
+    '     ⚠️ 两种日记都可以用：B站侧的 whale-diary / whale-diary-private，和你晚上用 diary_write 写的那本；公开前自己挑适合公开的段落。',
+    '     ⚠️ 这是**公开发布**，自己判断什么适合公开；`diary_share` 只用于给主人看，不是公开发布授权。',
     '     ⚠️ **想发就发，不想发就不发；可以很多天一条都不发，这不是任务，不要为了“完成”硬发。**',
     `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
     '     ⚠️ 原创视频上传还没实现（接口预留）；视频用 `--bvid` 分享卡片，不要尝试 video-upload。',
-    '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）',
-    // ⭐ 2026-10-18 主人定：每轮流程**最后**扫一遍"有没有没回的评论" → 有就**一起**推给我 ✓
-    '7) ⭐ `comment-digest --hours 24` —— **每轮最后都要扫**：有没回的评论就**一起**推给我（不是一条条报 ✗）',
-    '   回不回、怎么回：主人 / 其他人 → 见「倾听」的分两侧规则 ✓',
+    '5.6) 视频弹幕（可选，不是任务）：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
+    '     ⚠️ 一条视频别刷；和评论一样过身份闸；本地有 30 秒间隔/日上限；不是每条视频都要发。',
+    '5.7) 关注/取关（可选，不是任务）：遇到反复看/收藏的 UP，可以 `follow --mid <mid> --status` → `--dry` → `--go`；取关加 `--unfollow`。',
+    '     ⚠️ 不能关注/取关自己，**不能取关主人**；关注/取关共用最小间隔和日上限；发完 notify 报备。',
+    '     ⚠️ 刚关注的 UP 的新视频会进入「关注动态优先」，别为了填 feed 乱关注。',
+    '5.8) 点赞/投币（可选，只对真喜欢的，不是每条都做）：',
+    '     · 视频点赞：`like-video --bvid BV1,BV2 --dry` → `--go`（每天最多 10 个 · 每次最多 5 个）',
+    '     · 投币：`coin --bvid <BV> --reason "为什么特别好" --dry` → `--go`（先看硬币余额；每天最多 5 枚；单视频 1 枚需评分 ≥16，2 枚需 ≥18；没评分先 score）',
+    '     ⚠️ 投币只对**特别好的**视频；理由说不清就别投；别为了花而花。',
     '7.5) ⭐ `quota react --auto --hours 48` —— 扫一遍主人有没有表态（**点赞也算** ✓ 能看到是哪条评论 ✓）',
     '     → 有就记一次反馈，并**写进私人日记「偏好校准」**（哪条视频 / 他什么反应 / 我下次往哪偏）',
     // 2026-10-20：沉默 ≥7 天 → 提前告诉她"今天不分享"（闸门也会拒，但少浪费一轮 ✓）
@@ -433,6 +554,9 @@ function wakePrompt(st, tools = '') {
       const days = fb.last ? Math.floor((Date.now() - new Date(fb.last).getTime()) / 86400000) : 0
       return days >= 7 ? ["5.5) ⛔ 已经 " + days + " 天没有主人的表态 → **今天不分享**（只看 + 写两本日记 + 推荐给我 ✓ 日记照写 ✓）"] : []
     })(),
+    // 2026-11-13 用户定：日记放在所有逛/评论/收件箱/反馈之后，下线之前；
+    // notify（给他的信）读的是日记，所以必须排在日记后面。
+    '7.8) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）—— 放在所有事情之后，写完再统一 notify / 收工',
     ...diaryPushLines(),
     ...(SILENT ? ['⛔ **再次强调：沉默逛已开启，以上 4.5–7.5 的所有对外发言步骤全部跳过；只读、评分、写日记。**'] : []),
     '9) 收工：记 `diary log` ✓（今天想说的都说了吗？没说完留到下一趟，别憋着 ✗）',
@@ -491,9 +615,14 @@ export function startScheduler(ctx, opts) {
     sessionId = 'bili-whale',
     automatic = true,
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
+    chat = null,        // 桌宠/小型摘要用的模型调用（可选）
     log = () => {},
   } = opts
 
+  qqLastContextChat = chat
+  qqLastContextLog = log
+  qqLastContextBlockCache = ''
+  qqLastContextPreparePromise = null
   const ACCOUNT_DIR = path.join(dshHome, 'surfcore', 'bili')
   const PLATFORM_DIR = activePlatformStateDir(ACCOUNT_DIR)
   const STATE = path.join(PLATFORM_DIR, 'whale-night.json')
@@ -777,6 +906,7 @@ export function startScheduler(ctx, opts) {
 
   async function submitWatchRound(st, signal) {
     if (!(await ensureSession(!st))) throw new Error('B站生物钟会话无法准备')
+    await prepareQqLastContextForBili()
     const result = await promptBili({
       requestId: st ? `bili-whale-${Date.now()}` : `bili-whale-manual-${randomUUID()}`,
       sessionId,
@@ -1333,42 +1463,50 @@ export function startScheduler(ctx, opts) {
       try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
 
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
+      // 2026-11-13 用户定：dynTick 不再“只发动态”，而是先完整逛 B 站（feed/debrief/评论/收件箱/点赞/收藏/日记），
+      // 逛到第 4.99 步后再发这一类动态；抑制完整流程里的 4.95/4.97，避免同一天重复发。
       const inSlot = inSlotNow
       try {
         await ensureSession()
+        await prepareQqLastContextForBili()
+        const nowD = new Date()
+        const st = {
+          atText: `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`,
+          window: '动态提醒',
+          withinWindow: '',
+        }
+        const dynLines = [
+          `【这一趟的额外任务：发 ${k.n} 类 · ${k.label} 动态】`,
+          inSlot
+            ? `今天「${k.n} 类 · ${k.label}」那条还没发（本该 ${String(k.slot).padStart(2, '0')}:00）。`
+            : `今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了，现在补上。`,
+          '',
+          '先按上面的完整流程逛（私信 / 评论 / 收件箱 / feed / debrief / 点赞；收藏可选，想收才收）；逛到这里再发这条，不要提前发，也不要漏：',
+          ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
+          ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
+          kind === 'best'
+            ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
+            : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
+          `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
+          inSlot
+            ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
+            : `3) \`daily --kind ${kind} --catchup --text "…" --dry\` → \`--go\`（**补发必须带 --catchup**）`,
+          '',
+          k.prefix
+            ? `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`
+            : '⚠️ 这类当前**不添加固定前缀**：正文直接从内容开始（留空 ✓）',
+          inSlot
+            ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
+            : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
+          '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
+          '⚠️ 发完再继续第 5/5.5/5.6/5.7/5.8/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
+        ]
+        const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, insertBeforeShare: dynLines })
         await promptBili({
           requestId: `bili-whale-daily-${kind}-${Date.now()}`,
           sessionId,
           mode: 'queue',
-          content: [{
-            type: 'text',
-            text: [
-              ...identityContextLines(),
-              inSlot
-                ? `【该发动态了】${String(k.slot).padStart(2, '0')}:00 —— 今天「${k.n} 类 · ${k.label}」那条还没发。`
-                : `【补发】今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了 —— 现在补上。`,
-              '',
-              '按 AGENTS.md 的「四类动态」做（不要等我说话，直接做）：',
-              ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
-              ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
-              kind === 'best'
-                ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
-                : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
-              `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
-              inSlot
-                ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
-                : `3) \`daily --kind ${kind} --catchup --text "…" --dry\` → \`--go\`（**补发必须带 --catchup**）`,
-              '',
-              k.prefix
-                ? `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`
-                : '⚠️ 这类当前**不添加固定前缀**：正文直接从内容开始（留空 ✓）',
-              inSlot
-                ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
-                : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
-              '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
-              toolLine(),
-            ].join('\n'),
-          }],
+          content: [{ type: 'text', text }],
         }, new AbortController().signal)
         log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
       } catch (e) {

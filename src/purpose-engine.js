@@ -174,6 +174,8 @@ export function createPurposeState(now = Date.now()) {
     version: PURPOSE_STATE_VERSION,
     day: localDateKey(now),
     countToday: 0,
+    // 真正送达（outcome=sent）的次数；countToday 是「轮次/额度」，含她选择沉默的轮。
+    sentToday: 0,
     lastRunAt: 0,
     lastAttemptAt: 0,
     lastSentAt: 0,
@@ -245,6 +247,7 @@ export function normalizePurposeState(raw, now = Date.now()) {
   if (!isPlainObject(raw)) return base;
   base.day = /^\d{4}-\d{2}-\d{2}$/.test(String(raw.day ?? '')) ? String(raw.day) : localDateKey(now);
   base.countToday = clampInt(raw.countToday, 0, 0, 99);
+  base.sentToday = clampInt(raw.sentToday, 0, 0, 99);
   base.lastRunAt = Number(raw.lastRunAt) || 0;
   base.lastAttemptAt = Number(raw.lastAttemptAt) || 0;
   base.lastSentAt = Number(raw.lastSentAt) || 0;
@@ -265,6 +268,10 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.observations = updateObservations(raw.observations, [], now);
   base.pending = (Array.isArray(raw.pending) ? raw.pending : []).map(normalizePendingEntry).filter(Boolean).slice(-20);
   base.history = (Array.isArray(raw.history) ? raw.history : []).map(normalizeHistoryEntry).filter(Boolean).slice(-200);
+  // 旧状态没有 sentToday：从当天 history 里补一次，升级后不会把今天已送达的算成 0。
+  if (raw.sentToday === undefined) {
+    base.sentToday = base.history.filter((h) => h.outcome === 'sent' && localDateKey(h.at) === base.day).length;
+  }
   base.lastSkip = isPlainObject(raw.lastSkip)
     ? { at: Number(raw.lastSkip.at) || 0, reason: String(raw.lastSkip.reason ?? '').slice(0, 80) }
     : null;
@@ -277,6 +284,7 @@ export function ensurePurposeDay(state, now = Date.now()) {
   if (state.day !== day) {
     state.day = day;
     state.countToday = 0;
+    state.sentToday = 0;
   }
   return state;
 }
@@ -367,6 +375,13 @@ export function markPurposeDelivered(state, { now = Date.now(), planned = null }
   return state;
 }
 
+/** 投递失败（网关/桥接没送到）：不吃当天额度。与 bridge 的失败回滚保持一致。 */
+export function rollbackPurposeDelivered(state, { now = Date.now() } = {}) {
+  ensurePurposeDay(state, now);
+  state.countToday = Math.max(0, (Number(state.countToday) || 0) - 1);
+  return state;
+}
+
 export function markPurposeSkip(state, { now = Date.now(), reason = '', nextFireAt = 0 } = {}) {
   state.lastSkip = { at: now, reason: String(reason ?? '').slice(0, 80) };
   if (nextFireAt > 0) state.nextFireAt = nextFireAt;
@@ -418,6 +433,7 @@ export function applyPurposeOutcome(state, {
   state.drives = satisfyDrives(state.drives, { need, action, outcome: state.lastOutcome });
   state.drivesAt = now;
   if (state.lastOutcome === 'sent') {
+    state.sentToday = Math.min(99, (Number(state.sentToday) || 0) + 1);
     state.lastSentAt = now;
     state.attempts = 0;
     // 发出去了但备忘标记待续：记一条「心里还惦记着」，下次优先接着问。
@@ -2262,6 +2278,7 @@ export function summarizePurposeState(state, { config = DEFAULT_PURPOSE_CONFIG, 
   return {
     day: state.day,
     countToday: Number(state.countToday) || 0,
+    sentToday: Number(state.sentToday) || 0,
     dailyMax: config.dailyMax,
     lastRunAt: Number(state.lastRunAt) || 0,
     lastAttemptAt: Number(state.lastAttemptAt) || 0,

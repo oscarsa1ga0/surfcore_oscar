@@ -7,7 +7,7 @@ import {
   ensurePurposeDay, ensurePurposeSchedule, evaluatePurposeTick, extractTopic, formGoalHypotheses,
   formatMaterialLine, inQuietHours, isDuplicateText, markPurposeDelivered, markPurposeSkip,
   minePurposeSeeds, needAffinity, normalizePurposeConfig, normalizePurposeState, parseClock,
-  parsePurposeMemo, planNextFire, quietEndAfter, resolvePendingPurpose, selectPurpose,
+  parsePurposeMemo, planNextFire, quietEndAfter, resolvePendingPurpose, rollbackPurposeDelivered, selectPurpose,
   summarizePurposeState, textSimilarity,
 } from '../src/purpose-engine.js';
 
@@ -259,9 +259,11 @@ test('状态迁移：sent 清 attempts / failed 重试 / silent 不重试 / 待�
   s.nextFireAt = now - 1000;
   markPurposeDelivered(s, { now, planned });
   assert.equal(s.countToday, 1);
+  assert.equal(s.sentToday, 0);
   assert.equal(s.attempts, 1);
   applyPurposeOutcome(s, { now, config: c, outcome: 'sent', text: '主人，面试怎么样啦', memo: { purpose: '面试结果', kind: 'care', status: '待续', followUp: '面试完再问' }, planned });
   assert.equal(s.lastOutcome, 'sent');
+  assert.equal(s.sentToday, 1);
   assert.equal(s.attempts, 0);
   assert.equal(s.lastSentAt, now);
   assert.ok(s.nextFireAt > now);
@@ -305,14 +307,27 @@ test('惦记的事：新增去重 / 解析完成 / 过期清理', () => {
   assert.equal(s2.pending.length, 0);
 });
 
+test('投递失败回滚：网关没送到不吃当天轮次', () => {
+  const now = local(14, 0);
+  const s = createPurposeState(now);
+  markPurposeDelivered(s, { now, planned: { text: 'x' } });
+  assert.equal(s.countToday, 1);
+  assert.equal(s.sentToday, 0);
+  rollbackPurposeDelivered(s, { now });
+  assert.equal(s.countToday, 0);
+  assert.equal(s.sentToday, 0);
+});
+
 test('坏状态/摘要/相似度/素材行格式', () => {
   const s = normalizePurposeState({ day: 'x', countToday: -5, pending: [null, { text: '' }, { text: '有效' }], history: [{ at: 0 }, { at: 123, purpose: 'p' }] });
   assert.equal(s.countToday, 0);
+  assert.equal(s.sentToday, 0);
   assert.equal(s.pending.length, 1);
   assert.equal(s.history.length, 1);
   const now = local(14, 0);
   const summary = summarizePurposeState(s, { config: normalizePurposeConfig({}), now });
   assert.equal(summary.countToday, 0);
+  assert.equal(summary.sentToday, 0);
   assert.ok(Array.isArray(summary.history));
   assert.ok(textSimilarity('明天面试结果', '明天面试结果') === 1);
   assert.ok(textSimilarity('明天面试结果', '完全无关的另一句') < 0.2);
@@ -333,7 +348,11 @@ test('初始排程：没有 nextFireAt 时排到 initialDelay；安静时段自�
   assert.ok(night.nextFireAt >= quietEndAfter(local(23, 50), c));
   const day = createPurposeState(local(10, 0));
   day.countToday = 4;
+  day.sentToday = 2;
   ensurePurposeDay(day, local(10, 0));
+  assert.equal(day.sentToday, 2, '同一天不重置 sentToday');
+  ensurePurposeDay(day, local(10, 0) + 86400000);
+  assert.equal(day.sentToday, 0, '跨天重置 sentToday');
   assert.ok(markPurposeSkip(day, { now: local(10, 0), reason: 'x', nextFireAt: 123 }).nextFireAt === 123);
 });
 

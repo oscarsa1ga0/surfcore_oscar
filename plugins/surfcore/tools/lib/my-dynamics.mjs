@@ -85,7 +85,11 @@ export async function rememberKind(cred, dynId, kind) {
     const j = await r.json()
     if (j.code !== 0) return { ok: false, why: `feed/space code=${j.code}` }
     const items = j.data?.items ?? []
-    const hit = items.find((it) => String(it?.id_str ?? '') === String(dynId)) ?? items[0]
+    // 2026-11-13 修：原来找不到 dynId 时会退回 items[0]（最新一条），
+    //   结果把「刚发的动态」标成别人的 oid，dyn-kinds 被写脏（实测把昨天的游戏区动态改写成了 best）。
+    //   找不到就老实返回 false —— 未登记的 oid 默认按 best 处理，不会丢账，也不会张冠李戴。
+    const hit = items.find((it) => String(it?.id_str ?? '') === String(dynId))
+    if (!hit) return { ok: false, why: '空间动态里还没有这条（可能还没同步），下次再登记' }
     const oid = String(hit?.basic?.comment_id_str ?? '')
     if (!oid) return { ok: false, why: '没找到 comment_id_str' }
     const k = loadKinds()

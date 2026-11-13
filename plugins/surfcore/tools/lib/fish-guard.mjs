@@ -348,6 +348,7 @@ export function assessFishFlood({
   ownerMid = '',
   state = { liked: {}, gathered: {}, daily: {} },
   forceGather = false,
+  any = false,
   now = Date.now(),
 } = {}) {
   const cfg = normalizeBiliFishGuard(config)
@@ -395,12 +396,19 @@ export function assessFishFlood({
     if (likeTargets.some((x) => x.rpid === c.rpid)) return
     likeTargets.push({ rpid: c.rpid, root: c.root || c.rpid, uname: c.uname, kind, like: c.like, message: String(c.message ?? '').slice(0, 180) })
   }
-  for (const root of fishRoots) pushTarget(root, 'root')
-  if (cfg.likeFishReplies) {
-    for (const root of fishRoots) {
-      for (const reply of repliesByRoot[root.rpid] ?? []) {
-        const item = markFish(reply, cfg)
-        if (item.isFish) pushTarget(item, 'reply')
+  if (any) {
+    // --any：不按「鱼」过滤，给评论区里任何值得的人点赞（顶层评论，按热度/新鲜度排）。
+    for (const root of sample.slice().sort((a, b) => (b.like || 0) - (a.like || 0) || (b.ctime || 0) - (a.ctime || 0))) {
+      pushTarget(root, 'root')
+    }
+  } else {
+    for (const root of fishRoots) pushTarget(root, 'root')
+    if (cfg.likeFishReplies) {
+      for (const root of fishRoots) {
+        for (const reply of repliesByRoot[root.rpid] ?? []) {
+          const item = markFish(reply, cfg)
+          if (item.isFish) pushTarget(item, 'reply')
+        }
       }
     }
   }
@@ -417,7 +425,9 @@ export function assessFishFlood({
     fishNames: [...new Set(fishRoots.map((c) => c.uname).filter(Boolean))].slice(0, 10),
     gatherTarget,
     gatherFallback,
-    likeTargets: cfg.likeEnabled ? likeTargets.slice(0, cfg.maxLikesPerRun) : [],
+    likeTargets: cfg.likeEnabled
+      ? (cfg.maxLikesPerRun > 0 ? likeTargets.slice(0, cfg.maxLikesPerRun) : likeTargets)
+      : [],
     dailyLikes: dailyCount(state, 'likes'),
     dailyGathers: dailyCount(state, 'gathers'),
     config: cfg,
@@ -435,6 +445,7 @@ export async function planFishGuard({
   state = loadFishGuardState(),
   cred = null,
   forceGather = undefined,
+  any = false,
   fetchImpl = fetch,
 } = {}) {
   const cfg = normalizeBiliFishGuard(config)
@@ -457,7 +468,7 @@ export async function planFishGuard({
         repliesByRoot[root.rpid] = []
       }
     }
-    const stats = assessFishFlood({ topLevel: section.topLevel, repliesByRoot, config: cfg, selfMid, ownerMid, state, forceGather: forceGather ?? cfg.forceGather })
+    const stats = assessFishFlood({ topLevel: section.topLevel, repliesByRoot, config: cfg, selfMid, ownerMid, state, forceGather: forceGather ?? cfg.forceGather, any })
     const blockedUntil = Date.parse(state.likeBlockedUntil || '') || Number(state.likeBlockedUntil) || 0
     return {
       ok: true,
@@ -578,14 +589,18 @@ export async function likeFishComments({
     return finish(false)
   }
   const RISK_CODES = new Set([-509, 12015, 12051, 12035, 12011])
-  const left = cfg.maxLikesPerDay - dailyCount(state, 'likes')
-  if (left <= 0) {
-    result.skipped.push(`今天的点赞额度已用完（${cfg.maxLikesPerDay}）`)
+  const dailyLimit = Number(cfg.maxLikesPerDay) || 0
+  const dailyUsed = dailyCount(state, 'likes')
+  if (dailyLimit > 0 && dailyUsed >= dailyLimit) {
+    result.skipped.push(`今天的点赞额度已用完（${dailyLimit}）`)
     return finish(false)
   }
+  const room = dailyLimit > 0 ? Math.max(0, dailyLimit - dailyUsed) : Infinity
+  const perRun = cfg.maxLikesPerRun > 0 ? cfg.maxLikesPerRun : targets.length
+  const take = Number.isFinite(room) ? Math.min(perRun, room) : perRun
   const referer = bvid ? `https://www.bilibili.com/video/${bvid}/` : 'https://www.bilibili.com/'
   const failedCooldownMs = cfg.failedLikeCooldownHours * 3600000
-  for (const target of targets.slice(0, Math.min(cfg.maxLikesPerRun, left))) {
+  for (const target of targets.slice(0, take)) {
     if (!target?.rpid) continue
     if (state.liked?.[target.rpid]) {
       result.skipped.push(`${target.rpid} 已赞过`)

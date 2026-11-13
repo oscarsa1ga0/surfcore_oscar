@@ -83,6 +83,7 @@ import {
   blockMessage, evaluateBudget, localDayKey, readBudget, readDailyUsage,
 } from './token-budget.js';
 import { createBiliMemory } from './bili-memory.js';
+import { buildQqLastContextSnapshot, summarizeQqConversation } from './qq-last-context.js';
 import {
   appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
 } from './memory-card.js';
@@ -12293,6 +12294,35 @@ async function main() {
    * 与 qq_mark_read 的区别：mark_read 只是划走消息；close 留下结束点，
    * 下次唤醒会看到「上次这段怎么收的」，避免每次都重新开场。
    */
+  /** 主人私聊 close 时写一份单文件快照；供 B站上线前生成摘要。 */
+  function writeQqLastContextSnapshot({ key, record, memorySummary } = {}) {
+    try {
+      if (!cfg.ownerQQ || key !== `private:${cfg.ownerQQ}`) return;
+      const st = getSocialV2State(key);
+      const memorySource = redactKnownTokensOnly(summarizeQqConversation({
+        messages: Array.isArray(st?.recentMessages) ? st.recentMessages : [],
+        activeTopics: Array.isArray(st?.activeTopics) ? st.activeTopics : [],
+        pendingThoughts: Array.isArray(st?.pendingThoughts) ? st.pendingThoughts : [],
+        maxChars: 1600,
+      }));
+      const provided = redactKnownTokensOnly(String(memorySummary ?? '')).trim();
+      const snapshot = buildQqLastContextSnapshot({
+        record: { ...record, key },
+        purpose: purposeState,
+        memorySource,
+        memorySummary: provided || memorySource,
+        now: Date.now(),
+      });
+      const file = activeMemoryPaths().qqLastContext;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`);
+      fs.renameSync(tmp, file);
+    } catch (error) {
+      try { log(`[QQ→B站] 最后一次私聊快照写入失败：${String(error?.message ?? error).slice(0, 160)}`); } catch {}
+    }
+  }
+
   function closeConversationV2(key, body = {}) {
     const canonical = canonicalV2Key(key);
     if (!canonical) {
@@ -12361,6 +12391,8 @@ async function main() {
     // 刚收尾就别再安排 30 秒后的「回复检查」——那等于自己把自己叫醒。
     cancelReplyCheckV2(key);
     saveSocialV2State();
+    // 2026-11-13：主人私聊收尾时留一份单文件快照；不调模型。
+    writeQqLastContextSnapshot({ key, record, memorySummary: body.memorySummary });
     const summaryText = record.summary ? `：${record.summary}` : '';
     log(`[收尾] ${key} 自然结束（${record.reason}）${summaryText}；冷却至 ${new Date(record.cooldownUntil).toLocaleString()}`);
     appendActivity(`${key} [收尾] ${record.summary ? record.summary.slice(0, 60) : '对话自然结束'}`);

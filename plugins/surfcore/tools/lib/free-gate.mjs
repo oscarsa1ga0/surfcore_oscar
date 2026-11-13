@@ -105,7 +105,9 @@ export function checkFree({ kind = 'comment', upMid = '', bvid = '', parent = ''
 
   if (kind === 'reply' || kind === 'ta') {
     if (parent && L.perThreadMin > 0) {
-      const dup = log.find((x) => String(x.parent ?? '') === String(parent)
+      // 2026-11-13 修：删掉的评论不该继续占「同一楼 24 小时只回一次」的名额。
+      //   记一条 deleted:true（保留审计痕迹），闸门跳过它。
+      const dup = log.find((x) => !x.deleted && String(x.parent ?? '') === String(parent)
         && now - new Date(x.at).getTime() < L.perThreadMin * 60_000)
       if (dup) return no(`这条评论 ${Math.round(L.perThreadMin / 60)} 小时内已经回过一次了（${hhmmss(dup.at)}）—— 换一条`)
     }

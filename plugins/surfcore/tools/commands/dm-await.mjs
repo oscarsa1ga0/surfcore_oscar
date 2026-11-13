@@ -115,8 +115,25 @@ if (ANY) {
   process.exit(1)
 }
 
+// ── 拉一个会话的完整最近消息（get_sessions 只给 last_msg，会漏掉连发的几条）──
+async function fetchHistory(talkerId, size = 50) {
+  const u = `https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs?talker_id=${encodeURIComponent(talkerId)}&session_type=1&size=${Math.max(5, Math.min(100, size))}&sender_uid=${encodeURIComponent(SELF)}`
+  const r = await fetch(u, { headers: H })
+  const j = await r.json().catch(() => ({}))
+  if (j.code !== 0) return { ok: false, why: `fetch_session_msgs code=${j.code} ${j.message ?? ''}`, messages: [] }
+  const messages = (Array.isArray(j.data?.messages) ? j.data.messages : [])
+    .map((m) => ({
+      ts: Number(m.timestamp) || 0,
+      sender: String(m.sender_uid ?? ''),
+      text: parsed(m.content),
+    }))
+    .filter((m) => m.ts > 0)
+    .sort((a, b) => a.ts - b.ts)
+  return { ok: true, messages }
+}
+
 // ── 老行为：只认主人（设置页「私信监听（只认主人）」= 开）──────────────────────
-async function poll() {
+async function poll({ since = 0 } = {}) {
   const r = await fetchSessions()
   if (!r.ok) return { ok: false, why: r.why }
   const mine = r.list.find((s) => String(s.talker_id) === OWNER)
@@ -126,7 +143,16 @@ async function poll() {
   const text = parsed(last.content)
   const sender = Number(last.sender_uid ?? 0)
   const fromOwner = String(sender) === OWNER      // 只有主人发的才算
-  return { ok: true, ts, text, fromOwner, unread: Number(mine.unread_count ?? 0) }
+  const base = { ok: true, ts, text, fromOwner, unread: Number(mine.unread_count ?? 0) }
+  // 有旧水位且最后一条确实比水位新：拉这段时间的完整消息，避免连发只看到最后一条。
+  if (fromOwner && since > 0 && ts > since) {
+    const h = await fetchHistory(OWNER)
+    if (h.ok) {
+      const items = h.messages.filter((m) => m.ts > since && m.sender === OWNER)
+      if (items.length) return { ...base, items }
+    }
+  }
+  return base
 }
 
 if (BASE) {
@@ -138,14 +164,21 @@ if (BASE) {
 }
 
 const st = loadState()
-const r = await poll()
-if (!r.ok) { console.error(`✗ ${r.why}`); process.exit(3) }
 const lastSeen = Number(st.lastSeen ?? 0)
+const r = await poll({ since: lastSeen })
+if (!r.ok) { console.error(`✗ ${r.why}`); process.exit(3) }
 const hit = r.ts > lastSeen && r.fromOwner
 if (hit) {
-  saveState({ ...st, lastSeen: r.ts, at: new Date().toISOString() })
-  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: r.ts }))
-  else console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${r.ts} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)
+  const items = Array.isArray(r.items) && r.items.length
+    ? r.items
+    : [{ ts: r.ts, sender: OWNER, text: r.text }]
+  const maxTs = Math.max(r.ts, ...items.map((m) => Number(m.ts) || 0))
+  saveState({ ...st, lastSeen: maxTs, at: new Date().toISOString() })
+  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: maxTs, count: items.length, items }))
+  else {
+    console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${maxTs} count=${items.length} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)
+    for (const m of items) console.log(`  [${new Date(Number(m.ts) * 1000).toLocaleTimeString('zh-CN', { hour12: false })}] ${String(m.text).replace(/\n/g, ' ').slice(0, 200)}`)
+  }
   process.exit(0)
 }
 // 没命中：把 lastSeen 往前推（避免旧消息反复触发；但只在对方是主人时推）

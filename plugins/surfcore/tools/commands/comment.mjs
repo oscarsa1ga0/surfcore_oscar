@@ -97,27 +97,30 @@ for (let i = 2; i < process.argv.length; i += 1) {
   const a = process.argv[i]
   if (a.startsWith('--')) args.set(a.slice(2), process.argv[i + 1]?.startsWith('--') ? true : process.argv[++i] ?? true)
 }
-const oid = args.get('oid')
+let oid = args.get('oid')
 const bvid = args.get('bvid')
 let message = args.get('message')
 let root = args.get('root')     // 线程根评论 rpid（二级回复用）
 let parent = args.get('parent') // 要回复的那条评论 rpid
-// type=1 视频（默认）；type=11 动态/图文；type=17 转发动态/新版动态。
+// type=1 视频（默认）；type=11 动态/图文；type=12 专栏/文章（oid=cvid）；type=17 转发动态/新版动态。
 // ⚠️ 动态的 oid 必须用 polymer/web-dynamic/v1/detail 的 basic.comment_id_str
 //   （新版转发动态里它通常就等于 dyn_id，但收货箱的 subject_id 可能被 JS 精度截断，
 //    见 lib/msgfeed.mjs 的 19 位 id 处理）。
 const type = String(args.get('type') ?? '1')
-if (!['1', '11', '17'].includes(type)) {
-  console.error('--type 只能是 1（视频）| 11（图文/动态）| 17（转发动态）')
+if (!['1', '11', '12', '17'].includes(type)) {
+  console.error('--type 只能是 1（视频）| 11（图文/动态）| 12（专栏/文章）| 17（转发动态）')
   process.exit(2)
 }
+// 专栏评论：oid 是 cvid（也接受 cv53899010 这种写法）；referer 自动指到文章页。
+if (type === '12') oid = String(oid ?? '').replace(/^cv/i, '').trim()
 // 动态评论的 referer 要指到 opus 页；给了它就可以不给 --bvid。
-const refererArg = args.get('referer') ? String(args.get('referer')) : ''
+let refererArg = args.get('referer') ? String(args.get('referer')) : ''
+if (!refererArg && type === '12' && oid) refererArg = `https://www.bilibili.com/read/cv${oid}`
 const dry = args.get('dry') === true || args.has('dry')
 const go = args.get('go') === true || args.has('go')
 
-if (!oid || (!bvid && !refererArg) || !message) {
-  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11|17] [--root <rpid> --parent <rpid>] [--force-gather|--no-force-gather] [--no-fish-gather] [--dry | --go]')
+if (!oid || !message || (!bvid && !refererArg && type !== '12')) {
+  console.error('usage: --oid <aid|cvid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11|12|17] [--root <rpid> --parent <rpid>] [--force-gather|--no-force-gather] [--no-fish-gather] [--dry | --go]')
   process.exit(2)
 }
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }

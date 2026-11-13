@@ -70,9 +70,14 @@ export function planDueReview({ now = Date.now(), config = {}, state = {} } = {}
   else if (now - yesterdayAt <= cfg.catchUpHours * 60 * 60 * 1000) due = yesterday;
   if (!due) return null;
   if (state?.lastReviewedDay === due) return null;
+  // 手动「立即整理」不等于完成了当天的定时回顾：下午点过一次，晚上 23:30 仍应照常整理。
+  // 只有手动整理发生在定时点前 30 分钟内（或定时点之后）时，才跳过这次定时，避免刚点完又跑一遍。
+  const manualAt = Date.parse(String(state?.lastManualAt ?? ''));
+  const dueAt = due === today ? todayAt : yesterdayAt;
+  if (Number.isFinite(manualAt) && localDay(manualAt) === due && manualAt >= dueAt - 30 * 60 * 1000) return null;
   const attempts = Number(state?.attempts?.[due] ?? 0) || 0;
   if (attempts >= cfg.maxAttempts) return null;
-  return { due, at: due === today ? todayAt : yesterdayAt, attempts };
+  return { due, at: dueAt, attempts };
 }
 
 function readJson(file, fallback = null) {
@@ -456,10 +461,13 @@ export function startDiaryScheduler(ctx, {
       if (result?.accepted === false || result?.ok === false || result?.result?.ok === false) {
         throw new Error('DSH 拒绝接收日记回合');
       }
+      const stamp = new Date(now()).toISOString();
       writeSchedulerState(diaryDir, {
         ...nextState,
-        lastReviewedDay: day,
-        submittedAt: new Date(now()).toISOString(),
+        // 手动整理不占「今天的定时回顾已完成」：下午手动整理过，23:30 仍会照常跑。
+        lastReviewedDay: force ? state.lastReviewedDay : day,
+        lastManualAt: force ? stamp : state.lastManualAt,
+        submittedAt: stamp,
         lastError: '',
       });
       try { archiveCandidates(diaryDir, { day, now: now() }); } catch (error) {

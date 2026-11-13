@@ -51,6 +51,8 @@ const GENERIC_TAGS = new Set([
   '生活', '知识', '科技', '时尚', '美食', '舞蹈', '运动', '体育', '汽车', '电影', '纪录片', '电视剧',
   '资讯', '搞笑', '三农', '动物', '鬼畜', '音乐现场', '热门', '推荐',
 ]);
+// 收藏夹的行为标签不是内容偏好：它们只说明“为什么留”，不该变成搜索词。
+const FAVORITE_KIND_LABELS = new Set(['想学', '想再看', '和我有关', '以后要提', '其他']);
 const CJK = /[\u4e00-\u9fa5]/;
 // 词边界上的虚词：以这些字开头/结尾的 n-gram 基本是半句话（「我用」「做了个」「的事」），
 // 不是偏好词。不做这层过滤时，标题 n-gram 的前 20 名会全是这类碎片（实测过）。
@@ -399,12 +401,15 @@ async function collectAccountSources({ role, headers, account, wanted, inputs, r
       const folders = await fetchJson(`https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${account.mid}`, headers);
       if (folders?.code !== 0) throw new Error(`code=${folders?.code} ${folders?.message ?? ''}`);
       let items = 0;
-      for (const folder of (folders?.data?.list ?? []).slice(0, 5)) {
+      let mediaFolders = 0;
+      // 夹名本身是强分类信号，全部扫；夹内视频标题最多取前 5 个夹，避免收藏夹多了以后请求过多。
+      for (const folder of (folders?.data?.list ?? [])) {
         const title = String(folder?.title ?? '').trim();
-        if (title && !/默认收藏夹/.test(title) && !GENERIC_TAGS.has(title)) {
+        if (title && !/默认收藏夹/.test(title) && !GENERIC_TAGS.has(title) && !FAVORITE_KIND_LABELS.has(title)) {
           inputs.push({ text: title, source: source('favorites-folder'), weight: 3.5, strong: true, direct: true, sample: `收藏夹：${title}` });
         }
-        if (!folder?.id) continue;
+        if (!folder?.id || mediaFolders >= 5) continue;
+        mediaFolders += 1;
         const list = await fetchJson(`https://api.bilibili.com/x/v3/fav/resource/list?media_id=${folder.id}&pn=1&ps=20&platform=web`, headers);
         if (list?.code !== 0) continue;
         for (const media of (list?.data?.medias ?? [])) {

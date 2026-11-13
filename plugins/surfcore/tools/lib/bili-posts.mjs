@@ -28,6 +28,10 @@ export function appendBiliPost(file, record = {}) {
     type: String(record.type ?? 'dynamic'),
     title: String(record.title ?? '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 100),
     text: String(record.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600),
+    // 视频用：发布时写好的详细概括；文章用：B站摘要（可选）。
+    summary: String(record.summary ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000),
+    cover: String(record.cover ?? '').trim(),
+    bvid: String(record.bvid ?? '').trim(),
     url: String(record.url ?? '').trim(),
     at: String(record.at ?? new Date().toISOString()),
     date: String(record.date ?? new Date().toLocaleDateString('sv-SE')),

@@ -1553,25 +1553,47 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
     const title = redactForMemory(entry.title ?? entry.text ?? '', { scope: 'bili', maxChars: 100 });
     const reason = redactForMemory(entry.reason ?? entry.quote ?? '', { scope: 'bili', maxChars: 220 });
     const anecdote = redactForMemory(entry.anecdote ?? '', { scope: 'bili', maxChars: 260 });
+    const activity = ['follow', 'unfollow', 'like', 'coin'].includes(type);
     const body = type === 'dynamic'
       ? redactForMemory(entry.text ?? entry.title ?? '', { scope: 'bili', maxChars: 400 })
       : (type === 'article'
         ? `在 B 站写了一篇专栏${title ? `《${title}》` : ''}：${redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 400 })}`
         : (type === 'comment'
           ? `在 B 站评论：${redactForMemory(entry.note ?? entry.text ?? '', { scope: 'bili', maxChars: 300 })}`
-          : (reason || anecdote || redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 300 }))));
+          : activity
+            ? (type === 'follow'
+              ? `在 B 站关注了${short(title, 50)}${entry.text && entry.text !== title ? `：${redactForMemory(entry.text, { scope: 'bili', maxChars: 120 })}` : ''}`
+              : type === 'unfollow'
+                ? `在 B 站取关了${short(title, 50)}`
+                : type === 'like'
+                  ? `在 B 站给《${short(title, 50)}》点了赞`
+                  : `在 B 站给《${short(title, 50)}》投了 ${Number(entry.amount) || 1} 枚硬币${entry.text && entry.text !== title ? `：${redactForMemory(entry.text, { scope: 'bili', maxChars: 120 })}` : ''}`)
+            : (reason || anecdote || redactForMemory(entry.text ?? '', { scope: 'bili', maxChars: 300 }))));
     if (!title && !body) continue;
     const displayTitle = /^《.*》$/.test(title) ? title : `《${title}》`;
     const text = type === 'video'
       ? `在 B 站看了${short(displayTitle, 60)}${body ? `：${short(body, 260)}` : ''}`
       : body;
+    const source = type === 'article' ? 'bili-article'
+      : type === 'dynamic' ? 'bili-dynamic'
+        : type === 'comment' ? 'bili-comment'
+          : type === 'follow' || type === 'unfollow' ? 'bili-follow'
+            : type === 'like' ? 'bili-like'
+              : type === 'coin' ? 'bili-coin' : 'bili-video';
+    const recordTitle = type === 'article'
+      ? `B站专栏：${short(title || body, 30)}`
+      : type === 'dynamic' ? `B站动态：${short(body || title, 30)}`
+        : type === 'video' ? `看过《${short(title, 40)}》`
+          : type === 'follow' ? `B站关注：${short(title, 30)}`
+            : type === 'unfollow' ? `B站取关：${short(title, 30)}`
+              : type === 'like' ? `B站点赞：${short(title, 30)}`
+                : type === 'coin' ? `B站投币：${short(title, 30)}`
+                  : short(title || body, 40);
     const result = addMemoryRecord(card, {
-      source: type === 'article' ? 'bili-article' : `bili-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
+      source,
       sourceId,
       text,
-      title: type === 'article'
-        ? `B站专栏：${short(title || body, 30)}`
-        : (type === 'dynamic' ? `B站动态：${short(body || title, 30)}` : (type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40))),
+      title: recordTitle,
       detail: anecdote && body !== anecdote ? anecdote : '',
       score: entry.score,
       favorite: entry.favorite === true,
