@@ -304,7 +304,7 @@ function identityContextLines() {
  * 为什么要加：B站 醒来时只有"去读两本冲浪日记"的任务指令，没有"你最近写过什么"的事实，
  * 于是今天已经发生过的事（比如第一次开口说话）会被当成还没发生。
  * QQ 侧有一模一样的一行（bridge 的 diaryPromptLineV2），这里复用 src/diary-store 的 listEntries，
- * 只同步标题级信息；正文仍要她自己 diary_read，隐私边界不变。
+ * 只同步标题级信息，正文仍由她自己 diary_read。
  */
 function diaryLineForBili() {
   try {
@@ -319,7 +319,7 @@ function diaryLineForBili() {
       const visibility = entry.visibility === 'shareable' ? '可分享' : '私人'
       return `${whenOf(entry.date)}《${entry.title || '无题'}》（${entry.id}，${visibility}）`
     })
-    return `【日记】你最近写过：${parts.join('；')}。这些只给你自己看：要回顾就用 diary_list / diary_search 找、diary_read 读；公开动态/评论里不要直接引用私人日记的标题或内容，要公开就挑 shareable 里你愿意公开的段落。`
+    return `【日记】你最近写过：${parts.join('；')}。`
   } catch {
     return ''
   }

@@ -37,7 +37,7 @@
 ## 修法
 
 - `plugins/surfcore/lib/scheduler.js`：新增 `diaryLineForBili()`（复用 `src/diary-store.js` 的 `listEntries` + `readCurrentCharacter`），在 `identityContextLines()` 里排在 QQ 摘要之后、记忆卡之前。
-- 只输出标题级信息，并显式写明「只给你自己看，公开动态/评论里不要引用私人日记的标题或内容」。
+- 只输出标题级信息（日期 / 标题 / 可见性 / id），正文仍走 `diary_read`。
 - 回滚：删掉 `diaryLineForBili()` 与那一行调用即可。
 
 ## 验证

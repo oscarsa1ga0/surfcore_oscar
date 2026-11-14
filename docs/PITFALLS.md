@@ -4071,5 +4071,5 @@ Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不�
 
 - 现象：QQ 侧 12:50 已经发过第一条语音，B 站 18:00 醒来仍说「语音包还在你那边训」。
 - 根因：B 站唤醒上下文只有「第 2 步：去读两本冲浪日记」这条**指令**，没有「你最近写过什么」的事实；QQ 侧有 `diaryPromptLineV2` 注入标题级日记，B 站没有对应行。共享日记里明明写着「第一次开口」，但没进 B 站上下文。
-- 处置：`plugins/surfcore/lib/scheduler.js` 新增 `diaryLineForBili()`，只注入最近 3 篇的日期/标题/可见性/id（正文仍走 `diary_read`），并写明公开内容不要引用私人日记。
+- 处置：`plugins/surfcore/lib/scheduler.js` 新增 `diaryLineForBili()`，只注入最近 3 篇的日期/标题/可见性/id（正文仍走 `diary_read`）。
 - 预防：判断「她知不知道某件事」要看上下文里有没有注入事实，别把「提示里让她去读」当成已覆盖。见 [案例](cases/2026-11-14-bili-diary-prompt.md)。
