@@ -31,7 +31,7 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
   const owner = `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   let running = false;
   let timer = null;
-  let active = new Map(); // jobId → { abort: AbortController, task }
+  const active = new Map(); // jobId → { abort: AbortController, task }
   let stopped = false;
   let status = { running: false, startedAt: null, activeCount: 0, jobs: [] };
 
@@ -50,6 +50,11 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
     const abort = new AbortController();
     active.set(task.jobId, { abort, task });
     refreshStatus();
+    const limits = getLimits();
+    const timeoutMs = limits.renderTimeoutMs || renderTimeoutMs;
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, timeoutMs);
+    deadline.unref?.();
     const heartbeat = setInterval(() => {
       const ok = store.heartbeatTask(task.jobId, fence, leaseMs);
       if (!ok) {
@@ -58,8 +63,12 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
       }
     }, HEARTBEAT_MS);
     heartbeat.unref?.();
+    const canCommit = () => {
+      const row = store.getTaskRow(task.jobId);
+      return row?.state === 'running' && row.fence === fence;
+    };
     const progress = (p) => {
-      if (!store.isTaskRunning(task.jobId)) abort.abort(); // 被取消
+      if (!canCommit()) abort.abort(); // 被取消
       store.setTaskProgress(task.jobId, { ...p, owner, at: Date.now() });
     };
     try {
@@ -71,18 +80,18 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
         revision: task.revision,
         voiceSettings,
         synth,
-        limits: getLimits(),
+        limits,
+        canCommit,
         onProgress: progress,
         abortSignal: abort.signal,
         log,
       });
-      if (!store.completeTask(task.jobId, fence)) {
-        log(`[video-worker] 任务 ${task.jobId} 完成但 fence 已失效（结果丢弃）`);
-      }
+      if (!store.completeTask(task.jobId, fence)) return { jobId: task.jobId, ok: false, code: 'VIDEO_CANCELLED' };
+      store.markPreview(task.projectId, task.revision);
       return { jobId: task.jobId, ok: true, summary: result.summary };
     } catch (error) {
-      const code = error?.code ?? 'VIDEO_TASK_FAILED';
-      if (code === 'VIDEO_CANCELLED') {
+      const code = timedOut ? 'VIDEO_RENDER_TIMEOUT' : error?.code ?? 'VIDEO_TASK_FAILED';
+      if (!timedOut && (abort.signal.aborted || code === 'VIDEO_CANCELLED')) {
         // 取消/宿主停止：任务留在 running（下次启动 recoverOnStart 立即接管续跑）。
         // 用户显式 cancel 已由 cancelProjectTasks 改状态，这里不再写。
         log(`[video-worker] 任务 ${task.jobId} 被中断，留待恢复`);
@@ -92,13 +101,14 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
       const stage = store.getTask(task.jobId)?.progress?.stage ?? error?.stage ?? '';
       store.failTask(task.jobId, fence, {
         code,
-        error: String(error?.message ?? error),
+        error: timedOut ? `渲染超过 ${Math.round(timeoutMs / 1000)} 秒` : String(error?.message ?? error),
         hint: String(error?.hint ?? (retryable ? '会自动按退避重试；也可以现在手动重试' : '改计划/素材后重试')),
         retryable,
         stage: error?.stage ?? stage,
       });
       return { jobId: task.jobId, ok: false, code, retryable };
     } finally {
+      clearTimeout(deadline);
       clearInterval(heartbeat);
       active.delete(task.jobId);
       refreshStatus();
@@ -152,7 +162,6 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
       for (const { abort } of active.values()) {
         try { abort.abort(); } catch {}
       }
-      active.clear();
       refreshStatus();
       return status;
     },

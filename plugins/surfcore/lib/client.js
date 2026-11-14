@@ -4293,6 +4293,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [acting, setActing] = useState("");
       const [actMsg, setActMsg] = useState("");
       const [actErr, setActErr] = useState("");
+      const [assets, setAssets] = useState(null);
+      const [assetError, setAssetError] = useState("");
+      const [assetBusy, setAssetBusy] = useState(false);
+      const [grant, setGrant] = useState({ kind: "clip", mode: "original", file: "", note: "", sourceRef: "", credit: "" });
+      const [comparison, setComparison] = useState(null);
+      const [compareError, setCompareError] = useState("");
       const video = cfg?.video && typeof cfg.video === "object" ? cfg.video : {};
       const setVideo = (path, value) => set(["video", ...path], value);
 
@@ -4311,10 +4317,41 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         finally { setBusy(""); }
       }, [setBusy]);
 
-      const openDetail = (id) => { setViewId(id); setDetail(null); setDetailErr(""); setActMsg(""); setActErr(""); loadDetail(id); };
+      const openDetail = (id) => {
+        setViewId(id); setDetail(null); setDetailErr(""); setActMsg(""); setActErr("");
+        setComparison(null); setCompareError(""); loadDetail(id);
+      };
+
+      const loadAssets = async () => {
+        setAssetBusy(true);
+        try { setAssets(await api("/bili/video/assets")); setAssetError(""); }
+        catch (e) { setAssetError([e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setAssetBusy(false); }
+      };
+
+      const updateAsset = async (assetId) => {
+        setAssetBusy(true);
+        setAssetError("");
+        try {
+          const { file, kind, ...authorization } = grant;
+          const role = { characterId: assets.character.id, characterEpoch: assets.character.epoch };
+          const url = assetId ? `/bili/video/assets/${encodeURIComponent(assetId)}/revoke` : "/bili/video/assets";
+          await api(url, { method: "POST", body: assetId ? role : { ...role, file: file.trim(), kind, authorization } });
+          if (!assetId) setGrant((previous) => ({ ...previous, file: "", note: "", sourceRef: "", credit: "" }));
+          await loadAssets();
+        } catch (e) { setAssetError([e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setAssetBusy(false); }
+      };
+
+      const compare = async (before, after) => {
+        setCompareError("");
+        try {
+          setComparison(await api(`/bili/video/projects/${encodeURIComponent(viewId)}/compare?from=${before}&to=${after}`));
+        } catch (e) { setCompareError([e.message, e.hint].filter(Boolean).join(" · ")); }
+      };
       const backToList = () => { setViewId(""); setDetail(null); setDetailErr(""); setActMsg(""); setActErr(""); loadList(); };
 
-      const editStateLabel = (state) => ({ idea: "选题", editing: "制作中", preview: "预览", ready: "可投稿", shelved: "已搁置" }[state] ?? state);
+      const editStateLabel = (state) => ({ idea: "选题", editing: "制作中", preview: "预览", ready: "已审片", shelved: "已搁置" }[state] ?? state);
       const taskStateLabel = (state) => ({ queued: "排队中", running: "渲染中", succeeded: "已完成", retryable: "待重试", blocked: "失败", cancelled: "已取消" }[state] ?? state);
       const reviewLabel = (decision) => ({ keep: "保留", revise: "要改", shelve: "搁置" }[decision] ?? decision);
       const taskLine = (task) => {
@@ -4358,7 +4395,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("input", { className: "qbw-switch", type: "checkbox", checked: video.offerOnWake === true, onChange: (e) => setVideo(["offerOnWake"], e.target.checked) })),
         h(Row, { label: "投稿模式", hint: "draft 只存本地草稿；confirm 投稿前要你确认；auto 自主投稿是阶段三，暂未开放" },
           h("select", { className: "qbw-select", value: video.publishMode ?? "draft", onChange: (e) => setVideo(["publishMode"], e.target.value) },
-            h("option", { value: "draft" }, "draft · 只存草稿（阶段一）"),
+            h("option", { value: "draft" }, "draft · 只存草稿"),
             h("option", { value: "confirm" }, "confirm · 投稿前确认"),
             h("option", { value: "auto" }, "auto · 自主投稿（阶段三，暂未开放）"))),
         h(Row, { label: "单稿最长（秒）", hint: "15~600；默认 90" },
@@ -4371,6 +4408,38 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "本地创作关闭中，打开后才能新建 / 渲染视频项目。"),
         h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
           "改完点底部「保存」生效；渲染队列会在保存后立即跟随新开关。"));
+
+      const libraryCard = () => {
+        const editGrant = (key, value) => setGrant((previous) => ({ ...previous, [key]: value }));
+        const input = (key, label) => h(Row, { label }, h("input", {
+          className: "qbw-input", value: grant[key], onChange: (e) => editGrant(key, e.target.value),
+        }));
+        return h("section", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("h4", null, "创作素材库", assets?.character?.name ? ` · ${assets.character.name}` : ""),
+          h(Btn, { kind: "qbw-btn3", onClick: loadAssets, disabled: assetBusy }, assets ? "刷新素材" : "打开素材库"),
+          assetError ? h("div", { className: "qbw-err" }, assetError) : null,
+          assets ? h("div", null,
+            assets.assets.map((asset) => h("div", { key: asset.id, className: "qbw-actions" },
+              h("span", null, `${asset.name} · ${asset.kind} · ${asset.id}${asset.authorization?.revokedAt ? " · 已撤销" : ""}`),
+              asset.source === "imported" && asset.revocable && !asset.authorization?.revokedAt
+                ? h(Btn, { kind: "qbw-btn3", disabled: assetBusy || !video.enabled, onClick: () => updateAsset(asset.id) }, "撤销使用")
+                : null)),
+            video.enabled ? h("form", { onSubmit: (e) => { e.preventDefault(); void updateAsset(); } },
+              h(Row, { label: "素材类型" }, h("select", {
+                className: "qbw-select", value: grant.kind, onChange: (e) => editGrant("kind", e.target.value),
+              }, [["clip", "视频"], ["music", "配乐"], ["sfx", "音效"], ["avatar", "头像"], ["image", "图片"]]
+                .map(([key, text]) => h("option", { key, value: key }, text)))),
+              input("file", "本机文件绝对路径"),
+              h(Row, { label: "素材来源" }, h("select", {
+                className: "qbw-select", value: grant.mode, onChange: (e) => editGrant("mode", e.target.value),
+              }, h("option", { value: "original" }, "原创"), h("option", { value: "licensed" }, "已获授权"))),
+              input("note", "原创或使用权限说明"),
+              grant.mode === "licensed" ? input("sourceRef", "出处或授权凭据") : null,
+              input("credit", "署名（可选）"),
+              h("button", { className: "qbw-btn qbw-btn2", type: "submit",
+                disabled: assetBusy || !grant.file.trim() || !grant.note.trim() || (grant.mode === "licensed" && !grant.sourceRef.trim()),
+              }, "登记素材")) : null) : null);
+      };
 
       const listView = () => {
         const items = Array.isArray(list?.items) ? list.items : [];
@@ -4410,6 +4479,21 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           .sort((a, b) => Number(b.revision) - Number(a.revision));
         return h("div", null,
           backBtn,
+          h(Btn, { kind: "qbw-btn3", onClick: () => loadDetail(viewId), disabled: !!busy }, "刷新详情"),
+          compareError ? h("div", { className: "qbw-err" }, compareError) : null,
+          comparison ? h("div", { className: "qbw-card" },
+            h("h4", null, `v${comparison.from} → v${comparison.to}`),
+            h("div", { className: "qbw-hint" }, [
+              comparison.coverChanged && "封面已修改", comparison.audioChanged && "音轨已修改",
+              comparison.sceneOrderChanged && "镜头顺序有变",
+              comparison.titleChanged && "标题已修改", comparison.submissionChanged && "稿件描述已修改",
+            ].filter(Boolean).join(" · ")),
+            (comparison.sceneChanges ?? []).map((scene) => h("div", { key: scene.sceneId },
+              `${scene.sceneId} · ${({ added: "新增", removed: "删除", edited: "修改" })[scene.change]}${scene.fields ? `（${scene.fields.join("、")}）` : ""}`)),
+            comparison.timings?.from && comparison.timings?.to ? h("div", null,
+              `成片 ${comparison.timings.from.totalMs / 1000}s → ${comparison.timings.to.totalMs / 1000}s`) : null,
+            comparison.rendered ? h("div", null, comparison.rendered.reusedFinal
+              ? "复用成片编码" : `复用镜头：${comparison.rendered.reusedScenes?.join("、") || "无"}`) : null) : null,
           h("div", { className: "qbw-card", style: { marginTop: "10px" } },
             h("h4", null, project.title || `项目 ${viewId}`),
             h("div", { className: "qbw-hint" },
@@ -4421,7 +4505,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             actMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, actMsg) : null),
           revisions.length === 0 ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
             h("div", { className: "qbw-hint" }, "还没有版本：先在 CLI 用 video-project save 存一版计划，再 render 渲染。")) : null,
-          revisions.map((rev) => {
+          revisions.map((rev, index) => {
             const revArtifacts = Array.isArray(detail.artifactsByRevision?.[String(rev.revision)])
               ? detail.artifactsByRevision[String(rev.revision)]
               : Array.isArray(rev.artifacts) ? rev.artifacts : [];
@@ -4432,6 +4516,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             return h("div", { key: rev.revision, className: "qbw-card", style: { marginTop: "10px" } },
               h("h4", null, `版本 v${rev.revision}`,
                 rev.reviewDecision ? h("span", { className: "qbw-badge " + (rev.reviewDecision === "keep" ? "ok" : rev.reviewDecision === "revise" ? "warn" : "") }, `审片：${reviewLabel(rev.reviewDecision)}`) : null),
+              rev.reviewReason ? h("p", { className: "qbw-hint" }, rev.reviewReason) : null,
+              revisions[index + 1] ? h(Btn, { kind: "qbw-btn3", onClick: () => compare(revisions[index + 1].revision, rev.revision) }, "和上一版比较") : null,
               revArtifacts.length === 0 ? h("div", { className: "qbw-hint" },
                 "这个版本还没有工件：跑 ",
                 h("code", { className: "qbw-code" }, `bili.mjs video-project render ${project.id} --revision ${rev.revision}`),
@@ -4449,6 +4535,17 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   alt: `v${rev.revision} 封面`,
                   style: { maxWidth: "260px", width: "100%", borderRadius: "8px", display: "block", border: "1px solid var(--qbw-line)" },
                 })) : null,
+              byKind.get("qa")?.meta?.warnings?.length ? h("details", null,
+                h("summary", null, "质检提示"),
+                byKind.get("qa").meta.warnings.map((item, i) => h("p", { key: i, className: "qbw-hint" }, item.detail))) : null,
+              byKind.has("narration") ? h("div", null, "旁白试听",
+                h("audio", { controls: true, preload: "none", src: artifactUrl(project.id, rev.revision, "narration") })) : null,
+              revArtifacts.some((item) => item.kind.startsWith("frame-")) ? h("details", null,
+                h("summary", null, "镜头关键帧"),
+                h("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px" } },
+                  revArtifacts.filter((item) => item.kind.startsWith("frame-")).map((item) => h("figure", { key: item.kind, style: { width: "160px", margin: "4px" } },
+                    h("img", { loading: "lazy", width: 160, src: artifactUrl(project.id, rev.revision, item.kind), alt: item.kind.slice(6) }),
+                    h("figcaption", null, `${item.kind.slice(6)} · ${(item.meta.atMs / 1000).toFixed(2)} 秒`))))) : null,
               revArtifacts.length ? h("div", { className: "qbw-actions", style: { borderTop: "none", paddingTop: "0", marginTop: "8px" } },
                 ["mp4", "srt", "cover", "preview-grid"].filter((kind) => byKind.has(kind)).map((kind) => {
                   const artifact = byKind.get(kind);
@@ -4456,7 +4553,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   return h("a", {
                     key: kind,
                     className: "qbw-btn qbw-btn3",
-                    href: artifactUrl(project.id, rev.revision, kind),
+                    href: artifactUrl(project.id, rev.revision, kind) + "?download=1",
                     download: "",
                     target: "_blank",
                     rel: "noreferrer",
@@ -4466,12 +4563,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("div", { className: "qbw-actions" },
                 h(Btn, { onClick: () => act("retry", rev.revision), disabled: !!busy || acting === `retry-${rev.revision}` },
                   acting === `retry-${rev.revision}` ? "提交中…" : "重试渲染"),
-                h(Btn, { kind: "qbw-btn2", onClick: () => act("shelve", rev.revision), disabled: !!busy || acting === `shelve-${rev.revision}` },
+                h(Btn, { kind: "qbw-btn2", onClick: () => act("shelve", rev.revision), disabled: !!busy || rev.revision !== project.revision || acting === `shelve-${rev.revision}` },
                   acting === `shelve-${rev.revision}` ? "搁置中…" : "搁置")));
           }));
       };
 
-      return h("div", null, configCard, viewId ? detailView() : listView());
+      return h("div", null, configCard, libraryCard(), viewId ? detailView() : listView());
     }
 
     // ── B站 扫码登录（鱼 / 主人）────────────────────────────────────────────

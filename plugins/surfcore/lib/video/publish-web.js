@@ -9,10 +9,13 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { registerAuthorizedAsset } from './assets.js';
+import { assertVideoDiskBudget } from './budget.js';
+import { compareVersions } from './review.js';
 import { revisionDirFor } from './paths.js';
 
 const PROJECT_ID_RE = /^p_[0-9a-f]{16}$/;
-const ARTIFACT_KINDS = new Set(['mp4', 'cover', 'srt', 'preview-grid', 'preview', 'manifest', 'qa']);
+const ARTIFACT_KINDS = new Set(['mp4', 'cover', 'srt', 'preview-grid', 'preview', 'manifest', 'qa', 'narration']);
 
 function json(res, code, payload) {
   const body = JSON.stringify(payload);
@@ -23,7 +26,7 @@ function json(res, code, payload) {
 }
 
 function failJson(res, code, error, hint = '', status = 400) {
-  json(res, status, { ok: false, code, error, hint });
+  json(res, status, { ok: false, code, error, hint: hint || '刷新当前项目或检查视频创作设置后重试' });
 }
 
 function parseRange(header, size) {
@@ -54,10 +57,10 @@ function parseRange(header, size) {
 export function createVideoApi({ storeFactory, log = () => {} }) {
   async function projectList(req, res, url) {
     try {
-      const { store } = storeFactory();
+      const { store, character } = storeFactory();
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-      json(res, 200, { ok: true, ...store.listProjects({ limit, offset }) });
+      json(res, 200, { ok: true, character: { id: character.id, name: character.name }, ...store.listProjects({ limit, offset }) });
     } catch (error) {
       failJson(res, error.code ?? 'VIDEO_STORE_ERROR', String(error.message ?? error), error.hint, 503);
     }
@@ -68,7 +71,7 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       const { store, character } = storeFactory();
       const project = store.getProject(id);
       if (!project) return failJson(res, 'VIDEO_PROJECT_NOT_FOUND', `项目不存在：${id}`);
-      const videosEnabled = Boolean(videoEnabled());
+      const videosEnabled = videoConfig().enabled === true;
       json(res, 200, {
         ok: true,
         character: { id: character.id, name: character.name },
@@ -86,7 +89,7 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
 
   async function artifact(req, res, url, id, revision, kind) {
     if (!PROJECT_ID_RE.test(id)) return failJson(res, 'VIDEO_BAD_PROJECT', '项目 id 格式非法');
-    if (!ARTIFACT_KINDS.has(kind)) return failJson(res, 'VIDEO_BAD_ARTIFACT', `工件类型只允许 ${[...ARTIFACT_KINDS].join('/')}`);
+    if (!ARTIFACT_KINDS.has(kind) && !/^frame-[a-zA-Z0-9_-]{1,64}$/.test(kind)) return failJson(res, 'VIDEO_BAD_ARTIFACT', `工件类型只允许 ${[...ARTIFACT_KINDS].join('/')}`);
     const rev = Number(revision);
     if (!Number.isInteger(rev) || rev <= 0) return failJson(res, 'VIDEO_BAD_REVISION', '版本号非法');
     try {
@@ -98,17 +101,17 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       }
       const full = path.join(revisionDirFor(root, id, rev), artifact.relativePath);
       const real = fs.realpathSync(full);
-      const realRoot = `${fs.realpathSync(root)}${path.sep}`;
+      const realRoot = `${fs.realpathSync(revisionDirFor(root, id, rev))}${path.sep}`;
       if (!real.startsWith(realRoot)) {
         return failJson(res, 'VIDEO_PATH_ESCAPE', '工件路径越界，拒绝读取');
       }
       const stat = fs.statSync(real);
       const range = parseRange(req.headers.range, stat.size);
-      const mime = kind === 'mp4' ? 'video/mp4'
+      const mime = kind === 'mp4' ? 'video/mp4' : kind === 'narration' ? 'audio/wav'
         : kind === 'srt' ? 'application/x-subrip'
           : kind === 'preview' || kind === 'manifest' || kind === 'qa' ? 'application/json'
             : 'image/png';
-      const disposition = ['mp4', 'srt'].includes(kind)
+      const disposition = (kind === 'srt' || url.searchParams.get('download') === '1')
         ? `attachment; filename="${path.basename(real)}"`
         : 'inline';
       res.statusCode = range ? 206 : 200;
@@ -123,6 +126,7 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       }
       const stream = fs.createReadStream(real, range ? { start: range.start, end: range.end } : undefined);
       stream.on('error', () => { try { res.destroy(); } catch {} });
+      res.on?.('close', () => stream.destroy());
       stream.pipe(res);
     } catch (error) {
       if (error.code === 'ENOENT') return failJson(res, 'VIDEO_ARTIFACT_NOT_FOUND', '工件文件缺失', '', 404);
@@ -137,6 +141,8 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       const { store } = storeFactory();
       const revision = Number(body.revision ?? 0);
       const kind = String(body.kind ?? 'render');
+      if (!videoConfig().enabled) return failJson(res, 'VIDEO_DISABLED', '视频创作处于关闭状态', '请启用后再提交渲染', 409);
+      if (kind !== 'render') return failJson(res, 'VIDEO_BAD_TASK_KIND', '本地视频任务仅支持渲染');
       if (!PROJECT_ID_RE.test(id)) return failJson(res, 'VIDEO_BAD_PROJECT', '项目 id 格式非法');
       const result = store.retryTasks(id, revision, kind);
       if (!result.ok) return failJson(res, result.code, result.error, result.hint);
@@ -152,11 +158,48 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       const { store } = storeFactory();
       if (!PROJECT_ID_RE.test(id)) return failJson(res, 'VIDEO_BAD_PROJECT', '项目 id 格式非法');
       const revision = Number(body.revision ?? 0);
-      const cancelled = store.cancelProjectTasks(id, revision);
-      const state = store.setProjectState(id, 'shelved');
-      json(res, 200, { ok: true, cancelled: cancelled.cancelled, project: { id, editState: state.editState } });
+      const state = store.setReviewDecision(id, revision, 'shelve', body.reason);
+      json(res, 200, { ...state, project: { id, editState: state.editState } });
     } catch (error) {
       failJson(res, error.code ?? 'VIDEO_SHELVE_FAILED', String(error.message ?? error), error.hint, 503);
+    }
+  }
+
+  async function manageAsset(req, res, assetId = null) {
+    try {
+      const config = videoConfig();
+      if (!config.enabled) return failJson(res, 'VIDEO_DISABLED', '视频创作处于关闭状态', '先保存启用视频创作设置', 409);
+      const body = JSON.parse(await readBody(req) || '{}');
+      const { store, root, character } = storeFactory();
+      if (body.characterId !== character.id || body.characterEpoch !== character.epoch) {
+        return failJson(res, 'VIDEO_CHARACTER_CHANGED', '角色已切换或页面已过期', '刷新素材库后再操作', 409);
+      }
+      if (assetId) return json(res, 200, store.revokeAsset(assetId));
+      if (typeof body.file !== 'string' || !path.isAbsolute(body.file)) {
+        return failJson(res, 'VIDEO_ASSET_BAD_PATH', '请输入本机素材的绝对路径');
+      }
+      const result = registerAuthorizedAsset(store, root, body.file, {
+        kind: body.kind, name: body.name, authorization: body.authorization,
+        checkBudget: (bytes) => assertVideoDiskBudget(root, config.videoDirMaxMB * 1024 * 1024, bytes),
+      });
+      return json(res, 201, { ok: true, ...result });
+    } catch (error) {
+      return failJson(res, error.code ?? 'VIDEO_ASSET_FAILED', error.message, error.hint);
+    }
+  }
+
+  async function readComparison(res, id, url) {
+    try {
+      if (!PROJECT_ID_RE.test(id)) return failJson(res, 'VIDEO_BAD_PROJECT', '项目 id 格式非法');
+      const { store } = storeFactory();
+      const from = Number(url.searchParams.get('from'));
+      const to = Number(url.searchParams.get('to'));
+      if (![from, to].every((rev) => Number.isInteger(rev) && rev > 0)) {
+        return failJson(res, 'VIDEO_BAD_REVISION', '请选择两个版本');
+      }
+      return json(res, 200, { ok: true, ...compareVersions(store, id, from, to) });
+    } catch (error) {
+      return failJson(res, error.code ?? 'VIDEO_COMPARE_FAILED', error.message, error.hint);
     }
   }
 
@@ -169,6 +212,22 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
     async handle(req, res, url) {
       const pathname = url.pathname;
       const base = '/dsh-surfcore/api/bili/video';
+      if (pathname === `${base}/assets`) {
+        if (req.method === 'GET') {
+          try {
+            const { store, character } = storeFactory();
+            return json(res, 200, { ok: true, assets: store.listAssets({ limit: 200 }),
+              character: { id: character.id, name: character.name, epoch: character.epoch } });
+          } catch (error) {
+            return failJson(res, error.code ?? 'VIDEO_STORE_ERROR', error.message, error.hint, 503);
+          }
+        }
+        if (req.method === 'POST') return manageAsset(req, res);
+      }
+      const revokeMatch = /^\/dsh-surfcore\/api\/bili\/video\/assets\/(a_[a-f0-9]{16})\/revoke$/.exec(pathname);
+      if (revokeMatch && req.method === 'POST') return manageAsset(req, res, revokeMatch[1]);
+      const compareMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/compare$/.exec(pathname);
+      if (compareMatch && req.method === 'GET') return readComparison(res, compareMatch[1], url);
       if (pathname === `${base}/projects` && req.method === 'GET') return projectList(req, res, url);
       const detailMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)$/.exec(pathname);
       if (detailMatch && req.method === 'GET') return projectDetail(req, res, url, detailMatch[1]);
@@ -189,19 +248,22 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
 }
 
 // 由 index.js 注入的配置读取（避免循环 import）
-let videoEnabled = () => false;
+let videoConfig = () => ({});
 export function setVideoConfigReader(fn) {
-  videoEnabled = fn;
+  videoConfig = fn;
 }
 
 async function readBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 4 * 1024 * 1024) req.destroy();
+      if (data.length > 16 * 1024) {
+        reject(Object.assign(new Error('管理请求过大'), { code: 'VIDEO_REQUEST_TOO_LARGE' }));
+        req.destroy();
+      }
     });
     req.on('end', () => resolve(data));
-    req.on('error', () => resolve(''));
+    req.on('error', reject);
   });
 }

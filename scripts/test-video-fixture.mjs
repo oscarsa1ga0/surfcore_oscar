@@ -8,6 +8,7 @@
 // 运行：node scripts/test-video-fixture.mjs
 // 旁白用本地 fixture 合成器（正弦音），不依赖 BreezeBlue/voxd。
 import fs from 'node:fs';
+import { Readable } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -20,7 +21,7 @@ process.env.DSH_HOME = DSH_HOME;
 const { requireVideoRoot, ensureVideoDirs } = await import('../plugins/surfcore/lib/video/paths.js');
 const { openVideoStore } = await import('../plugins/surfcore/lib/video/project-store.js');
 const { registerGeneratedCard, registerImageAsset, runPy } = await import('../plugins/surfcore/lib/video/assets.js');
-const { validatePlan, computeTimeline } = await import('../plugins/surfcore/lib/video/plan.js');
+const { validatePlan, computeTimeline, splitCaption } = await import('../plugins/surfcore/lib/video/plan.js');
 const { createVideoWorker } = await import('../plugins/surfcore/lib/video/worker.js');
 
 let passed = 0;
@@ -81,6 +82,7 @@ fs.mkdirSync(path.join(DSH_HOME, 'surfcore', 'characters'), { recursive: true })
 fs.writeFileSync(path.join(DSH_HOME, 'surfcore', 'characters', 'current.json'), JSON.stringify({ id: 'char-test1', name: '测试角色', epoch: 1 }));
 
 // ── 1. 项目 / 素材 / 计划 ──────────────────────────────────────────
+fs.writeFileSync(path.join(DSH_HOME, 'surfcore', 'bili.config.json'), JSON.stringify({ video: { enabled: true } }));
 const { root, character } = requireVideoRoot();
 ensureVideoDirs(root);
 const store = openVideoStore(root);
@@ -130,6 +132,7 @@ const plan = {
   submission: { description: '鱼姬第一次试着给自己剪一条片。', tags: ['自我介绍'] },
 };
 const planCheck = validatePlan(plan);
+check('长中文无标点也按字数拆分', splitCaption('鱼'.repeat(80)).every((part) => part.length <= 28) && splitCaption('鱼'.repeat(80)).join('').length === 80);
 check('validatePlan', planCheck.ok, planCheck.errors.map((e) => `${e.path}:${e.message}`).join('; '));
 
 const saved = store.savePlan(project.id, plan, { expectRevision: 0 });
@@ -242,7 +245,8 @@ check('CLI 拒绝非法计划', saveBad.status !== 0 && JSON.parse(saveBad.stdou
 
 // ── 5. 管理 API（设置页播放/下载依赖的 Range 流式）────────────────────
 console.log('  管理 API 流式测试 ...');
-const { createVideoApi } = await import('../plugins/surfcore/lib/video/publish-web.js');
+const { createVideoApi, setVideoConfigReader } = await import('../plugins/surfcore/lib/video/publish-web.js');
+setVideoConfigReader(() => ({ enabled: true }));
 const api = createVideoApi({
   storeFactory: () => ({ store, root, character }),
   log: () => {},
@@ -259,10 +263,11 @@ function mockRes() {
   };
   return res;
 }
-async function apiGet(pathname, { method = 'GET', headers = {} } = {}) {
+async function apiGet(pathname, { method = 'GET', headers = {}, body = null } = {}) {
   const res = mockRes();
   const url = new URL(`http://127.0.0.1${pathname}`);
-  await api.handle({ method, headers, url }, res, url);
+  const req = body ? Readable.from([JSON.stringify(body)]) : {};
+  await api.handle(Object.assign(req, { method, headers, url }), res, url);
   await res.done; // 流式响应：等 end 后再读
   return { res, body: Buffer.concat(res.chunks), json: (() => { try { return JSON.parse(Buffer.concat(res.chunks).toString()); } catch { return null; } })() };
 }
@@ -287,6 +292,134 @@ const badId = await apiGet(`${base}/projects/..%2F..%2Fetc/revisions/1/artifacts
 check('API 拒绝非法项目 id', badId.res.statusCode === 400);
 const approveRes = await apiGet(`${base}/projects/${project.id}/approve`, { method: 'POST' });
 check('API approve 阶段三 501', approveRes.res.statusCode === 501 && approveRes.json?.code === 'VIDEO_PHASE3');
+
+// ── 6. 阶段二：素材授权、混剪、对照与增量渲染 ────────────────
+const mediaDir = path.join(DSH_HOME, 'media-fixture');
+fs.mkdirSync(mediaDir);
+function generate(args) {
+  const result = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(result.stderr);
+}
+const clipFile = path.join(mediaDir, 'clip.mp4');
+generate(['-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=24:d=7',
+  '-f', 'lavfi', '-i', 'sine=f=440:duration=7', '-c:v', 'libx264', '-c:a', 'aac', '-y', clipFile]);
+const musicFile = path.join(mediaDir, 'music.wav');
+const sfxFile = path.join(mediaDir, 'FX.wav');
+generate(['-f', 'lavfi', '-i', 'sine=f=310:duration=18', '-y', musicFile]);
+generate(['-f', 'lavfi', '-i', 'sine=f=590:duration=1', '-y', sfxFile]);
+const role = { characterId: character.id, characterEpoch: character.epoch };
+const submitAsset = (kind, file, authorization, identity = role) =>
+  apiGet(`${base}/assets`, { method: 'POST', body: { ...identity, kind, file, authorization } });
+const grant = { mode: 'original', note: '测试程序生成' };
+const denied = await submitAsset('clip', clipFile, { mode: 'licensed', note: '缺凭据' });
+check('素材授权缺失时返回结构化失败', denied.json?.code === 'VIDEO_ASSET_AUTH_REQUIRED' && !!denied.json?.hint);
+const stale = await submitAsset('clip', clipFile, grant, { ...role, characterEpoch: 999 });
+check('过期角色页面不能导入素材', stale.json?.code === 'VIDEO_CHARACTER_CHANGED');
+const shots = path.join(DSH_HOME, 'shots', 'video');
+fs.mkdirSync(shots, { recursive: true });
+const watched = path.join(shots, 'watch.mp4');
+fs.copyFileSync(clipFile, watched);
+check('拒绝直接导入观看缓存', (await submitAsset('clip', watched, grant)).json?.code === 'VIDEO_ASSET_REFERENCE_ONLY');
+const clip = (await submitAsset('clip', clipFile, grant)).json;
+const music = (await submitAsset('music', musicFile, grant)).json;
+const sfx = (await submitAsset('sfx', sfxFile, grant)).json;
+check('登记原创视频、配乐、音效并读取真实时长', [clip, music, sfx].every((item) => item?.asset?.authorization?.media?.durationMs > 0), JSON.stringify([clip, music, sfx].map((item) => item?.code)));
+const reorderedFirst = (await submitAsset('clip', clipFile, grant)).json;
+check('素材授权重录保留内容 ID', reorderedFirst.duplicate && reorderedFirst.asset.id === clip.asset.id);
+const demo = structuredClone(plan);
+demo.scenes[0].transitionOut = { kind: 'fade_black', durationMs: 500 };
+demo.scenes[1] = {
+  ...demo.scenes[1],
+  visual: { assetId: clip.asset.id, fit: 'contain', motion: 'none', inMs: 1000, outMs: 6000, audio: 'mix' },
+  duration: { mode: 'clip' },
+};
+demo.audioTracks = [
+  { kind: 'music', assetId: music.asset.id, startMs: 0, inMs: 500, outMs: 16000, gainDb: -22 },
+  { kind: 'sfx', assetId: sfx.asset.id, startMs: 17200, inMs: 0, outMs: 700, gainDb: -12 },
+];
+const mixed = store.createProject({ characterId: character.id, title: '混剪阶段二' });
+const demoPlanFile = path.join(mediaDir, 'mix.json');
+fs.writeFileSync(demoPlanFile, JSON.stringify(demo));
+const cli = (action, args) => {
+  const result = runCli(['video-project', action, mixed.id, ...args, '--json']);
+  try { return JSON.parse(result.stdout); }
+  catch { throw new Error(result.stderr || result.stdout || `CLI exited ${result.status}`); }
+};
+check('既有 save 命令接受新计划', cli('save', ['--expect-revision', '0', '--plan-file', demoPlanFile]).revision === 1);
+const premature = cli('review', ['--revision', '1', '--decision', 'keep']);
+check('未出片不能标记满意', premature.code === 'VIDEO_REVIEW_NOT_READY' && !!premature.hint);
+let stage2SynthCalls = 0;
+const stage2Worker = createVideoWorker({ store, root, synth: (line) => { stage2SynthCalls += 1; return fixtureSynth(line); }, tickMs: 100, log: console.log });
+stage2Worker.start();
+async function renderMix(revision) {
+  const queued = cli('render', ['--revision', String(revision)]);
+  const settled = await waitFor(() => {
+    const task = store.getTask(queued.jobId);
+    return ['succeeded', 'blocked', 'retryable'].includes(task?.state) && task;
+  }, 60_000, 200);
+  if (settled.state !== 'succeeded') throw new Error(JSON.stringify(settled));
+  return cli('preview', ['--revision', String(revision)]);
+}
+const mixed1 = await renderMix(1);
+check('混剪出片，裁切后镜头为 5 秒', mixed1.scenes[1].durationMs === 5000 && mixed1.qa.ok && mixed1.audioTracks.length === 2);
+check('旁白试听、旁白稿与关键帧时码可用',
+  fs.existsSync(mixed1.files.narration) && mixed1.narration.length === 3
+  && mixed1.keyframes.every((frame) => frame.atMs > 0 && fs.existsSync(frame.file)));
+check('镜头帧和旁白可经管理 API 播放', (await apiGet(`${base}/projects/${mixed.id}/revisions/1/artifacts/frame-s02`)).res.headers['content-type'] === 'image/png'
+  && (await apiGet(`${base}/projects/${mixed.id}/revisions/1/artifacts/narration`)).res.headers['content-type'] === 'audio/wav');
+check('审片进入待改并记理由', cli('review', ['--revision', '1', '--decision', 'revise', '--reason', '第二镜头缩短一秒']).editState === 'editing'
+  && store.getProject(mixed.id).revisions[0].reviewReason === '第二镜头缩短一秒');
+const patchFile = path.join(mediaDir, 'patch.json');
+fs.writeFileSync(patchFile, JSON.stringify({ scenes: [{ id: 's02', visual: { outMs: 5000 } }], cover: { headline: '第二版' } }));
+check('按段修订生成新版本', cli('revise', ['--expect-revision', '1', '--patch-file', patchFile]).revision === 2);
+check('过期审片不能改变新版本状态', cli('review', ['--revision', '1', '--decision', 'keep']).code === 'VIDEO_REVISION_CONFLICT');
+const mixed2 = await renderMix(2);
+check('缩短镜头不重做旁白 TTS', stage2SynthCalls === demo.scenes[0].lines.length);
+check('新版缩短一秒、旧版产物保留', mixed1.totalMs - mixed2.totalMs === 1000 && fs.existsSync(mixed1.files.mp4));
+const cmp = cli('compare', ['--from', '1', '--to', '2']);
+check('版本对照给出变更、时码和复用', cmp.ok && cmp.coverChanged && cmp.sceneChanges.length === 1 && cmp.sceneChanges[0].sceneId === 's02'
+  && cmp.rendered?.reusedScenes.includes('s01') && cmp.rendered?.reusedNarrationScenes.includes('s01')
+  && cmp.timings.from.totalMs - cmp.timings.to.totalMs === 1000);
+fs.writeFileSync(patchFile, JSON.stringify({ cover: { headline: '只换封面' } }));
+check('单独换封面生成独立版本', cli('revise', ['--expect-revision', '2', '--patch-file', patchFile]).revision === 3);
+await renderMix(3);
+check('换封面复用 MP4 编码', store.getArtifact(mixed.id, 3, 'preview').meta.reusedFinal
+  && store.getArtifact(mixed.id, 3, 'mp4').sha256 === store.getArtifact(mixed.id, 2, 'mp4').sha256
+  && store.getArtifact(mixed.id, 3, 'cover').sha256 !== store.getArtifact(mixed.id, 2, 'cover').sha256);
+check('版本对照可经管理 API 读取', (await apiGet(`${base}/projects/${mixed.id}/compare?from=2&to=3`)).json?.coverChanged);
+check('满意后标为已审片', cli('review', ['--revision', '3', '--decision', 'keep', '--reason', '节奏合适']).editState === 'ready');
+const revoke = (await apiGet(`${base}/assets/${clip.asset.id}/revoke`, { method: 'POST', body: role })).json;
+check('撤销后保留历史预览、阻止新渲染', !!revoke.asset.authorization.revokedAt && fs.existsSync(mixed1.files.mp4));
+const revokedTask = cli('render', ['--revision', '3']);
+const revokeBlocked = await waitFor(() => {
+  const task = store.getTask(revokedTask.jobId);
+  return task?.state === 'blocked' && task;
+}, 5000, 100);
+check('执行器拒绝撤销素材并给提示', revokeBlocked.errorCode === 'VIDEO_ASSET_REVOKED' && !!revokeBlocked.hint);
+check('搁置后当前版本状态准确', cli('review', ['--revision', '3', '--decision', 'shelve']).editState === 'shelved');
+stage2Worker.stop();
+await stage2Worker.drain();
+const fenced = store.enqueueTask({ projectId: project.id, revision: 1, kind: 'render' });
+const claimed = store.claimNextTask({ owner: 'fixture-stale' });
+store.setReviewDecision(project.id, 1, 'shelve');
+check('已搁置的任务拒绝迟到的成功写入', claimed?.task.jobId === fenced.jobId && !store.completeTask(fenced.jobId, claimed.fence)
+  && store.getTask(fenced.jobId).state === 'cancelled');
+const configFile = path.join(DSH_HOME, 'surfcore', 'bili.config.json');
+fs.writeFileSync(configFile, JSON.stringify({ video: { enabled: false } }));
+check('功能关闭时 CLI 禁止新建、仍可看历史', cli('render', ['--revision', '3']).code === 'VIDEO_DISABLED'
+  && cli('preview', ['--revision', '3']).ok);
+const wrongScene = structuredClone(demo);
+wrongScene.scenes[1].id = '../bad';
+check('场景 id 不能写出关键帧目录', !validatePlan(wrongScene).ok);
+const { reserveDailyUsage, assertVideoDiskBudget } = await import('../plugins/surfcore/lib/video/budget.js');
+const day = new Date('2026-11-14T15:59:59.000Z');
+reserveDailyUsage(store.db, 'tts', 5, 6, day);
+let budgetError;
+try { reserveDailyUsage(store.db, 'tts', 2, 6, day); } catch (error) { budgetError = error; }
+check('每日额度事务拒绝超额，上海次日可继续', budgetError?.code === 'VIDEO_DAILY_BUDGET' && !!budgetError.hint);
+reserveDailyUsage(store.db, 'tts', 2, 6, new Date('2026-11-14T16:00:00.000Z'));
+try { assertVideoDiskBudget(root, 1); } catch (error) { budgetError = error; }
+check('磁盘预算有可操作的错误提示', budgetError?.code === 'VIDEO_DISK_BUDGET' && !!budgetError.hint);
 
 // ── 6. 收尾 ────────────────────────────────────────────────────────
 store.close();

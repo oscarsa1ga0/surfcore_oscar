@@ -9,8 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { requireVideoRoot, ensureVideoDirs } from '../../lib/video/paths.js';
 import { openVideoStore } from '../../lib/video/project-store.js';
-import { validatePlan, computeTimeline } from '../../lib/video/plan.js';
-import { registerGeneratedCard, registerImageAsset } from '../../lib/video/assets.js';
+import { validatePlan } from '../../lib/video/plan.js';
+import { registerGeneratedCard, registerImageAsset, validatePlanAssets } from '../../lib/video/assets.js';
+import { revisePlan, compareVersions } from '../../lib/video/review.js';
 import { readBiliConfig } from '../../lib/store.js';
 
 const USAGE = `用法: node video-project.mjs <命令> [参数]
@@ -23,7 +24,10 @@ const USAGE = `用法: node video-project.mjs <命令> [参数]
   render <id> --revision <n> [--wait] [--timeout <ms>]   提交渲染任务（--wait 等完成）
   status <id> [--job <jobId>] [--refresh]         项目/任务/工件状态
   preview <id> --revision <n>                     预览产物（九宫格/镜头帧/字幕/旁白路径）
-  review <id> --revision <n> --decision keep|revise|shelve   记录审片决策
+  show-plan <id> --revision <n>                   读取一版的剪辑计划
+  revise <id> --expect-revision <n> --patch-file <文件>   按镜头 id/封面/音轨改一版
+  compare <id> --from <n> --to <n>                比较镜头、封面、时长与缓存复用
+  review <id> --revision <n> --decision keep|revise|shelve [--reason <理由>]
 全局: --json 输出 JSON`;
 
 function argValue(args, name) {
@@ -46,8 +50,16 @@ function output(result) {
 }
 
 function fail(result) {
-  output(result);
+  output({ ...result, hint: result.hint || '运行 video-project help 或查看项目任务详情' });
   process.exit(result?.code === 'VIDEO_USAGE' ? 2 : 1);
+}
+
+function readJsonFile(file) {
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size > 512 * 1024) {
+    throw Object.assign(new Error('计划/补丁须为不超过 512 KiB 的 JSON 文件'), { code: 'VIDEO_PLAN_UNREADABLE' });
+  }
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
 function ok(result) {
@@ -100,6 +112,11 @@ async function main() {
     maxOutputBytes: (Number(videoCfg.maxOutputMB) > 0 ? Number(videoCfg.maxOutputMB) : 100) * 1024 * 1024,
   };
 
+  const writes = ['create', 'save', 'revise', 'render', 'review'].includes(cmd)
+    || (cmd === 'assets' && ['register-card', 'register-image'].includes(args[1]));
+  if (writes && videoCfg.enabled !== true) {
+    return fail({ ok: false, code: 'VIDEO_DISABLED', error: '视频创作已关闭', hint: '在设置 → SurfCore → 视频创作启用并保存' });
+  }
   let store;
   try {
     ensureVideoDirs(root);
@@ -128,7 +145,7 @@ async function main() {
     if (cmd === 'create') {
       const title = argValue(args, '--title') ?? '';
       if (!title.trim()) return fail({ ok: false, code: 'VIDEO_BAD_TITLE', error: 'create 需要 --title <标题>' });
-      const project = store.createProject({ characterId: character.id, title });
+      const project = store.createProject({ characterId: character.id, title, maxProjects: videoCfg.maxProjects ?? 3 });
       const result = { ok: true, character, project };
       if (asJson) return ok(result);
       console.log(`已创建项目 ${project.id}（v0 · idea）「${project.title}」`);
@@ -138,14 +155,14 @@ async function main() {
 
     if (cmd === 'save') {
       const id = args[0];
-      const expectRevision = Number(argValue(args, '--expect-revision'));
+      const expectRevision = Number(argValue(args, '--expect-revision') ?? NaN);
       const planFile = argValue(args, '--plan-file');
       if (!id || !Number.isInteger(expectRevision) || !planFile) {
         return fail({ ok: false, code: 'VIDEO_USAGE', error: '用法: save <id> --expect-revision <n> --plan-file <文件>' });
       }
       let plan;
       try {
-        plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+        plan = readJsonFile(planFile);
       } catch (error) {
         return fail({ ok: false, code: 'VIDEO_PLAN_UNREADABLE', error: `读不到计划文件：${String(error.message ?? error)}`, hint: '计划文件必须是 UTF-8 JSON' });
       }
@@ -157,6 +174,7 @@ async function main() {
           errors: check.errors,
         });
       }
+      validatePlanAssets(store, root, plan);
       const saved = store.savePlan(id, plan, { expectRevision });
       if (asJson) return ok({ ok: true, character, ...saved, planCheck: check });
       console.log(`已保存版本 v${saved.revision}（planHash ${saved.planHash.slice(0, 12)}）`);
@@ -171,11 +189,13 @@ async function main() {
       if (sub === 'list') {
         const assets = store.listAssets({ limit: 200 }).map((a) => ({
           id: a.id, kind: a.kind, source: a.source, name: a.name, bytes: a.bytes,
-          sha256: a.sha256.slice(0, 12), authorization: a.authorization,
+          sha256: a.sha256.slice(0, 12), durationMs: a.authorization?.media?.durationMs ?? null,
+          authorization: { mode: a.authorization?.mode, scope: a.authorization?.scope,
+            credit: a.authorization?.credit, revokedAt: a.authorization?.revokedAt },
         }));
         if (asJson) return ok({ ok: true, character, assets });
         console.log(`素材（${assets.length}）：`);
-        for (const a of assets) console.log(`  ${a.id.padEnd(18)} ${a.kind.padEnd(8)} ${a.source.padEnd(10)} ${a.name}${a.authorization?.usage ? `（${a.authorization.usage}）` : ''}`);
+        for (const a of assets) console.log(`  ${a.id.padEnd(18)} ${a.kind.padEnd(8)} ${a.source.padEnd(10)} ${a.name}${a.durationMs ? ` · ${a.durationMs}ms` : ''}${a.authorization?.revokedAt ? ' · 已撤销' : ''}`);
         return process.exit(0);
       }
       if (sub === 'register-card') {
@@ -206,9 +226,33 @@ async function main() {
       return fail({ ok: false, code: 'VIDEO_USAGE', error: `未知素材子命令：${sub}` });
     }
 
+    if (cmd === 'show-plan' || cmd === 'revise' || cmd === 'compare') {
+      const id = args[0];
+      const revision = Number(argValue(args, cmd === 'revise' ? '--expect-revision' : '--revision') ?? NaN);
+      const from = Number(argValue(args, '--from') ?? NaN);
+      const to = Number(argValue(args, '--to') ?? NaN);
+      if (!id || (cmd === 'compare' ? !Number.isInteger(from) || !Number.isInteger(to) : !Number.isInteger(revision))) {
+        return fail({ ok: false, code: 'VIDEO_USAGE', error: '缺少项目 ID 或版本号' });
+      }
+      let result;
+      if (cmd === 'show-plan') {
+        result = store.getPlan(id, revision);
+        if (!result) return fail({ ok: false, code: 'VIDEO_BAD_REVISION', error: '版本不存在' });
+      } else if (cmd === 'revise') {
+        const file = argValue(args, '--patch-file');
+        if (!file) return fail({ ok: false, code: 'VIDEO_USAGE', error: 'revise 需要 --patch-file' });
+        result = revisePlan(store, id, revision, readJsonFile(file), limits, (plan) => validatePlanAssets(store, root, plan));
+      } else {
+        result = compareVersions(store, id, from, to);
+      }
+      if (asJson) return ok({ ok: true, ...result });
+      console.log(JSON.stringify(result, null, 2));
+      return process.exit(0);
+    }
+
     if (cmd === 'render') {
       const id = args[0];
-      const revision = Number(argValue(args, '--revision'));
+      const revision = Number(argValue(args, '--revision') ?? NaN);
       if (!id || !Number.isInteger(revision)) {
         return fail({ ok: false, code: 'VIDEO_USAGE', error: '用法: render <id> --revision <n> [--wait] [--timeout <ms>]' });
       }
@@ -245,7 +289,7 @@ async function main() {
       const project = store.getProject(id);
       if (!project) return fail({ ok: false, code: 'VIDEO_PROJECT_NOT_FOUND', error: `项目不存在：${id}` });
       const jobId = argValue(args, '--job');
-      const tasks = (jobId ? [store.getTask(jobId)].filter(Boolean) : project.tasks).map((t) => ({
+      const tasks = (jobId ? [store.getTask(jobId)].filter((task) => task?.projectId === id) : project.tasks).map((t) => ({
         ...t,
         nextAtIso: t.nextAt ? new Date(t.nextAt).toISOString() : null,
       }));
@@ -260,7 +304,7 @@ async function main() {
 
     if (cmd === 'preview') {
       const id = args[0];
-      const revision = Number(argValue(args, '--revision'));
+      const revision = Number(argValue(args, '--revision') ?? NaN);
       if (!id || !Number.isInteger(revision)) {
         return fail({ ok: false, code: 'VIDEO_USAGE', error: '用法: preview <id> --revision <n>' });
       }
@@ -277,12 +321,20 @@ async function main() {
           titleCard: s.titleCard,
         })),
         captions: previewJson.captions,
+        audioTracks: previewJson.audioTracks ?? [],
+        narration: previewJson.narration ?? [],
+        qa: (() => {
+          const qa = store.getArtifact(id, revision, 'qa');
+          return qa ? JSON.parse(fs.readFileSync(path.join(revDir, qa.relativePath), 'utf8')) : null;
+        })(),
+        keyframes: previewJson.frames.map((frame) => ({ ...frame, file: path.join(root, frame.file) })),
         files: {
           mp4: path.join(revDir, store.getArtifact(id, revision, 'mp4')?.relativePath ?? ''),
           cover: path.join(revDir, store.getArtifact(id, revision, 'cover')?.relativePath ?? ''),
           srt: path.join(revDir, store.getArtifact(id, revision, 'srt')?.relativePath ?? ''),
           grid: path.join(revDir, store.getArtifact(id, revision, 'preview-grid')?.relativePath ?? ''),
-          frames: previewJson.frames.map((f) => path.join(revDir, '..', '..', '..', f.file)).map((p) => path.normalize(p)),
+          frames: previewJson.frames.map((f) => path.join(root, f.file)),
+          narration: store.getArtifact(id, revision, 'narration') ? path.join(revDir, 'narration.wav') : null,
         },
       };
       if (asJson) return ok(result);
@@ -296,20 +348,20 @@ async function main() {
       console.log(`  封面: ${result.files.cover}`);
       console.log(`  字幕: ${result.files.srt}`);
       console.log(`  九宫格: ${result.files.grid}`);
-      console.log(`  镜头帧: ${result.files.frames.join(' ')}`);
+      if (result.files.narration) console.log(`  旁白试听: ${result.files.narration}`);
+      for (const frame of result.keyframes) console.log(`  镜头帧 ${frame.sceneId} @ ${frame.atMs ?? frame.offsetMs}ms: ${frame.file}`);
+      for (const warning of result.qa?.warnings ?? []) console.log(`  质检提示：${warning.detail}`);
       return process.exit(0);
     }
 
     if (cmd === 'review') {
       const id = args[0];
-      const revision = Number(argValue(args, '--revision'));
+      const revision = Number(argValue(args, '--revision') ?? NaN);
       const decision = argValue(args, '--decision');
       if (!id || !Number.isInteger(revision) || !['keep', 'revise', 'shelve'].includes(decision)) {
         return fail({ ok: false, code: 'VIDEO_USAGE', error: '用法: review <id> --revision <n> --decision keep|revise|shelve' });
       }
-      const result = store.setReviewDecision(id, revision, decision);
-      if (decision === 'shelve') store.setProjectState(id, 'shelved');
-      if (decision === 'keep') store.setProjectState(id, 'preview');
+      const result = store.setReviewDecision(id, revision, decision, argValue(args, '--reason'));
       const out = { ok: true, character, ...result };
       if (asJson) return ok(out);
       console.log(`v${revision} 决策已记录：${decision}`);
@@ -323,6 +375,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`✗ VIDEO_CLI_FAILED：${String(error?.message ?? error)}`);
-  process.exit(1);
+  fail({ ok: false, code: error?.code ?? 'VIDEO_CLI_FAILED', error: String(error?.message ?? error), hint: error?.hint });
 });

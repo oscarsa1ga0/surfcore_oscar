@@ -61,6 +61,7 @@ export function voiceFingerprint(settings) {
     modelId: settings.breeze.modelId,
     instructions: settings.breeze.instructions,
     outputFormat: settings.breeze.outputFormat,
+    guidanceScale: settings.breeze.guidanceScale,
     cacheVersion: settings.cacheVersion,
   })).digest('hex');
 }
@@ -74,7 +75,7 @@ export function voiceFingerprint(settings) {
  * @returns {Promise<Record<string, {file:string, durationMs:number, sha256:string}>>}
  */
 export async function synthesizeLines(lines, settings, outDir, options = {}) {
-  const { onProgress, fetchImpl = fetch, abortSignal } = options;
+  const { onProgress, fetchImpl = fetch, abortSignal, charge = () => {} } = options;
   if (!settings.enabled && !options.force) {
     const error = new Error('语音合成未开启（socialV2.voice.tts.enabled）');
     error.code = 'VIDEO_TTS_DISABLED';
@@ -82,7 +83,7 @@ export async function synthesizeLines(lines, settings, outDir, options = {}) {
     throw error;
   }
   fs.mkdirSync(outDir, { recursive: true });
-  const results = {};
+  const results = Object.create(null);
   let done = 0;
   for (const line of lines) {
     if (abortSignal?.aborted) {
@@ -96,25 +97,16 @@ export async function synthesizeLines(lines, settings, outDir, options = {}) {
       error.code = 'VIDEO_TTS_EMPTY';
       throw error;
     }
-    // 内容寻址：同一句 + 同一音色只合成一次（跨渲染/跨版本复用）。
-    const key = crypto.createHash('sha1').update(JSON.stringify([
-      GENERATOR_VERSION, settings.provider,
-      settings.provider === 'breeze'
-        ? { b: settings.breeze.baseUrl, v: settings.breeze.voiceId, m: settings.breeze.modelId, i: settings.breeze.instructions, o: settings.breeze.outputFormat }
-        : { b: settings.baseUrl, c: settings.character, v: settings.voice, s: settings.style },
-      settings.cacheVersion, text,
-    ])).digest('hex');
-    const file = path.join(outDir, `${key}.wav`);
-    let durationMs = 0;
-    if (fs.existsSync(file) && fs.statSync(file).size > 44) {
-      durationMs = wavDurationMs(fs.readFileSync(file));
-      if (durationMs > 0) {
-        results[line.lineId] = { file, durationMs, sha256: sha256File(file) };
-        done += 1;
-        onProgress?.(done, lines.length, line.lineId);
-        continue;
-      }
-    }
+    // 原合成器自己检查缓存，仅网络合成时在 fetch 包装层记账。
+    const key = voiceFingerprint(settings);
+    const providerCache = path.join(outDir, key);
+    let blocked;
+    const request = (url, init) => {
+      if (abortSignal?.aborted) throw abortSignal.reason;
+      try { charge([...text].length); } catch (error) { blocked = error; throw error; }
+      return fetchImpl(url, { ...init, signal: abortSignal ? AbortSignal.any([abortSignal, init.signal]) : init.signal });
+    };
+    let durationMs;
     const synthesized = await synthesizeToFile({
       text,
       provider: settings.provider,
@@ -125,9 +117,9 @@ export async function synthesizeLines(lines, settings, outDir, options = {}) {
       timeoutMs: settings.timeoutMs,
       cacheVersion: settings.cacheVersion,
       breeze: settings.breeze,
-      outDir,
-      fetchImpl,
-    });
+      outDir: providerCache,
+      fetchImpl: request,
+    }).catch((error) => { throw blocked ?? error; });
     // 校验 RIFF/WAVE + 时长（方案 §5.3：坏文件直接报错，不进入时间轴）。
     const buf = fs.readFileSync(synthesized.path);
     if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
@@ -192,7 +184,7 @@ export function makeSilentSynth() {
 export async function synthesizeLinesWith(synth, lines, outDir, options = {}) {
   const { onProgress, abortSignal } = options;
   fs.mkdirSync(outDir, { recursive: true });
-  const results = {};
+  const results = Object.create(null);
   let done = 0;
   for (const line of lines) {
     if (abortSignal?.aborted) {

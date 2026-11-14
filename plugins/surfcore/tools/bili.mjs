@@ -37,7 +37,7 @@ const map = {
   daily: ['commands/daily.mjs', '四类动态各一天一条：--kind best(8:00 最高分视频) / game(12:00 游戏AI二创) / anime(16:00 动漫) / gaming(20:00 游戏区)'],
   'free-post': ['commands/free-post.mjs', '自由发布（不是任务、不设每日上限）：文字 / 一张图 / 任意视频卡片 / 链接：--text … [--image 图] [--bvid BV] [--link URL] --dry|--go'],
   article: ['commands/article.mjs', '原创专栏：--title … --file 文章.md|--content … [--cover 图] --dry|--draft|--go（B站每天最多 5 篇）；--delete/--check <aid>'],
-  'video-project': ['commands/video-project.mjs', '视频创作（阶段一）：list/create/save/assets/render/status/preview/review —— 从空项目做出带旁白字幕的 MP4'],
+  'video-project': ['commands/video-project.mjs', '本地视频创作：项目、素材、混剪、渲染、版本比较与审片（video-project help）'],
   'video-upload': ['commands/video-upload.mjs', '原创视频投稿（阶段三；当前先到视频创作：video-project）'],
   'share-dynamic': ['commands/share-dynamic.mjs', '每日分享 → 自己的动态：转发视频卡片 + 分享额度判重 + 与四类动态至少隔 30 分钟（--bvid --text --score --reason --dry|--go）'],
   gamefeed: ['commands/gamefeed.mjs', '候选池：默认给今天轮到的游戏 + AI 二创，已排除看过的/最近 3 天推过的；--for anime / --for gaming 给动漫/游戏区'],

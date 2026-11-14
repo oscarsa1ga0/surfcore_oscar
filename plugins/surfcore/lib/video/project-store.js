@@ -17,7 +17,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-export const GENERATOR_VERSION = 'video-1.0.0';
+export const GENERATOR_VERSION = 'video-2.0.0';
 export const STORE_SCHEMA_VERSION = 1;
 
 export const EDIT_STATES = ['idea', 'editing', 'preview', 'ready', 'shelved'];
@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS revisions (
   reviewDecision TEXT,
   createdAt INTEGER NOT NULL,
   PRIMARY KEY (projectId, revision)
+);
+CREATE TABLE IF NOT EXISTS video_review_notes (
+  projectId TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  PRIMARY KEY (projectId, revision),
+  FOREIGN KEY (projectId, revision) REFERENCES revisions(projectId, revision)
 );
 CREATE TABLE IF NOT EXISTS artifacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,6 +224,10 @@ export function openVideoStore(root) {
     'INSERT INTO schema_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run('schemaVersion', String(STORE_SCHEMA_VERSION));
 
+  const reviewNote = db.prepare('SELECT reason FROM video_review_notes WHERE projectId = ? AND revision = ?');
+  const saveReviewNote = db.prepare(`INSERT INTO video_review_notes (projectId, revision, reason) VALUES (?, ?, ?)
+    ON CONFLICT (projectId, revision) DO UPDATE SET reason = excluded.reason`);
+  const updateAssetGrant = db.prepare('UPDATE assets SET name = ?, ext = ?, bytes = ?, relativePath = ?, authorization = ? WHERE id = ?');
   const st = {
     insertProject: db.prepare(
       'INSERT INTO projects(id, characterId, revision, editState, title, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?)',
@@ -266,14 +277,14 @@ export function openVideoStore(root) {
       `SELECT * FROM tasks WHERE state IN ('queued','retryable') AND nextAt <= ? ORDER BY nextAt ASC LIMIT 8`,
     ),
     countLeased: db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE state = \'running\' AND leaseOwner = ? AND leaseUntil > ?'),
-    heartbeatTask: db.prepare('UPDATE tasks SET leaseUntil = ?, updatedAt = ? WHERE jobId = ? AND fence = ?'),
+    heartbeatTask: db.prepare("UPDATE tasks SET leaseUntil = ?, updatedAt = ? WHERE jobId = ? AND fence = ? AND state = 'running'"),
     completeTask: db.prepare(
       `UPDATE tasks SET state = 'succeeded', stage = 'done', errorCode = NULL, error = NULL, hint = NULL, updatedAt = ?
-       WHERE jobId = ? AND fence = ?`,
+       WHERE jobId = ? AND fence = ? AND state = 'running'`,
     ),
     failTask: db.prepare(
       `UPDATE tasks SET state = ?, stage = ?, errorCode = ?, error = ?, hint = ?, nextAt = ?, updatedAt = ?
-       WHERE jobId = ? AND fence = ?`,
+       WHERE jobId = ? AND fence = ? AND state = 'running'`,
     ),
     cancelTasks: db.prepare(
       `UPDATE tasks SET state = 'cancelled', updatedAt = ? WHERE projectId = ? AND revision = ? AND state IN ('queued','retryable','running')`,
@@ -282,7 +293,7 @@ export function openVideoStore(root) {
       `SELECT * FROM tasks WHERE state = 'running' OR (state = 'queued' AND leaseUntil IS NOT NULL AND leaseUntil < ?) ORDER BY updatedAt ASC`,
     ),
     recoverSet: db.prepare(
-      `UPDATE tasks SET state = 'retryable', attempts = attempts + 1, nextAt = ?, leaseOwner = NULL, leaseUntil = NULL, updatedAt = ?
+      `UPDATE tasks SET state = 'retryable', fence = fence + 1, attempts = attempts + 1, nextAt = ?, leaseOwner = NULL, leaseUntil = NULL, updatedAt = ?
        WHERE id = ?`,
     ),
     insertAsset: db.prepare(
@@ -331,11 +342,17 @@ export function openVideoStore(root) {
     },
 
     // ── 项目 ──────────────────────────────────────────────
-    createProject({ characterId, title = '' }) {
-      const id = newId('p');
-      const t = now();
-      st.insertProject.run(id, String(characterId), 0, 'idea', String(title).slice(0, 120), t, t);
-      return { id, revision: 0, editState: 'idea', title: String(title).slice(0, 120) };
+    createProject({ characterId, title = '', maxProjects = Infinity }) {
+      return withTx(() => {
+        const activeCount = db.prepare("SELECT COUNT(*) AS n FROM projects WHERE editState != 'shelved'").get().n;
+        if (activeCount >= maxProjects) {
+          throw fail('VIDEO_PROJECT_LIMIT', `已有 ${activeCount} 个活动项目`, '搁置暂时不做的项目或提高活动项目上限');
+        }
+        const id = newId('p');
+        const t = now();
+        st.insertProject.run(id, String(characterId), 0, 'idea', String(title).slice(0, 120), t, t);
+        return { id, revision: 0, editState: 'idea', title: String(title).slice(0, 120) };
+      });
     },
 
     getProject(id) {
@@ -345,6 +362,7 @@ export function openVideoStore(root) {
         revision: Number(r.revision),
         planHash: r.planHash,
         reviewDecision: r.reviewDecision,
+        reviewReason: reviewNote.get(id, r.revision)?.reason ?? '',
         createdAt: Number(r.createdAt),
         artifacts: st.listArtifacts.all(id, r.revision).map(artifactView),
       }));
@@ -408,7 +426,7 @@ export function openVideoStore(root) {
         }
         const next = expected + 1;
         st.insertRevision.run(id, next, planText, planHash, '{}', null, now());
-        st.updateProjectCas.run(next, 'editing', project.title, now(), id, expected);
+        st.updateProjectCas.run(next, 'editing', String(plan.title || project.title).slice(0, 120), now(), id, expected);
         return { ok: true, id, revision: next, planHash };
       });
     },
@@ -419,12 +437,36 @@ export function openVideoStore(root) {
       return { plan: JSON.parse(row.plan), planHash: row.planHash, reviewDecision: row.reviewDecision };
     },
 
-    setReviewDecision(id, revision, decision) {
+    setReviewDecision(id, revision, decision, reason = '') {
+      const state = { keep: 'ready', revise: 'editing', shelve: 'shelved' };
       if (!['keep', 'revise', 'shelve'].includes(decision)) {
-        throw fail('VIDEO_BAD_REVIEW', `review 决策只能是 keep/revise/shelve：${decision}`);
+        throw fail('VIDEO_BAD_REVIEW', '审片请选择 keep/revise/shelve');
       }
-      st.setReview.run(decision, id, Number(revision));
-      return { ok: true, id, revision: Number(revision), reviewDecision: decision };
+      const rev = Number(revision);
+      return withTx(() => {
+        const project = st.getProject.get(id);
+        if (!project || project.revision !== rev) {
+          throw fail('VIDEO_REVISION_CONFLICT', '只能审片当前版本', '刷新项目后再审片');
+        }
+        const rendered = rev > 0 && st.getArtifact.get(id, rev, 'preview');
+        if (decision !== 'shelve' && (!rendered || st.findActiveTask.get(id, rev, 'render'))) {
+          throw fail('VIDEO_REVIEW_NOT_READY', '当前版本还没有可审的稳定预览', '等渲染完成后打开预览');
+        }
+        if (rev > 0) {
+          st.setReview.run(decision, id, rev);
+          saveReviewNote.run(id, rev, String(reason ?? '').trim().slice(0, 600));
+        }
+        const cancelled = decision === 'shelve' ? st.cancelTasks.run(now(), id, rev).changes : 0;
+        st.setProjectState.run(state[decision], now(), id);
+        return { ok: true, id, revision: rev, reviewDecision: decision, editState: state[decision], cancelled };
+      });
+    },
+
+    markPreview(id, revision) {
+      db.prepare(`UPDATE projects SET editState = 'preview', updatedAt = ?
+        WHERE id = ? AND revision = ? AND editState IN ('idea', 'editing') AND NOT EXISTS (
+          SELECT 1 FROM revisions WHERE projectId = ? AND revision = ? AND reviewDecision IS NOT NULL
+        )`).run(now(), id, revision, id, revision);
     },
 
     // ── 工件 ──────────────────────────────────────────────
@@ -444,6 +486,12 @@ export function openVideoStore(root) {
         now(),
       );
       return { ok: true, kind };
+    },
+
+    recordArtifacts(id, revision, artifacts) {
+      return withTx(() => {
+        for (const artifact of artifacts) this.recordArtifact(id, revision, artifact);
+      });
     },
 
     listArtifacts(id, revision) {
@@ -535,7 +583,7 @@ export function openVideoStore(root) {
     setTaskProgress(jobId, progress) {
       const row = st.getTask.get(jobId);
       if (!row) return;
-      db.prepare('UPDATE tasks SET progress = ?, updatedAt = ? WHERE jobId = ?')
+      db.prepare("UPDATE tasks SET progress = ?, updatedAt = ? WHERE jobId = ? AND state = 'running'")
         .run(JSON.stringify(progress ?? {}), now(), jobId);
     },
 
@@ -557,7 +605,8 @@ export function openVideoStore(root) {
         if (active) return { ok: true, jobId: active.jobId, retried: 0, duplicate: true, task: taskToView(active) };
         const retried = db.prepare(
           `UPDATE tasks SET state = 'queued', nextAt = ?, errorCode = NULL, error = NULL, hint = NULL, updatedAt = ?
-           WHERE projectId = ? AND revision = ? AND kind = ? AND state IN ('retryable','blocked','cancelled')`,
+           WHERE id = (SELECT id FROM tasks WHERE projectId = ? AND revision = ? AND kind = ?
+             AND state IN ('blocked','cancelled') ORDER BY updatedAt DESC, id DESC LIMIT 1)`,
         ).run(now(), now(), projectId, rev, kind);
         if (retried.changes > 0) {
           const row = st.findActiveTask.get(projectId, rev, kind);
@@ -596,6 +645,27 @@ export function openVideoStore(root) {
         revocable ? 1 : 0, now(),
       );
       return assetView(st.getAssetById.get(assetId));
+    },
+
+    registerAuthorizedAsset(record) {
+      return withTx(() => {
+        const existing = st.getAssetBySha.get(record.sha256);
+        if (existing && existing.kind !== record.kind) throw fail('VIDEO_ASSET_KIND_CONFLICT', '同一文件已登记为另一类型');
+        if (!existing) return { asset: this.registerAsset(record), duplicate: false };
+        updateAssetGrant.run(record.name, record.ext, record.bytes, record.relativePath, JSON.stringify(record.authorization), existing.id);
+        return { asset: this.getAsset(existing.id), duplicate: true };
+      });
+    },
+
+    revokeAsset(id) {
+      return withTx(() => {
+        const asset = this.getAsset(id);
+        if (!asset) throw fail('VIDEO_ASSET_NOT_FOUND', '素材不存在', '刷新素材库');
+        if (!asset.revocable) throw fail('VIDEO_ASSET_LOCKED', '该素材不可撤销');
+        const grant = { ...asset.authorization, revokedAt: asset.authorization.revokedAt ?? now() };
+        updateAssetGrant.run(asset.name, asset.ext, asset.bytes, asset.relativePath, JSON.stringify(grant), id);
+        return { ok: true, asset: this.getAsset(id) };
+      });
     },
 
     getAsset(id) {

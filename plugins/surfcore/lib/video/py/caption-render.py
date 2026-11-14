@@ -86,39 +86,43 @@ def find_font(min_glyph_ratio=0.95):
 
 def wrap_lines(draw, font, text, max_width, max_lines):
     """按字符换行；放不下就逐级缩小字号（不低于 min_size）；仍放不下截断加省略号。"""
-    from PIL import ImageFont
     size = font.size
     while size >= 24:
         f = load_font(font.path, size) or font
         lines = []
         line = ""
+        consumed = 0
         for ch in text:
             trial = line + ch
             if draw.textlength(trial, font=f) <= max_width:
                 line = trial
+                consumed += 1
             else:
                 if line:
                     lines.append(line)
-                line = ch
                 if len(lines) >= max_lines:
                     break
+                line = ch
+                consumed += 1
         if line and len(lines) < max_lines:
             lines.append(line)
-        if len(lines) <= max_lines:
-            longest = max((draw.textlength(l, font=f) for l in lines), default=0)
-            if longest <= max_width:
-                return lines, f
+        if consumed == len(text) and all(draw.textlength(row, font=f) <= max_width for row in lines):
+            return lines, f
         size -= 6
-    # 最小字号仍放不下：硬截断
+
+    # 截断时按实测像素留出省略号位置，比例字体的字宽各不相同。
     f = load_font(font.path, 24) or font
-    lines = []
-    for i in range(max_lines):
-        budget = int(max_width / 24)
-        if i == max_lines - 1 and len(text) > (max_lines * budget):
-            lines.append(text[i * budget:(i + 1) * budget - 1] + "…")
-            break
-        lines.append(text[i * budget:(i + 1) * budget])
-    return [l for l in lines if l], f
+    lines = [""]
+    for ch in text:
+        if draw.textlength(lines[-1] + ch, font=f) > max_width:
+            if len(lines) >= max_lines:
+                while lines[-1] and draw.textlength(lines[-1] + "…", font=f) > max_width:
+                    lines[-1] = lines[-1][:-1]
+                lines[-1] += "…"
+                break
+            lines.append("")
+        lines[-1] += ch
+    return [row for row in lines if row], f
 
 
 def cmd_probe(args=None):
@@ -222,7 +226,7 @@ def cmd_text(args):
     missing = [ch for ch in text if not ch.isspace() and used_font.getmask(ch).getbbox() is None]
     print(json.dumps({
         "ok": True, "file": args["--out"], "lines": lines,
-        "fontSize": used_font.size, "fitted": "".join(lines).replace("…", "") == text,
+        "fontSize": used_font.size, "fitted": "".join(lines) == text,
         "missingGlyphs": missing[:20],
     }, ensure_ascii=False))
 

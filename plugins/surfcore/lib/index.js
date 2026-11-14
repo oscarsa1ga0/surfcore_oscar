@@ -241,16 +241,22 @@ export function apply(ctx) {
   let videoWorker = null;
   let videoStore = null;
   let videoRoot = null;
+  let closingVideoWorker = null;
   let videoStatus = { running: false, enabled: false, storeError: null };
   const videoApi = createVideoApi({
     storeFactory: () => {
       const { root, character } = requireVideoRoot();
       if (videoStore && videoRoot === root) return { store: videoStore, root, character };
-      return { store: openVideoStore(root), root, character };
+      stopVideoWorker('switch-role');
+      closeVideoStore();
+      ensureVideoDirs(root);
+      videoStore = openVideoStore(root);
+      videoRoot = root;
+      return { store: videoStore, root, character };
     },
     log: (message) => pluginLog(message),
   });
-  setVideoConfigReader(() => readBiliConfig().config?.video?.enabled === true);
+  setVideoConfigReader(() => readBiliConfig().config?.video ?? {});
 
   // ── 每日 token 额度 / 用量采集（2026-10-23 用户要求）────────────────────
   // 插件是唯一能同时看到 QQ、B站、黑话学习会话的地方：用 session/event 实时累计，
@@ -540,13 +546,19 @@ export function apply(ctx) {
       maxTotalMs: (Number(v.maxDurationSec) > 0 ? Number(v.maxDurationSec) : 90) * 1000,
       maxScenes: Number(v.maxScenes) > 0 ? Number(v.maxScenes) : 12,
       maxOutputBytes: (Number(v.maxOutputMB) > 0 ? Number(v.maxOutputMB) : 100) * 1024 * 1024,
+      videoDirMaxBytes: v.videoDirMaxMB * 1024 * 1024,
+      dailyTtsChars: v.dailyTtsChars,
+      dailyRenderSeconds: v.dailyRenderSeconds,
       renderTimeoutMs: Number(v.renderTimeoutMs) > 0 ? Number(v.renderTimeoutMs) : 600_000,
     };
   }
 
   function stopVideoWorker(reason = '') {
     const wasRunning = Boolean(videoWorker);
-    try { videoWorker?.stop(); } catch (error) {
+    try {
+      if (videoWorker) closingVideoWorker = videoWorker;
+      videoWorker?.stop();
+    } catch (error) {
       pluginLog('[video] 执行器停止失败：', String(error?.message ?? error));
     }
     videoWorker = null;
@@ -555,9 +567,13 @@ export function apply(ctx) {
   }
 
   function closeVideoStore() {
-    try { videoStore?.close(); } catch {}
+    const closingStore = videoStore;
+    const closingWorker = closingVideoWorker;
+    closingVideoWorker = null;
     videoStore = null;
     videoRoot = null;
+    if (closingWorker) void closingWorker.drain().finally(() => closingStore?.close());
+    else closingStore?.close();
   }
 
   function ensureVideoWorker(reason = '') {

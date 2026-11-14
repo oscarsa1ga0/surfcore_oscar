@@ -1,5 +1,5 @@
 /**
- * 渲染编排（阶段一）：把一份已校验的计划变成可试听的 MP4。
+ * 渲染编排：把一份已校验的计划变成可试听的 MP4。
  *
  * 阶段顺序：plan → tts → captions → segments → final → cover → preview → qa
  *   · 所有子进程用参数数组 spawn，不经过 shell；滤镜表达式只由
@@ -15,35 +15,24 @@ import crypto from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { ffmpegPath } from '../../tools/lib/ffmpeg.mjs';
 import { GENERATOR_VERSION, sha256Of } from './project-store.js';
-import { computeTimeline, planLines, FPS, PROFILE, frameAlign } from './plan.js';
-import { resolveAssetFile, runPy } from './assets.js';
+import { computeTimeline, planLines, FPS, PROFILE, validatePlan } from './plan.js';
+import { validatePlanAssets, runPy } from './assets.js';
+import { assertVideoDiskBudget, reserveDailyUsage } from './budget.js';
+import { buildAudioMix, clipAudioFilter, resolveFfprobe, LOCAL_MEDIA_FORMATS } from './media.js';
+import { assertOutboundIdentitySafe } from '../../tools/lib/outbound-guard.mjs';
 import { synthesizeLines, synthesizeLinesWith, voiceFingerprint } from './voice.js';
-import { revisionDirFor, tmpDirFor } from './paths.js';
+import { projectDirFor, revisionDirFor, tmpDirFor } from './paths.js';
 
 const NEUTRAL_BG = '0x101418';
 
-export function resolveFfprobe() {
-  const ffmpeg = ffmpegPath();
-  if (!ffmpeg) return null;
-  const candidate = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-  if (fs.existsSync(candidate)) return candidate;
-  return null;
-}
+export { resolveFfprobe } from './media.js';
 
 function execFileP(cmd, args, { timeoutMs = 300_000, signal } = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs, signal }, (error, stdout, stderr) => {
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-      } else {
-        resolve({ stdout, stderr });
-      }
+    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs, signal }, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
     });
-    if (signal) {
-      signal.addEventListener('abort', () => { try { child.kill('SIGKILL'); } catch {} }, { once: true });
-    }
   });
 }
 
@@ -108,36 +97,66 @@ function motionFilter(motion, frames) {
  * @returns {Promise<{ok:boolean, summary:object, artifacts:Array}>}
  */
 export async function renderRevision(deps) {
+  const tmpDir = path.join(tmpDirFor(deps.root, deps.projectId, deps.revision), crypto.randomUUID());
+  try {
+    return await renderInScratch(deps, tmpDir);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+async function renderInScratch(deps, tmpDir) {
   const {
     store, root, projectId, revision,
     voiceSettings = null, synth = null,
-    limits = {}, onProgress = () => {}, abortSignal = null, log = () => {},
+    limits = {}, onProgress = () => {}, abortSignal = null, canCommit = () => true, log = () => {},
   } = deps;
   const revDir = revisionDirFor(root, projectId, revision);
-  const tmpDir = tmpDirFor(root, projectId, revision);
-  fs.mkdirSync(revDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
   const report = (stage, pct, detail) => onProgress({ stage, pct, detail });
 
   const gotPlan = store.getPlan(projectId, revision);
   if (!gotPlan) throw stageError('VIDEO_REVISION_MISSING', `版本不存在：${projectId}@${revision}`);
   const plan = gotPlan.plan;
+  const validation = validatePlan(plan, { limits });
+  if (!validation.ok) throw stageError('VIDEO_PLAN_INVALID', validation.errors[0].message, validation.errors[0].path);
+  const sources = validatePlanAssets(store, root, plan);
+  const textFields = [plan.title, plan.cover?.headline, plan.submission?.description, ...(plan.submission?.tags ?? [])];
+  for (const scene of plan.scenes) {
+    textFields.push(scene.titleCard, ...((scene.lines ?? []).flatMap((line) => [line.speech, line.caption])));
+  }
+  for (const { asset } of sources.values()) {
+    textFields.push(asset.authorization?.credit, asset.authorization?.cardText);
+  }
+  try {
+    assertOutboundIdentitySafe(textFields.filter(Boolean).join('\n'), { surface: 'B站 视频草稿' });
+  } catch {
+    throw stageError('VIDEO_PRIVATE_CONTENT', '草稿包含账号或私人身份信息', '清理旁白、字幕、标题、简介或素材署名后重试');
+  }
+  const cacheDir = path.join(projectDirFor(root, projectId), 'render-cache');
+  const checkDisk = () => assertVideoDiskBudget(root, limits.videoDirMaxBytes);
+  checkDisk();
 
   // ── 1. 配音 ──────────────────────────────────────────────
   report('tts', 5, '解析计划旁白');
   const lines = planLines(plan);
-  const ttsDir = path.join(revDir, 'tts');
+  const ttsDir = path.join(cacheDir, 'tts');
   let lineResults;
   let fingerprint;
-  if (synth) {
+  if (!lines.length) {
+    fingerprint = 'no-narration';
+    lineResults = {};
+  } else if (synth) {
     fingerprint = 'fixture-synth';
     lineResults = await synthesizeLinesWith(synth, lines, ttsDir, { onProgress: (done, total, lineId) => report('tts', 5 + Math.round((done / Math.max(1, total)) * 25), `合成旁白 ${done}/${total}`), abortSignal });
   } else {
     if (!voiceSettings) throw stageError('VIDEO_NO_VOICE', '缺少音色配置');
     fingerprint = voiceFingerprint(voiceSettings);
-    lineResults = await synthesizeLines(lines, voiceSettings, ttsDir, { onProgress: (done, total, lineId) => report('tts', 5 + Math.round((done / Math.max(1, total)) * 25), `合成旁白 ${done}/${total}`), abortSignal });
+    lineResults = await synthesizeLines(lines, voiceSettings, ttsDir, {
+      charge: (units) => reserveDailyUsage(store.db, 'tts', units, limits.dailyTtsChars),
+      onProgress: (done, total, lineId) => report('tts', 5 + Math.round((done / Math.max(1, total)) * 25), `合成旁白 ${done}/${total}`), abortSignal });
   }
-  const voiceDurations = {};
+  const voiceDurations = Object.create(null);
   for (const [lineId, result] of Object.entries(lineResults)) voiceDurations[lineId] = result.durationMs;
 
   // ── 2. 时间轴 ────────────────────────────────────────────
@@ -146,6 +165,7 @@ export async function renderRevision(deps) {
     const first = timeline.errors[0];
     throw stageError(first?.code ?? 'VIDEO_TIMELINE', first?.message ?? '时间轴校验失败', first?.path ? `改计划或旁白后再渲染（位置 ${first.path}）` : '改计划或旁白后再渲染');
   }
+  checkDisk();
   report('tts', 30, `时间轴 ${(timeline.totalMs / 1000).toFixed(1)}s / ${timeline.scenes.length} 镜头`);
 
   const manifest = {
@@ -158,37 +178,44 @@ export async function renderRevision(deps) {
     scenes: timeline.scenes.map((s) => ({ id: s.id, startMs: s.startMs, durationMs: s.durationMs, mode: s.mode, assetId: s.assetId })),
     lineDurations: voiceDurations,
     captionCount: timeline.captions.length,
+    assets: [...sources.values()].map(({ asset }) => ({
+      id: asset.id, kind: asset.kind, sha256: asset.sha256, source: asset.source,
+      authorization: asset.authorization,
+    })),
     limits,
   };
   fs.writeFileSync(path.join(tmpDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
   // ── 3. 字幕贴图 + SRT ────────────────────────────────────
   report('captions', 32, '生成字幕贴图');
-  const captionDir = path.join(revDir, 'captions');
+  const captionDir = path.join(cacheDir, 'captions');
   fs.mkdirSync(captionDir, { recursive: true });
   const fontProbe = runPy(['probe']);
   if (!fontProbe?.ok || !fontProbe?.font) {
     throw stageError('VIDEO_NO_FONT', '找不到可用中文字体', '安装 PingFang / Noto Sans CJK 后重试');
   }
-  const captionFiles = [];
+  const layoutWarnings = [];
   for (const [index, caption] of timeline.captions.entries()) {
     if (abortSignal?.aborted) throw stageError('VIDEO_CANCELLED', '渲染被取消');
-    const key = crypto.createHash('sha1').update(JSON.stringify([caption.text, fontProbe.font, GENERATOR_VERSION])).digest('hex').slice(0, 16);
+    const key = sha256Of(JSON.stringify([caption.text, fontProbe.font, GENERATOR_VERSION])).slice(0, 24);
     const file = path.join(captionDir, `cap-${key}.png`);
-    if (!fs.existsSync(file)) {
+    if (!fs.existsSync(file) || !fs.existsSync(`${file}.json`)) {
       const part = `${file}.part-${process.pid}`;
       const result = runPy(['text', '--out', part, '--text', caption.text, '--font', fontProbe.font, '--font-size', '52', '--max-lines', '2', '--align', 'bottom']);
       if (!result?.ok) {
         try { fs.unlinkSync(part); } catch {}
         throw stageError('VIDEO_CAPTION_FAILED', `字幕生成失败：${result?.error ?? '未知'}`);
       }
-      if ((result.missingGlyphs ?? []).length) {
-        log(`[video] 字幕含缺失字形（可能显示为方框）：${result.missingGlyphs.join('')}`);
-      }
       fs.renameSync(part, file);
+      fs.writeFileSync(`${file}.json`, JSON.stringify({ fitted: result.fitted, missingGlyphs: result.missingGlyphs }));
     }
-    caption.file = file; // 回写路径：overlay 与分镜签名都从这里取
-    captionFiles.push({ ...caption, file });
+    const layout = JSON.parse(fs.readFileSync(`${file}.json`, 'utf8'));
+    if (!layout.fitted || layout.missingGlyphs?.length || caption.endMs - caption.startMs < 350) {
+      layoutWarnings.push({
+        name: 'caption-layout', detail: `${caption.sceneId} · ${caption.startMs}ms：${!layout.fitted ? '字幕过长或被截断' : layout.missingGlyphs?.length ? '字体缺字' : '字幕显示不足 350ms'}`,
+      });
+    }
+    caption.file = file;
     if (index % 8 === 0) report('captions', 32 + Math.round(((index + 1) / Math.max(1, timeline.captions.length)) * 10), `字幕 ${index + 1}/${timeline.captions.length}`);
   }
   const srtPath = path.join(tmpDir, 'captions.srt');
@@ -197,7 +224,7 @@ export async function renderRevision(deps) {
   const titleCards = {};
   for (const scene of timeline.scenes) {
     if (!scene.titleCard) continue;
-    const key = crypto.createHash('sha1').update(JSON.stringify([scene.titleCard.text, fontProbe.font, GENERATOR_VERSION])).digest('hex').slice(0, 16);
+    const key = sha256Of(JSON.stringify([scene.titleCard.text, fontProbe.font, GENERATOR_VERSION])).slice(0, 24);
     const file = path.join(captionDir, `title-${key}.png`);
     if (!fs.existsSync(file)) {
       const part = `${file}.part-${process.pid}`;
@@ -216,62 +243,80 @@ export async function renderRevision(deps) {
   if (!ffmpeg) throw stageError('VIDEO_NO_FFMPEG', '找不到 ffmpeg', 'brew install ffmpeg 或设置 FFMPEG 环境变量');
   const ffprobe = resolveFfprobe();
   if (!ffprobe) throw stageError('VIDEO_NO_FFPROBE', '找不到 ffprobe（和 ffmpeg 同目录）', 'brew install ffmpeg 后重试');
-  const segDir = path.join(revDir, 'segments');
+  const segDir = path.join(cacheDir, 'segments');
   fs.mkdirSync(segDir, { recursive: true });
-  const sceneAudioDir = path.join(revDir, 'audio');
+  const sceneAudioDir = path.join(cacheDir, 'audio');
   fs.mkdirSync(sceneAudioDir, { recursive: true });
   const segments = [];
+  let reservedRender = false;
+  const reserveRender = () => {
+    if (reservedRender) return;
+    reserveDailyUsage(store.db, 'render', Math.ceil(timeline.totalMs / 1000), limits.dailyRenderSeconds);
+    reservedRender = true;
+  };
   for (const [index, scene] of timeline.scenes.entries()) {
     if (abortSignal?.aborted) throw stageError('VIDEO_CANCELLED', '渲染被取消');
     report('render', 42 + Math.round((index / timeline.scenes.length) * 40), `镜头 ${scene.id}（${index + 1}/${timeline.scenes.length}）`);
-    const { file: assetFile } = resolveAssetFile(store, root, scene.assetId);
+    const { asset, file: assetFile } = sources.get(scene.assetId);
+    const clip = asset.kind === 'clip';
     const frames = Math.round((scene.durationMs / 1000) * FPS);
     const durSec = (scene.durationMs / 1000).toFixed(3);
 
     // 内容寻址的分镜签名：素材 hash + 构图/动效 + 字幕贴图 hash + 字幕时间窗
     //（时间窗变了必须重编码，否则缓存复用的片段还带旧 overlay 时间）
-    const sceneCaptions = timeline.captions.filter((c) => c.startMs >= scene.startMs && c.startMs < scene.endMs);
-    const captionHashes = sceneCaptions.map((c) => sha256File(c.file)).join(',');
-    const captionTiming = sceneCaptions.map((c) => [c.startMs - scene.startMs, c.endMs - scene.startMs]);
+    const sceneCaptions = timeline.captions.filter((c) => c.sceneId === scene.id);
+    const captionKeys = sceneCaptions.map((c) => [path.basename(c.file), c.startMs - scene.startMs, c.endMs - scene.startMs]);
     const signature = sha256Of(JSON.stringify([
-      sha256File(assetFile), scene.fit, scene.motion, scene.durationMs, captionHashes, captionTiming,
+      asset.sha256, scene.fit, scene.motion, scene.durationMs, captionKeys,
+      scene.inMs, scene.outMs, scene.fadeInMs, scene.fadeOutMs,
       scene.titleCard ? sha256File(titleCards[scene.id]) : null, GENERATOR_VERSION,
     ])).slice(0, 24);
-    const segFile = path.join(segDir, `seg-${scene.id}-${signature}.mp4`);
+    const segFile = path.join(segDir, `seg-${signature}.mp4`);
+    const reusedVideo = await isUsableMedia(ffprobe, segFile);
 
-    if (!(await isUsableMedia(ffprobe, segFile))) {
+    if (!reusedVideo) {
+      reserveRender();
       const overlayDefs = [];
-      for (const caption of timeline.captions.filter((c) => c.startMs >= scene.startMs && c.startMs < scene.endMs)) {
+      for (const caption of sceneCaptions) {
         const start = ((caption.startMs - scene.startMs) / 1000).toFixed(3);
         const end = ((caption.endMs - scene.startMs) / 1000).toFixed(3);
         overlayDefs.push({ file: caption.file, start, end });
       }
       if (scene.titleCard) overlayDefs.push({ file: titleCards[scene.id], start: '0.000', end: durSec });
 
-      const inputs = ['-loop', '1', '-framerate', String(FPS), '-t', durSec, '-i', assetFile];
+      const clipStart = ((scene.inMs ?? 0) / 1000).toFixed(3);
+      const clipLength = (((scene.outMs ?? 0) - (scene.inMs ?? 0)) / 1000).toFixed(3);
+      const inputs = clip
+        ? ['-protocol_whitelist', 'file', '-format_whitelist', LOCAL_MEDIA_FORMATS, '-ss', clipStart, '-t', clipLength, '-i', assetFile]
+        : ['-loop', '1', '-framerate', String(FPS), '-t', durSec, '-i', assetFile];
       for (const overlay of overlayDefs) inputs.push('-loop', '1', '-t', durSec, '-i', overlay.file);
 
       const parts = [];
       const base = normalizeFilter(scene.fit);
       const motion = motionFilter(scene.motion, frames);
-      parts.push(`[0:v]${base}${motion ? `,${motion}` : ''},format=yuv420p[m0]`);
+      const clipFilter = clip ? `fps=${FPS},tpad=stop_mode=clone:stop_duration=0.067,` : '';
+      parts.push(`[0:v:0]${clipFilter}${base},setsar=1${motion ? `,${motion}` : ''},format=yuv420p[m0]`);
       overlayDefs.forEach((overlay, i) => {
         const inLabel = i + 1;
-        const outLabel = i + 1 === overlayDefs.length ? 'vout' : `m${i + 1}`;
+        const outLabel = i + 1 === overlayDefs.length ? 'overlaid' : `m${i + 1}`;
         const prev = i === 0 ? 'm0' : `m${i}`;
         parts.push(`[${inLabel}:v]format=rgba[o${inLabel}]`);
-        parts.push(`[${prev}][o${inLabel}]overlay=0:0:enable='between(t,${overlay.start},${overlay.end})'[${outLabel}]`);
+        parts.push(`[${prev}][o${inLabel}]overlay=0:0:enable='gte(t,${overlay.start})*lt(t,${overlay.end})'[${outLabel}]`);
       });
-      if (!overlayDefs.length) parts.push('[m0]copy[vout]');
+      const fades = [];
+      if (scene.fadeInMs) fades.push(`fade=t=in:st=0:d=${scene.fadeInMs / 1000}`);
+      if (scene.fadeOutMs) fades.push(`fade=t=out:st=${(scene.durationMs - scene.fadeOutMs) / 1000}:d=${scene.fadeOutMs / 1000}`);
+      parts.push(`[${overlayDefs.length ? 'overlaid' : 'm0'}]${fades.join(',') || 'null'}[vout]`);
       const filter = parts.join(';');
       const segArgs = [...inputs, '-filter_complex', filter, '-map', '[vout]', '-frames:v', String(frames), '-r', String(FPS), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-an'];
       await writeAtomic(segFile, (part) => runFfmpeg(ffmpeg, [...segArgs, '-f', 'mp4', '-y', part], { abortSignal, log }));
     }
 
     // 场景音轨：旁白拼接 + 尾静音到镜头时长
-    const audioSig = sha256Of(JSON.stringify([scene.cues.map((c) => lineResults[c.lineId]?.sha256 ?? ''), scene.durationMs])).slice(0, 24);
-    const sceneWav = path.join(sceneAudioDir, `audio-${scene.id}-${audioSig}.wav`);
-    if (!(await isUsableMedia(ffprobe, sceneWav, { minBytes: 1024 }))) {
+    const audioSig = sha256Of(JSON.stringify([scene.cues.map((c) => [lineResults[c.lineId]?.sha256 ?? '', c.startMs]), scene.durationMs])).slice(0, 24);
+    const sceneWav = path.join(sceneAudioDir, `audio-${audioSig}.wav`);
+    const reusedAudio = await isUsableMedia(ffprobe, sceneWav, { minBytes: 1024 });
+    if (!reusedAudio) {
       const cueWavs = scene.cues.map((cue) => lineResults[cue.lineId]?.file).filter(Boolean);
       await writeAtomic(sceneWav, async (part) => {
         if (cueWavs.length) {
@@ -289,7 +334,18 @@ export async function renderRevision(deps) {
         }
       });
     }
-    segments.push({ file: segFile, wav: sceneWav, scene });
+    let originalWav = null;
+    if (clip && scene.audio === 'mix') {
+      const key = sha256Of(JSON.stringify([asset.sha256, scene.inMs, scene.outMs, scene.durationMs, GENERATOR_VERSION])).slice(0, 24);
+      originalWav = path.join(sceneAudioDir, `original-${key}.wav`);
+      if (!(await isUsableMedia(ffprobe, originalWav, { minBytes: 1024 }))) {
+        await writeAtomic(originalWav, (part) => runFfmpeg(ffmpeg, [
+          '-protocol_whitelist', 'file', '-format_whitelist', LOCAL_MEDIA_FORMATS, '-i', assetFile, '-filter_complex', clipAudioFilter(0, scene, scene.durationMs, 'clipAudio'),
+          '-map', '[clipAudio]', '-c:a', 'pcm_s16le', '-f', 'wav', '-y', part,
+        ], { abortSignal, log }));
+      }
+    }
+    segments.push({ file: segFile, wav: sceneWav, originalWav, scene, reusedVideo, reusedAudio });
   }
 
   // ── 5. 合成成片 ──────────────────────────────────────────
@@ -303,19 +359,66 @@ export async function renderRevision(deps) {
     vChains.push(`[${i * 2}:v]`);
     aChains.push(`[${i * 2 + 1}:a]`);
   });
-  const finalFilter = [
+  const filter = [
     `${vChains.join('')}concat=n=${segments.length}:v=1:a=0[vout]`,
-    `${aChains.join('')}concat=n=${segments.length}:v=0:a=1[aout]`,
-  ].join(';');
-  const finalArgs = [
-    ...finalInputs,
-    '-filter_complex', finalFilter,
-    '-map', '[vout]', '-map', '[aout]',
-    '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-r', String(FPS),
-    '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
-    '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-y', finalTmp,
+    `${aChains.join('')}concat=n=${segments.length}:v=0:a=1[narration]`,
   ];
-  await runFfmpeg(ffmpeg, finalArgs, { abortSignal, log });
+  const hasOriginal = segments.some((segment) => segment.originalWav);
+  let silenceIndex = 0;
+  if (hasOriginal) {
+    const originalChains = segments.map((segment) => {
+      if (!segment.originalWav) {
+        const label = `origSilent${silenceIndex++}`;
+        filter.push(`anullsrc=r=44100:cl=stereo,atrim=end=${segment.scene.durationMs / 1000}[${label}]`);
+        return `[${label}]`;
+      }
+      const index = finalInputs.length / 2;
+      finalInputs.push('-i', segment.originalWav);
+      return `[${index}:a]`;
+    });
+    filter.push(`${originalChains.join('')}concat=n=${segments.length}:v=0:a=1[original]`);
+  }
+  const narrationTmp = path.join(tmpDir, 'narration.wav');
+  const narrationKey = sha256Of(JSON.stringify(segments.map((segment) => path.basename(segment.wav))));
+  const cachedNarration = path.join(sceneAudioDir, `narration-${narrationKey}.wav`);
+  if (lines.length && !(await isUsableMedia(ffprobe, cachedNarration, { minBytes: 1024 }))) {
+    await writeAtomic(cachedNarration, (part) => runFfmpeg(ffmpeg, [
+      ...segments.flatMap((segment) => ['-i', segment.wav]),
+      '-filter_complex', `${segments.map((_, i) => `[${i}:a]`).join('')}concat=n=${segments.length}:v=0:a=1[voice]`,
+      '-map', '[voice]', '-c:a', 'pcm_s16le', '-f', 'wav', '-y', part,
+    ], { abortSignal, log }));
+  }
+  if (lines.length) fs.linkSync(cachedNarration, narrationTmp);
+  if (abortSignal?.aborted) throw stageError('VIDEO_CANCELLED', '渲染被取消');
+  if (lines.length) {
+    const speechDuration = await execFileP(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', narrationTmp], { signal: abortSignal });
+    if (!(Math.abs(Number(speechDuration.stdout.trim()) * 1000 - timeline.totalMs) <= 100)) {
+      throw stageError('VIDEO_NARRATION_DURATION', '旁白试听的时长与成片不一致');
+    }
+  }
+  const tracks = timeline.audioTracks.map((track) => ({ ...track, file: sources.get(track.assetId).file }));
+  const mix = buildAudioMix(tracks, finalInputs.length / 2, timeline.totalMs, { spoken: Boolean(lines.length), original: hasOriginal });
+  const mediaKey = sha256Of(JSON.stringify([
+    GENERATOR_VERSION, segments.map((segment) => [segment.file, segment.wav, segment.originalWav]).map((files) => files.map((file) => file && path.basename(file))),
+    tracks.map(({ file, ...track }) => [sources.get(track.assetId).asset.sha256, track]),
+  ]));
+  const renderedDir = path.join(cacheDir, 'final');
+  fs.mkdirSync(renderedDir, { recursive: true });
+  const cachedFinal = path.join(renderedDir, `${mediaKey}.mp4`);
+  const reusedFinal = await isUsableMedia(ffprobe, cachedFinal);
+  if (!reusedFinal) {
+    reserveRender();
+    checkDisk();
+    const finalArgs = [
+      ...finalInputs, ...mix.inputs, '-filter_complex', [...filter, ...mix.filters].join(';'),
+      '-map', '[vout]', '-map', '[aout]',
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-r', String(FPS),
+      '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+      '-movflags', '+faststart', '-pix_fmt', 'yuv420p',
+    ];
+    await writeAtomic(cachedFinal, (part) => runFfmpeg(ffmpeg, [...finalArgs, '-f', 'mp4', '-y', part], { abortSignal, log }));
+  }
+  fs.linkSync(cachedFinal, finalTmp);
 
   // ── 6. 封面 / 预览 / 质检 ─────────────────────────────────
   report('qa', 92, '封面与预览');
@@ -331,20 +434,33 @@ export async function renderRevision(deps) {
     await runFfmpeg(ffmpeg, ['-i', finalTmp, '-frames:v', '1', '-y', coverTmp], { abortSignal, log });
   }
 
-  const qa = await runQa(ffmpeg, ffprobe, finalTmp, timeline.totalMs, limits);
+  const hasSound = Boolean(lines.length || tracks.length || hasOriginal);
+  const qa = await runQa(ffmpeg, ffprobe, finalTmp, timeline.totalMs, limits, { hasSound, signal: abortSignal });
+  qa.warnings.push(...layoutWarnings);
+  if (lines.length) {
+    const narrationQa = await audioLevel(ffmpeg, narrationTmp, abortSignal);
+    qa.checks.push({ name: 'narration', pass: narrationQa.peak > -45, detail: `旁白峰值 ${narrationQa.peak} dBFS` });
+    qa.ok = qa.checks.every((check) => check.pass);
+  }
 
+  if (!qa.ok) {
+    throw stageError(qa.code ?? 'VIDEO_QA_FAILED', `技术质检未通过：${qa.checks.filter((c) => !c.pass).map((c) => `${c.name}: ${c.detail}`).join('；')}`, '按提示修计划/素材后重新渲染');
+  }
   const gridTmp = path.join(tmpDir, 'preview-grid.png');
   const interval = Math.max(1, Math.ceil((timeline.totalMs / 1000) / 9));
   await runFfmpeg(ffmpeg, ['-i', finalTmp, '-vf', `fps=1/${interval},scale=320:180,tile=3x3`, '-frames:v', '1', '-y', gridTmp], { abortSignal, log });
 
-  const framesDir = path.join(revDir, 'frames');
+  const framesDir = path.join(tmpDir, 'frames');
   fs.mkdirSync(framesDir, { recursive: true });
   const sceneFrames = [];
   for (const scene of timeline.scenes) {
     const t = ((scene.startMs + Math.min(Math.floor(scene.durationMs / 2), scene.durationMs - 40)) / 1000).toFixed(3);
     const frameFile = path.join(framesDir, `${scene.id}.png`);
     await runFfmpeg(ffmpeg, ['-ss', t, '-i', finalTmp, '-frames:v', '1', '-y', frameFile], { abortSignal, log });
-    sceneFrames.push({ sceneId: scene.id, offsetMs: Math.min(Math.floor(scene.durationMs / 2), scene.durationMs - 40), file: path.relative(root, frameFile) });
+    const offsetMs = Math.min(Math.floor(scene.durationMs / 2), scene.durationMs - 40);
+    sceneFrames.push({ sceneId: scene.id, offsetMs, atMs: scene.startMs + offsetMs,
+      file: path.relative(root, path.join(revDir, 'frames', `${scene.id}.png`)) });
+
   }
   const previewJson = {
     generatorVersion: GENERATOR_VERSION,
@@ -356,24 +472,27 @@ export async function renderRevision(deps) {
       cues: s.cues.map((c) => ({ lineId: c.lineId, startMs: s.startMs + c.startMs, endMs: s.startMs + c.endMs, text: c.text })),
       titleCard: s.titleCard?.text ?? null,
     })),
-    captions: timeline.captions,
+    narration: lines.map((line) => ({ ...line, durationMs: voiceDurations[line.lineId] })),
+    audioTracks: timeline.audioTracks,
+    captions: timeline.captions.map(({ file, ...cue }) => cue),
     frames: sceneFrames,
   };
   fs.writeFileSync(path.join(tmpDir, 'preview.json'), JSON.stringify(previewJson, null, 2));
 
-  // 质检不通过：成片留在 tmp，不进入版本目录（方案：校验成功后原子重命名）
-  if (!qa.ok) {
-    throw stageError(qa.code ?? 'VIDEO_QA_FAILED', `技术质检未通过：${qa.checks.filter((c) => !c.pass).map((c) => `${c.name}: ${c.detail}`).join('；')}`, '按提示修计划/素材后重新渲染');
-  }
-
   // ── 7. 原子落盘 ──────────────────────────────────────────
+  if (abortSignal?.aborted) throw stageError('VIDEO_CANCELLED', '渲染任务已取消');
+  if (!canCommit()) throw stageError('VIDEO_CANCELLED', '渲染任务已被取消或接管');
+  validatePlanAssets(store, root, plan);
+  checkDisk();
+  fs.mkdirSync(path.join(revDir, 'frames'), { recursive: true });
+  const records = [];
   const commit = (name, kind, extra = {}) => {
     const tmpFile = path.join(tmpDir, name);
     const finalFile = path.join(revDir, name);
     fs.renameSync(tmpFile, finalFile);
     const sizeBytes = fs.statSync(finalFile).size;
     const sha256 = sha256File(finalFile);
-    store.recordArtifact(projectId, revision, {
+    records.push({
       kind, sha256, relativePath: name, sizeBytes,
       generatorVersion: GENERATOR_VERSION,
       ...extra,
@@ -385,13 +504,17 @@ export async function renderRevision(deps) {
   commit('captions.srt', 'srt', { durationMs: timeline.totalMs });
   commit('cover.png', 'cover');
   commit('preview-grid.png', 'preview-grid');
-  commit('preview.json', 'preview', { meta: { scenes: timeline.scenes.length } });
-  const qaFile = path.join(revDir, 'qa.json');
-  fs.writeFileSync(qaFile, JSON.stringify(qa, null, 2));
-  store.recordArtifact(projectId, revision, {
-    kind: 'qa', sha256: sha256File(qaFile), relativePath: 'qa.json', sizeBytes: fs.statSync(qaFile).size,
-    generatorVersion: GENERATOR_VERSION, meta: { pass: qa.ok },
-  });
+  for (const frame of sceneFrames) commit(`frames/${frame.sceneId}.png`, `frame-${frame.sceneId}`, { meta: { atMs: frame.atMs } });
+  if (lines.length) commit('narration.wav', 'narration', { durationMs: timeline.totalMs });
+  fs.writeFileSync(path.join(tmpDir, 'qa.json'), JSON.stringify(qa, null, 2));
+  commit('qa.json', 'qa', { meta: { pass: qa.ok, warnings: qa.warnings } });
+  commit('preview.json', 'preview', { meta: {
+    scenes: timeline.scenes.length, timeline: { totalMs: timeline.totalMs, scenes: timeline.scenes.map((scene) => ({
+      id: scene.id, startMs: scene.startMs, endMs: scene.endMs, durationMs: scene.durationMs,
+    })) }, reusedFinal, reusedScenes: segments.filter((segment) => segment.reusedVideo).map((segment) => segment.scene.id),
+    reusedNarrationScenes: segments.filter((segment) => segment.reusedAudio).map((segment) => segment.scene.id),
+  } });
+  store.recordArtifacts(projectId, revision, records);
 
   return {
     ok: true,
@@ -411,6 +534,7 @@ async function runFfmpeg(ffmpeg, args, { abortSignal = null, log = () => {}, tim
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
+    const kill = () => { try { child.kill('SIGKILL'); } catch {} };
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch {}
       reject(stageError('VIDEO_FFMPEG_TIMEOUT', `FFmpeg 超过 ${Math.round(timeoutMs / 1000)}s 未完成`, '检查磁盘空间和输入素材，重新渲染'));
@@ -421,10 +545,12 @@ async function runFfmpeg(ffmpeg, args, { abortSignal = null, log = () => {}, tim
     });
     child.on('error', (error) => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', kill);
       reject(stageError('VIDEO_FFMPEG_SPAWN', `FFmpeg 启动失败：${error.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', kill);
       if (code === 0) {
         resolve();
       } else if (abortSignal?.aborted) {
@@ -435,7 +561,6 @@ async function runFfmpeg(ffmpeg, args, { abortSignal = null, log = () => {}, tim
       }
     });
     if (abortSignal) {
-      const kill = () => { try { child.kill('SIGKILL'); } catch {} };
       if (abortSignal.aborted) kill();
       else abortSignal.addEventListener('abort', kill, { once: true });
     }
@@ -471,11 +596,19 @@ async function isUsableMedia(ffprobe, file, { minBytes = 4096 } = {}) {
 }
 
 /** 技术质检（方案 §5.5）：ffprobe 两流/画幅/时长/体积 + 音量 + 黑帧抽样。 */
-async function runQa(ffmpeg, ffprobe, finalFile, totalMs, limits = {}) {
+async function audioLevel(ffmpeg, file, signal) {
+  const { stderr } = await execFileP(ffmpeg, ['-i', file, '-af', 'volumedetect', '-f', 'null', '-'], { timeoutMs: 120_000, signal });
+  return {
+    mean: Number(/mean_volume:\s*([-\d.]+)/.exec(stderr)?.[1] ?? -91),
+    peak: Number(/max_volume:\s*([-\d.]+)/.exec(stderr)?.[1] ?? -91),
+  };
+}
+
+async function runQa(ffmpeg, ffprobe, finalFile, totalMs, limits, { hasSound, signal }) {
   const checks = [];
   const warnings = [];
   const probeArgs = ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', finalFile];
-  const probe = JSON.parse((await execFileP(ffprobe, probeArgs)).stdout);
+  const probe = JSON.parse((await execFileP(ffprobe, probeArgs, { signal })).stdout);
   const streams = probe.streams ?? [];
   const video = streams.find((s) => s.codec_type === 'video');
   const audio = streams.find((s) => s.codec_type === 'audio');
@@ -511,25 +644,30 @@ async function runQa(ffmpeg, ffprobe, finalFile, totalMs, limits = {}) {
     detail: video?.codec_name ?? '无',
   });
 
-  // 音量与静音比例（旁白片必须有一半以上时间在发声）
-  try {
-    const vol = await execFileP(ffmpeg, ['-i', finalFile, '-af', 'volumedetect', '-f', 'null', '-'], { timeoutMs: 120_000 });
-    const mean = /mean_volume:\s*([-\d.]+)\s*dB/.exec(vol.stderr);
-    const max = /max_volume:\s*([-\d.]+)\s*dB/.exec(vol.stderr);
-    const meanDb = mean ? Number(mean[1]) : -91;
-    const maxDb = max ? Number(max[1]) : -91;
-    checks.push({
-      name: 'audible',
-      pass: maxDb > -45 && meanDb > -60,
-      detail: `mean=${meanDb.toFixed(1)}dB max=${maxDb.toFixed(1)}dB`,
-    });
-  } catch {
-    checks.push({ name: 'audible', pass: true, detail: 'volumedetect 不可用，跳过' });
+  if (hasSound) {
+    const level = await audioLevel(ffmpeg, finalFile, signal);
+    checks.push({ name: 'audible', pass: level.peak > -45 && level.mean > -60,
+      detail: `mean=${level.mean.toFixed(1)}dB max=${level.peak.toFixed(1)}dB` });
+    const measured = await execFileP(ffmpeg, ['-i', finalFile, '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json',
+      '-vn', '-f', 'null', '-'], { timeoutMs: 120_000, signal });
+    const metrics = /\{\s*"input_i"[\s\S]*?\}/.exec(measured.stderr);
+    if (metrics) {
+      const values = JSON.parse(metrics[0]);
+      const integrated = Number(values.input_i);
+      const peak = Number(values.input_tp);
+      checks.push({ name: 'true-peak', pass: Number.isFinite(peak) && peak <= -1,
+        detail: `${peak} dBTP（上限 −1 dBTP）` });
+      if (!Number.isFinite(integrated) || Math.abs(integrated + 16) > 3) {
+        warnings.push({ name: 'loudness', detail: `综合响度 ${integrated} LUFS，目标约 −16 LUFS` });
+      }
+    } else {
+      warnings.push({ name: 'loudness', detail: '未读到响度测量值' });
+    }
   }
 
   // 黑帧抽样（允许计划黑场，但整段长黑要提示）
   try {
-    const black = await execFileP(ffmpeg, ['-i', finalFile, '-vf', 'blackdetect=d=1.0:pix_th=0.10', '-an', '-f', 'null', '-'], { timeoutMs: 120_000 });
+    const black = await execFileP(ffmpeg, ['-i', finalFile, '-vf', 'blackdetect=d=1.0:pix_th=0.10', '-an', '-f', 'null', '-'], { timeoutMs: 120_000, signal });
     const count = (black.stderr.match(/black_start/g) ?? []).length;
     if (count > 0) warnings.push({ name: 'black-frames', detail: `检测到 ${count} 段 ≥1s 黑帧（如有计划黑场可忽略）` });
   } catch {}
