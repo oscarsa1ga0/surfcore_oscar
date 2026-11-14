@@ -319,7 +319,7 @@ function diaryLineForBili() {
       const visibility = entry.visibility === 'shareable' ? '可分享' : '私人'
       return `${whenOf(entry.date)}《${entry.title || '无题'}》（${entry.id}，${visibility}）`
     })
-    return `【日记】你最近写过：${parts.join('；')}。`
+    return `【日记】你最近写过：${parts.join('；')}。这些只给你自己看：要回顾就用 diary_list / diary_search 找、diary_read 读。`
   } catch {
     return ''
   }
