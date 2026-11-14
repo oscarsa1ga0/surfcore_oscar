@@ -25,6 +25,7 @@ import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { readShareState, dynamicGapWait, mergeArticleRecord } from '../lib/share-dynamic.mjs'
 import { markdownToHtml, htmlToPlain } from '../lib/article.mjs'
 import { appendBiliPost } from '../lib/bili-posts.mjs'
+import { fetchMyArticles } from '../../../../src/bili-api.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
@@ -229,6 +230,27 @@ if (draftOnly) {
   process.exit(0)
 }
 
+/** 发布后的正式 cv id 不等于草稿 aid；优先用 submit 返回的 cvid/id，失败再查自己的文章列表。 */
+async function resolvePublishedArticleId(submitData = {}) {
+  for (const key of ['cvid', 'article_id', 'id']) {
+    const value = String(submitData?.[key] ?? '').trim();
+    if (/^\d+$/.test(value)) return value;
+  }
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const list = await fetchMyArticles({ home: process.env.HOME || undefined });
+      if (list.ok) {
+        const matches = list.items
+          .filter((item) => String(item.title ?? '').trim() === title)
+          .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+        if (matches[0]?.id) return String(matches[0].id);
+      }
+    } catch {}
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return '';
+}
+
 form.set('aid', aid)
 const submit = await postForm('https://api.bilibili.com/x/article/creative/article/submit')
 if (!submit.ok || submit.out.code !== 0) {
@@ -237,21 +259,24 @@ if (!submit.ok || submit.out.code !== 0) {
   process.exit(6)
 }
 
-const url = `https://www.bilibili.com/read/cv${aid}`
+const publishedId = await resolvePublishedArticleId(submit.out?.data ?? {});
+if (!publishedId) console.log(`  ⚠️ 没能确认正式 cv id，先按草稿 aid=${aid} 记录；下次 B站记忆刷新可能会多出一条，请检查 bili-posts.jsonl`);
+const recordId = publishedId || aid;
+const url = `https://www.bilibili.com/read/cv${recordId}`
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })
 try {
   const next = mergeArticleRecord(readShareState(stateFile), {
-    date: new Date().toLocaleDateString('sv-SE'), at, atText, aid, title, chars: plain.length,
+    date: new Date().toLocaleDateString('sv-SE'), at, atText, aid: Number(recordId), title, chars: plain.length,
   })
   fs.mkdirSync(path.dirname(stateFile), { recursive: true })
   fs.writeFileSync(stateFile, JSON.stringify(next, null, 2) + '\n')
 } catch (error) {
   console.log(`  ⚠️ 写 daily-dynamic.json 失败（间隔可能不准）：${String(error?.message ?? error).slice(0, 80)}`)
 }
-recordQuota({ type: 'article', target: `cv:${aid}`, note: `专栏《${title.slice(0, 24)}》`, auto: true })
+recordQuota({ type: 'article', target: `cv:${recordId}`, note: `专栏《${title.slice(0, 24)}》`, auto: true })
 appendBiliPost(biliState('bili-posts.jsonl'), {
-  id: `article:${aid}`, type: 'article', title, text: plain, url, at,
+  id: `article:${recordId}`, type: 'article', title, text: plain, url, at,
   date: new Date().toLocaleDateString('sv-SE'), source: 'article',
 })
 try {
@@ -264,4 +289,4 @@ try {
 }
 
 console.log(`\n✓ 专栏已发布：${url}`)
-console.log(`  aid=${aid}`)
+console.log(`  aid=${aid}${publishedId && publishedId !== aid ? ` · cv=${publishedId}` : ''}`)

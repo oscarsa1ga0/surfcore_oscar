@@ -776,28 +776,41 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       if (key) ownSeen.add(key);
       return true;
     });
+    // 全部作品都保留在清单里，但只有「今天」的作品保留全文；更早的只留标题/数据/链接。
+    // 这样当天发的专栏/视频能被完整记住，又不会被旧全文长期占满 brief。
+    const today = new Date().toLocaleDateString('sv-SE');
+    const fullOwn = new Set(ownWorks.filter((e) => e.date === today).map((e) => e.bvid || e.id));
     if (ownWorks.length) {
       const statsText = (stats) => {
         if (!stats) return '暂缺（本轮没取到）';
         const n = (value) => Number(value) || 0;
         return `浏览 ${n(stats.view)} · 点赞 ${n(stats.like)} · 收藏 ${n(stats.favorite)} · 投币 ${n(stats.coin)}`;
       };
-      lines.push('我自己发过的作品（全部保留，按时间）：');
+      lines.push('我自己发过的作品（全部保留，按时间；今天的保留全文，较早只留标题/数据/链接）：');
       for (const e of ownWorks) {
         const kind = ownWorkKind(e);
         const link = e.url || (e.bvid ? `https://www.bilibili.com/video/${e.bvid}` : '');
+        const hasFullText = fullOwn.has(e.bvid || e.id);
         if (kind === 'article') {
           lines.push(`- ${e.date}【我发的专栏】${short(e.title, 60)}`);
-          if (e.cover) lines.push(`  封面：${e.cover}`);
-          lines.push(`  正文：${e.text || e.summary || '（正文未取到）'}`);
+          if (hasFullText) {
+            if (e.cover) lines.push(`  封面：${e.cover}`);
+            lines.push(`  正文：${e.text || e.summary || '（正文未取到）'}`);
+          } else {
+            lines.push('  （较早作品，只保留标题/数据/链接，不展开全文）');
+          }
           lines.push(`  数据：${statsText(e.stats)}`);
           if (link) lines.push(`  链接：${link}`);
         } else {
           lines.push(`- ${e.date}【我发的视频】${short(e.title, 60)}`);
-          if (e.cover) lines.push(`  封面：${e.cover}`);
-          if (e.desc) lines.push(`  简介：${e.desc}`);
-          const summary = e.summary || (e.text && e.text !== e.desc ? e.text : '');
-          if (summary) lines.push(`  概括：${summary}`);
+          if (hasFullText) {
+            if (e.cover) lines.push(`  封面：${e.cover}`);
+            if (e.desc) lines.push(`  简介：${e.desc}`);
+            const summary = e.summary || (e.text && e.text !== e.desc ? e.text : '');
+            if (summary) lines.push(`  概括：${summary}`);
+          } else {
+            lines.push('  （较早作品，只保留标题/数据/链接，不展开简介/概括）');
+          }
           lines.push(`  数据：${statsText(e.stats)}`);
           if (link) lines.push(`  链接：${link}`);
         }
