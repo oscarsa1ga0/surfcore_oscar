@@ -12,10 +12,16 @@ import path from 'node:path';
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
 /** 按内容寻址：同一句话重复发不会在磁盘上堆文件（voxd 端也有缓存）。 */
-export function ttsKey({ baseUrl, text, character, voice, style, cacheVersion }) {
+export function ttsKey({ baseUrl, text, character, voice, style, cacheVersion, provider = 'voxd', breeze = {} }) {
   return crypto
     .createHash('sha1')
-    .update(JSON.stringify([baseUrl, cacheVersion ?? null, text, character ?? null, voice ?? null, style ?? null]))
+    .update(JSON.stringify([
+      provider, baseUrl, cacheVersion ?? null, text, character ?? null, voice ?? null, style ?? null,
+      provider === 'breeze' ? {
+        voiceId: breeze.voiceId ?? '', modelId: breeze.modelId ?? '', instructions: breeze.instructions ?? '',
+        outputFormat: breeze.outputFormat ?? '', baseUrl: breeze.baseUrl ?? '',
+      } : null,
+    ]))
     .digest('hex');
 }
 
@@ -38,6 +44,86 @@ export function wavDurationMs(buf) {
   return 0;
 }
 
+const BREEZE_DEFAULT_BASE = 'https://api.breeze.blue';
+const BREEZE_DEFAULT_MODEL = 'breeze-tts-2';
+
+/**
+ * BreezeBlue 云端 TTS：POST /v1/text-to-speech/{voice_id}?output_format=wav_24000
+ * 认证用 xi-api-key；返回音频二进制。默认请求 wav，便于桥接直接发 QQ 语音条。
+ */
+export async function synthesizeBreezeToFile({
+  text,
+  apiKey = '',
+  voiceId = '',
+  modelId = BREEZE_DEFAULT_MODEL,
+  instructions = '',
+  outputFormat = 'wav_24000',
+  guidanceScale = null,
+  baseUrl = BREEZE_DEFAULT_BASE,
+  timeoutMs = 60000,
+  cacheVersion = null,
+  outDir,
+  fetchImpl = fetch,
+} = {}) {
+  const say = String(text ?? '').trim();
+  if (!say) throw new Error('要合成的内容是空的');
+  if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
+  if (!apiKey) throw new Error('BreezeBlue API Key 未配置（设置 → SurfCore → 语音 → BreezeBlue）');
+  if (!voiceId) throw new Error('BreezeBlue Voice ID 未配置（设置 → SurfCore → 语音 → BreezeBlue）');
+  const base = String(baseUrl || BREEZE_DEFAULT_BASE).replace(/\/+$/, '');
+  const format = String(outputFormat || 'wav_24000').replace(/[^a-z0-9_]/gi, '') || 'wav_24000';
+  const voice = String(voiceId).trim();
+  fs.mkdirSync(outDir, { recursive: true });
+  const key = ttsKey({
+    provider: 'breeze', baseUrl: base, cacheVersion, text: say,
+    breeze: { voiceId: voice, modelId, instructions, outputFormat: format },
+  });
+  const file = path.join(outDir, `${key}.wav`);
+  if (fs.existsSync(file)) {
+    const st = fs.statSync(file);
+    if (st.size > 44) return { path: file, durationMs: wavDurationMs(fs.readFileSync(file)), cached: true };
+  }
+
+  const body = { text: say, model_id: String(modelId || BREEZE_DEFAULT_MODEL) };
+  if (instructions) body.instructions = String(instructions);
+  if (Number.isFinite(Number(guidanceScale)) && Number(guidanceScale) > 0) {
+    body.voice_settings = { guidance_scale: Number(guidanceScale) };
+  }
+  let res;
+  try {
+    res = await fetchImpl(`${base}/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=${encodeURIComponent(format)}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': String(apiKey),
+        'content-type': 'application/json',
+        accept: 'audio/*',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const hint = error?.name === 'TimeoutError'
+      ? `BreezeBlue 合成超时（>${Math.round(timeoutMs / 1000)}s）`
+      : '连不上 BreezeBlue（检查网络/代理）';
+    throw new Error(`${hint}：${error?.message ?? error}`);
+  }
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = j?.detail ?? j?.error ?? j?.message ?? '';
+    } catch {}
+    throw new Error(`BreezeBlue 返回 ${res.status}${detail ? `：${String(detail).slice(0, 240)}` : ''}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length <= 44) throw new Error('BreezeBlue 返回了空音频');
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+  pruneCache(outDir);
+  return { path: file, durationMs: wavDurationMs(buf), cached: false };
+}
+
 /**
  * @returns {Promise<{path:string,durationMs:number,cached:boolean}>}
  * @throws  Error（message 已可直接展示给模型/操作者）
@@ -51,15 +137,25 @@ export async function synthesizeToFile({
   timeoutMs = 60000,
   cacheVersion = null,
   outDir,
+  provider = 'voxd',
+  breeze = {},
   fetchImpl = fetch
 } = {}) {
   const say = String(text ?? '').trim();
+  if (provider === 'breeze') {
+    return synthesizeBreezeToFile({
+      text: say, outDir, timeoutMs, cacheVersion,
+      apiKey: breeze.apiKey, voiceId: breeze.voiceId, modelId: breeze.modelId,
+      instructions: breeze.instructions, outputFormat: breeze.outputFormat,
+      guidanceScale: breeze.guidanceScale, baseUrl: breeze.baseUrl, fetchImpl,
+    });
+  }
   if (!say) throw new Error('要合成的内容是空的');
   if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
   fs.mkdirSync(outDir, { recursive: true });
 
   const url = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
-  const key = ttsKey({ baseUrl: url, text: say, character, voice, style, cacheVersion });
+  const key = ttsKey({ baseUrl: url, text: say, character, voice, style, cacheVersion, provider, breeze });
   const file = path.join(outDir, `${key}.wav`);
   if (fs.existsSync(file)) {
     const st = fs.statSync(file);

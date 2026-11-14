@@ -231,6 +231,39 @@ const vp = createVoicePacks(cfg);   // src/bridge.js:6459
 
 例外：控制台「二代仿真」整页保存会走 `/api/socialV2/config`，那条路径会把合并后的 `socialV2` 写回内存（`src/bridge.js:5339-5341`），所以从那里改的 `voice` 字段**立即生效**。语音页自己的 `/api/voice/rules` 没这个动作。
 
+### 3.2.1 BreezeBlue 直连（`tts.provider = "breeze"`）
+
+2026-11-14 新增：语音合成的云端可以不走火山/voxd，直接调 BreezeBlue：
+
+- `POST https://api.breeze.blue/v1/text-to-speech/{voice_id}?output_format=wav_24000`
+- Header：`xi-api-key: <BREEZE_API_KEY>`
+- Body：`{ text, model_id: "breeze-tts-2", instructions?, voice_settings?: { guidance_scale } }`
+- 返回音频二进制；桥接按 `<sha1>.wav` 落 `state/voice-tts/`，再走同一条 `sendVoiceV2`。
+
+配置（`config.json` → `socialV2.voice.tts`）：
+
+```json
+{
+  "provider": "breeze",
+  "breeze": {
+    "baseUrl": "https://api.breeze.blue",
+    "apiKey": "",
+    "voiceId": "voc_xxxxxxxx",
+    "modelId": "breeze-tts-2",
+    "instructions": "",
+    "outputFormat": "wav_24000"
+  }
+}
+```
+
+- API Key 也可以放在环境变量 `BREEZE_API_KEY`，优先级高于 config。
+- 旧配置没有 `provider` 时保持 `voxd`（避免升级后突然断声）；当前配置显式设为 `breeze` 才走 BreezeBlue。
+- 想切回原来的本地/云端语音包：把 `provider` 设为 `"voxd"`，继续用 `route`/`endpoints`。
+- 设置页「语音 → TTS 服务」有 provider、API Key、Voice ID、模型、表演指令；保存后**重启桥接**（provider/breeze 是启动配置）。
+- Breeze 失败不会自动切回火山；错误会直接给模型/操作者（401/403/429/超时/空音频）。
+
+参考：[BreezeBlue Convert TTS](https://docs.breezeblue.ai/api-reference/text-to-speech/convert-text-to-speech)、[Voice instruction prompting](https://docs.breezeblue.ai/guides/voice-instruction-prompting)。
+
 ### 3.3 端点的解析顺序
 
 `voiceCfg().tts` 与 `synthesizeVoiceText()` 的优先级（`src/bridge.js:1983-1987`、`:2010`）：
@@ -657,6 +690,11 @@ voice.enabled 检查（仅这里，底层不查）          src/bridge.js:2323
 | `loudness` | string | `"normal"` | 智能音量档位 `quiet/normal/loud` | 重启桥接 |
 | `ffmpegPath` | string | `""` | ffmpeg 路径；仅音量处理需要 | 重启桥接 |
 | `autoReadback` | bool | `true` | 默认是否做 `get_msg` 回读（AI 工具层会强制 true） | 重启桥接 |
+| `tts.provider` | `"breeze"`/`"voxd"` | `"voxd"`（示例配置为 `breeze`） | 云端 TTS 走 BreezeBlue 还是原 voxd 语音包；未配置时保持旧行为 | 重启桥接（桌宠立即读） |
+| `tts.breeze.apiKey` | string | `""` | BreezeBlue API Key（也可用 `BREEZE_API_KEY`） | 重启桥接 |
+| `tts.breeze.voiceId` | string | `""` | BreezeBlue Voice ID（`voc_…`） | 重启桥接 |
+| `tts.breeze.modelId` | string | `"breeze-tts-2"` | Breeze 模型 | 重启桥接 |
+| `tts.breeze.instructions` | string | `""` | 表演指令（可选） | 重启桥接 |
 | `tts.enabled` | bool | `false` | 允许 `text` 现场合成；不影响发库文件 | 重启桥接（桌宠立即） |
 | `tts.baseUrl` | string | `http://127.0.0.1:8765` | 兜底地址；**通常被 `endpoints` 覆盖** | 重启桥接 |
 | `tts.timeoutMs` | number | `60000` | 合成超时；`<=0` 回落 60s | 重启桥接 |

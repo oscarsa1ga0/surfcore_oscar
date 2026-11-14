@@ -353,6 +353,15 @@
         "endpoints": {
           "local": "http://127.0.0.1:8765",
           "cloud": "http://127.0.0.1:8767"
+        },
+        "provider": "breeze",
+        "breeze": {
+          "baseUrl": "https://api.breeze.blue",
+          "apiKey": "",
+          "voiceId": "",
+          "modelId": "breeze-tts-2",
+          "instructions": "",
+          "outputFormat": "wav_24000"
         }
       },
       "trigger": {

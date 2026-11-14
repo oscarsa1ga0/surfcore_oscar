@@ -220,11 +220,21 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     };
     return {
       enabled: t.enabled === true,
+      provider: String(t.provider) === 'breeze' ? 'breeze' : 'voxd',
       maxChars: clampInt(t.maxChars, 120, 20, 300),
       route,
       baseUrl: endpoints[route] || String(t.baseUrl || 'http://127.0.0.1:8765'),
       timeoutMs: clampInt(t.timeoutMs, 60000, 3000, 180000),
       character: String(t.character || ''),
+      breeze: {
+        apiKey: String(process.env.BREEZE_API_KEY || t.breeze?.apiKey || ''),
+        baseUrl: String(t.breeze?.baseUrl || 'https://api.breeze.blue').replace(/\/+$/, ''),
+        voiceId: String(t.breeze?.voiceId || ''),
+        modelId: String(t.breeze?.modelId || 'breeze-tts-2'),
+        instructions: String(t.breeze?.instructions || ''),
+        outputFormat: String(t.breeze?.outputFormat || 'wav_24000'),
+        guidanceScale: Number(t.breeze?.guidanceScale) > 0 ? Number(t.breeze.guidanceScale) : null,
+      },
       cacheVersion: Number(t.cacheVersion) || 0,
     };
   }
@@ -553,7 +563,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
         historyTurns: s.chat.historyTurns,
       },
       proactive: s.proactive,
-      voice: { enabled: s.voice.enabled, route: s.voice.route, maxChars: s.voice.maxChars },
+      voice: { enabled: s.voice.enabled, route: s.voice.provider === 'breeze' ? 'breeze' : s.voice.route, maxChars: s.voice.maxChars },
       focus: readFocus(),
     };
   }
@@ -568,6 +578,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     try {
       const result = await synthesizeToFile({
         text: spoken,
+        provider: v.provider,
+        breeze: v.breeze,
         character: v.character,
         baseUrl: v.baseUrl,
         timeoutMs: v.timeoutMs,

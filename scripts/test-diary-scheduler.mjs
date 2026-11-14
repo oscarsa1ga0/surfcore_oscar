@@ -80,6 +80,29 @@ test('buildDailyDigest：只取当天，包含聊天/候选/B站事件', () => {
   assert.equal(digest.counters.candidates >= 1, true);
 });
 
+test('buildDailyDigest：带上 B站 两本日记今天到目前为止的 section', () => {
+  const root = tempRoot();
+  const characterDir = path.join(root, 'characters', 'char-x');
+  fs.mkdirSync(path.join(characterDir, 'bili'), { recursive: true });
+  fs.writeFileSync(path.join(characterDir, 'bili', 'whale-diary.md'), [
+    '## 2026-11-11 · 昨天', '昨天的公开日记',
+    '## 2026-11-12 · 今天', '### 一、今天公开', '今天在 B 站写下的公开段落',
+    '## 2026-11-13 · 明天', '明天的公开日记',
+  ].join('\n'));
+  fs.writeFileSync(path.join(characterDir, 'bili', 'whale-diary-private.md'), [
+    '## 2026-11-12', '### 十八、今天私人', '今天在 B 站写下的私人段落',
+    '## 2026-11-13', '明天的私人日记',
+  ].join('\n'));
+  const digest = buildDailyDigest({ characterDir, day: TODAY, now: at('2026-11-12T23:30:00+08:00') });
+  assert.match(digest.text, /今天在 B 站写下的公开段落/);
+  assert.match(digest.text, /今天在 B 站写下的私人段落/);
+  assert.match(digest.text, /B站 冲浪日记/);
+  assert.match(digest.text, /B站 私人日记/);
+  assert.doesNotMatch(digest.text, /昨天的公开日记/);
+  assert.doesNotMatch(digest.text, /明天的公开日记/);
+  assert.ok((digest.counters.biliDiary || 0) > 0);
+});
+
 test('buildDailyDigest：优先用当天完整历史，覆盖上午和晚上', () => {
   const root = tempRoot();
   const characterDir = path.join(root, 'characters', 'char-x');

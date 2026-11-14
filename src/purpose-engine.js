@@ -535,6 +535,7 @@ export function collectMaterials({
   conversations = [],
   biliEntries = [],
   memoryRecords = [],
+  qzoneEntries = [],
 } = {}) {
   const windowStart = now - Math.max(1, Number(config.materialWindowHours) || 72) * HOUR;
   const list = convoList(conversations);
@@ -547,7 +548,7 @@ export function collectMaterials({
     seen.add(key);
     items.push(enrichMaterial(item, roleName));
   };
-  const stats = { qq: 0, bili: 0, memory: 0, thought: 0 };
+  const stats = { qq: 0, bili: 0, memory: 0, thought: 0, qzone: 0 };
 
   // ① 和主人的私聊：最重要，也最不容易「隔着群」。
   const ownerKey = ownerUin ? `private:${String(ownerUin).replace(/[^\d]/g, '')}` : '';
@@ -665,6 +666,27 @@ export function collectMaterials({
     push(item);
     stats.bili += 1;
   }
+
+  // ③.5 QQ 空间：最近看到的好友动态，给她「看到什么想跟你聊聊」的材料。
+  const qzone = [];
+  for (const entry of Array.isArray(qzoneEntries) ? qzoneEntries : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const at = Number.isFinite(Number(entry.at)) && Number(entry.at) > 0 ? Number(entry.at) : now;
+    if (at < windowStart) continue;
+    const text = clip(entry.text ?? '', 160);
+    if (!text) continue;
+    qzone.push({
+      id: `qzone:${entry.tid ?? text}`,
+      source: 'qzone',
+      kind: 'qzone',
+      at,
+      who: clip(entry.nickname ?? '', 20) || '好友',
+      text,
+      meta: { tid: String(entry.tid ?? ''), authorUin: String(entry.authorUin ?? '') }
+    });
+  }
+  qzone.sort((a, b) => b.at - a.at);
+  for (const item of qzone.slice(0, 5)) { push(item); stats.qzone += 1; }
 
   // ④ 记忆卡：近期/高重要度/高情绪的经历，给她「想起一件事」的材料。
   const memoryWindowStart = now - 30 * DAY;
@@ -2016,7 +2038,8 @@ export function formatMaterialLine(material, now = Date.now()) {
       : material.kind === 'self' ? 'QQ·你'
         : material.kind === 'member' ? 'QQ·群友'
           : material.kind === 'memory' ? '记忆'
-            : '心里';
+            : material.kind === 'qzone' ? 'QQ·空间'
+              : '心里';
   const title = material.title ? `《${material.title}》` : '';
   const quote = material.quote ? `（你当时评论：「${clip(material.quote, 60)}」）` : '';
   const who = material.kind === 'member' && material.who ? `${material.who}：` : '';

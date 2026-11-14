@@ -1375,6 +1375,22 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("webSearch.maxResults", "返回条数", "", "number", { min: 1 }),
         F("webSearch.timeoutMs", "超时（ms）", "", "number"),
       ]},
+      { group: "QQ 空间", note: "NapCat 4.18.42 扩展接口；五级权限全开（主人 2026-11-13 定），点赞/评论不设频率上限，可见性完全自主。写操作走 MCP 工具，由桥接统一做身份闸/幂等/操作日志。保存后重启桥接 + 完全重启 DSH 生效。", fields: [
+        F("socialV2.qzone.enabled", "启用 QQ 空间能力", "", "switch"),
+        F("socialV2.qzone.permissions.read", "1 · 浏览空间（feeds/详情/评论）", "", "switch"),
+        F("socialV2.qzone.permissions.like", "2 · 点赞 / 取消点赞", "", "switch"),
+        F("socialV2.qzone.permissions.comment", "3 · 评论与回复", "", "switch"),
+        F("socialV2.qzone.permissions.publish", "4 · 发布 / 删除自己的说说", "", "switch"),
+        F("socialV2.qzone.permissions.manage", "5 · 管理（改可见性等）", "", "switch"),
+        F("socialV2.qzone.publish.defaultRight", "默认可见性", "她发说说时若没指定就用这个；也可以每次自己改", "select", { options: [["1", "1 所有人"], ["4", "4 好友"], ["16", "16 部分好友"], ["64", "64 仅自己"], ["128", "128 部分好友不可见"]] }),
+        F("socialV2.qzone.publish.maxContentChars", "说说最长字数", "默认 2000", "number", { min: 1, max: 5000 }),
+        F("socialV2.qzone.publish.maxImages", "说说最多几张图", "默认 9", "number", { min: 0, max: 9 }),
+        F("socialV2.qzone.autonomy.enabled", "自主空间活动", "默认关；开 = 定时只读浏览并可按上限自动点赞（评论/发说说由她在对话里决定）", "switch"),
+        F("socialV2.qzone.autonomy.intervalMs", "自主活动间隔（ms）", "默认 1800000（30 分钟）", "number", { min: 60000, max: 86400000 }),
+        F("socialV2.qzone.autonomy.maxReadPerRun", "每次最多读几条动态", "", "number", { min: 1, max: 50 }),
+        F("socialV2.qzone.autonomy.likePerRun", "每次最多自动点赞几条", "0 = 不自动点赞", "number", { min: 0, max: 20 }),
+        F("socialV2.qzone.autonomy.commentPerRun", "每次最多自动评论几条", "0 = 不自动评论（文案由模型在对话里定）", "number", { min: 0, max: 20 }),
+      ]},
     ];
 
     const TOOL_LABELS = {
@@ -1385,6 +1401,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       markRead: "标记已读", closeConversation: "对话收尾", memory: "轻量记忆", slangQuery: "查黑话", slangSubmit: "提交黑话",      getImages: "看图", getForwardMsg: "看合并转发", sendPoke: "拍一拍", listStickers: "表情列表",
       getStickerImage: "表情图片", sendSticker: "发表情", setStickerRemark: "改表情备注",
       stickerNote: "表情笔记", collectSticker: "收藏表情", getSelfImage: "看自己形象", sendVoice: "发语音",
+      qzoneRead: "空间·浏览", qzoneLike: "空间·点赞", qzoneComment: "空间·评论", qzonePublish: "空间·发布/删除", qzoneManage: "空间·管理",
     };
 
     const QQ_ADV_CATEGORIES = [
@@ -3750,6 +3767,54 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       );
     }
 
+    // ── QQ 空间状态卡（QQ 页）─────────────────────────────────────────────
+    function QzoneCard({ ownerQQ, busy, setBusy }) {
+      const [data, setData] = useState(null);
+      const [msg, setMsg] = useState("");
+      const load = () => {
+        setData(null);
+        api("/qzone/status").then(setData).catch((e) => setData({ ok: false, error: e.message }));
+      };
+      useEffect(() => { load(); }, []);
+      const runActivity = async () => {
+        if (!ownerQQ) { setMsg("✗ 没有主人 QQ 号，无法指定会话 key"); return; }
+        setBusy("qzone-activity"); setMsg("");
+        try {
+          const r = await api("/socialV2/qzone/activity", { method: "POST", body: { key: `private:${ownerQQ}`, execute: false } });
+          setMsg(`✓ 只读扫描完成：读到 ${r.fetched} 条，其中新 ${r.newCount} 条（不点赞不评论）`);
+          load();
+        } catch (e) { setMsg(`✗ ${e.message}`); }
+        finally { setBusy(""); }
+      };
+      const st = data?.state ?? {};
+      const perm = data?.config?.permissions ?? {};
+      const onOff = (v) => (v ? "✓ 开" : "✗ 关");
+      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("h4", null, "QQ 空间状态"),
+        !data ? h("div", { className: "qbw-hint" }, "读取中…")
+          : data.ok === false ? h("div", { className: "qbw-err" }, `读取不到（重启桥接后可用）：${data.error ?? ""}`)
+            : h("div", null,
+              h("div", { className: "qbw-hint" },
+                `网关：${data.gateway?.appName || "?"} ${data.gateway?.appVersion || "?"} · 空间接口探测：${data.gateway?.listOk ? "✓ 可用" : "✗ " + (data.gateway?.error || "不可用")}`),
+              h("div", { className: "qbw-hint" },
+                `权限：浏览 ${onOff(perm.read)} · 点赞 ${onOff(perm.like)} · 评论 ${onOff(perm.comment)} · 发布/删除 ${onOff(perm.publish)} · 管理 ${onOff(perm.manage)}`),
+              h("div", { className: "qbw-hint" },
+                `本地状态：已见 ${st.seen ?? 0} · 已赞 ${st.liked ?? 0} · 评过 ${st.commentedTids ?? 0} 条说说 · 自己发过 ${st.published ?? 0}`),
+              (st.recentPosts ?? []).length ? h("div", { className: "qbw-hint" },
+                "最近发过：" + st.recentPosts.map((x) => `「${String(x.content).slice(0, 24)}」`).join(" · ")) : null,
+              (st.errors ?? []).length ? h("div", { className: "qbw-warnbox" },
+                "最近错误：" + st.errors.slice(-2).map((x) => `${x.action}: ${x.message}`).join("；")) : null,
+              h("details", null,
+                h("summary", { style: { fontSize: "12px", opacity: 0.8, cursor: "pointer" } }, "操作日志（最近 10 条）"),
+                (data.opLog ?? []).slice(-10).reverse().map((x, i) => h("div", { key: i, className: "qbw-hint", style: { marginTop: "2px" } },
+                  `${String(x.at ?? "").slice(11, 19)} ${x.ok ? "✓" : "✗"} ${x.action}${x.tid ? " tid=" + x.tid : ""}${x.detail ? " " + x.detail : ""}${x.error ? " " + x.error : ""}`)))),
+        h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
+          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新状态"),
+          h(Btn, { kind: "qbw-btn2", onClick: runActivity, disabled: !!busy || !ownerQQ }, busy === "qzone-activity" ? "扫描中…" : "立即空间活动（只读扫描）"),
+          h("span", { className: "qbw-hint" }, "只读扫描不点赞不评论；自主点赞由「自主空间活动」开关 + 每次上限决定。")),
+        msg ? h("div", { className: msg.startsWith("✓") ? "qbw-ok" : "qbw-err", style: { marginTop: "4px" } }, msg) : null);
+    }
+
     function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave, onAdminDiscardContext, dirty }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
@@ -3854,6 +3919,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           ownerQQ: admin?.qq || cfg?.ownerQQ || overview?.mode?.ownerQQ || "",
           onDenyChange: (key, list) => set(["deny", key], list),
         }),
+        h(QzoneCard, { ownerQQ: admin?.qq || cfg?.ownerQQ || overview?.mode?.ownerQQ || "", busy, setBusy }),
         // 目的机制已独立成「目的」栏目；QQ 页只留一张指路卡，避免两处各改一半。
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
           h("h4", null, "主动找主人 · 目的机制"),
@@ -5478,6 +5544,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [ttsCheck, setTtsCheck] = useState(null);
       const [ttsChecking, setTtsChecking] = useState(false);
       const [rules, setRules] = useState(null);
+      const [breezeKey, setBreezeKey] = useState("");
       const [err, setErr] = useState("");
       const [busyId, setBusyId] = useState("");
       const [pick, setPick] = useState("voice-local");
@@ -5694,8 +5761,15 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       const fmt = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB");
       const saveRules = async () => {
-        try { await api("/voice/rules", { method: "POST", body: rules }); toast("✓ 触发规则已保存"); }
-        catch (e) { toast("✗ " + e.message); }
+        try {
+          const payload = { ...(rules || {}) };
+          const key = String(breezeKey || "").trim();
+          if (key) payload.breeze = { ...(payload.breeze || {}), apiKey: key };
+          await api("/voice/rules", { method: "POST", body: payload });
+          setBreezeKey("");
+          toast("✓ 语音设置已保存");
+          await load();
+        } catch (e) { toast("✗ " + e.message); }
       };
 
       const card = (p) => h("div", {
@@ -5910,6 +5984,35 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { style: { fontSize: "12px", opacity: 0.65, marginTop: "6px" } }, "当前生效：", h("code", null, packsDir || "（读不到）"))),
         h("div", { className: "qbw-hint", style: { marginTop: "10px" } },
           "⚠️ 改完语音总开关 / TTS / 发语音工具后，需要重启 DSH：工具列表在 MCP 进程启动时就固定了，不重启她还会说“没有语音入口”。"),
+
+        rules ? h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("h4", null, "TTS 服务"),
+          h("div", { className: "qbw-hint" },
+            "BreezeBlue 是云端直连（xi-api-key）；本地 voxd 是原来的语音包。改完 provider / breeze 字段后需要重启桥接才会生效。"),
+          h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
+            h("span", { className: "qbw-label" }, "服务"),
+            h("select", { value: rules.provider || "breeze", onChange: (e) => setRules({ ...rules, provider: e.target.value }), style: { width: "180px" } },
+              h("option", { value: "breeze" }, "BreezeBlue（云端）"),
+              h("option", { value: "voxd" }, "本地 voxd / 语音包"))),
+          (rules.provider || "breeze") === "breeze" ? h("div", null,
+            h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
+              h("span", { className: "qbw-label", style: { width: "88px" } }, "API Key"),
+              h("input", { className: "qbw-input", type: "password", value: breezeKey, placeholder: rules.breeze?.hasApiKey ? `已保存：${rules.breeze.apiKeyMasked || "****"}（留空不改）` : "brz_...", onChange: (e) => setBreezeKey(e.target.value), style: { flex: "1 1 320px" } })),
+            h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
+              h("span", { className: "qbw-label", style: { width: "88px" } }, "Voice ID"),
+              h("input", { className: "qbw-input", value: rules.breeze?.voiceId || "", placeholder: "voc_...", onChange: (e) => setRules({ ...rules, breeze: { ...(rules.breeze || {}), voiceId: e.target.value } }), style: { flex: "1 1 320px" } })),
+            h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
+              h("span", { className: "qbw-label", style: { width: "88px" } }, "模型"),
+              h("input", { className: "qbw-input", value: rules.breeze?.modelId || "breeze-tts-2", onChange: (e) => setRules({ ...rules, breeze: { ...(rules.breeze || {}), modelId: e.target.value } }), style: { width: "220px" } }),
+              h("span", { className: "qbw-label" }, "Base URL"),
+              h("input", { className: "qbw-input", value: rules.breeze?.baseUrl || "https://api.breeze.blue", onChange: (e) => setRules({ ...rules, breeze: { ...(rules.breeze || {}), baseUrl: e.target.value } }), style: { flex: "1 1 260px" } })),
+            h("div", { style: { display: "flex", gap: "8px", alignItems: "flex-start", marginTop: "8px" } },
+              h("span", { className: "qbw-label", style: { width: "88px", paddingTop: "6px" } }, "表演指令"),
+              h("textarea", { className: "qbw-input", rows: 2, value: rules.breeze?.instructions || "", placeholder: "可选：例如「温柔一点，像在跟熟人说话」", onChange: (e) => setRules({ ...rules, breeze: { ...(rules.breeze || {}), instructions: e.target.value } }), style: { flex: "1 1 360px", resize: "vertical" } })),
+            h("div", { style: { fontSize: "11px", opacity: 0.6, marginTop: "6px" } },
+              "API Key 只写本机 config.json；输出默认 wav_24000，直接进 QQ 语音条。Breeze 不经过火山/云端语音包。")
+          ) : h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "当前使用本地 voxd / 语音包；下面仍按 local/cloud 路由。"),
+          h("div", { style: { marginTop: "10px" } }, h(Btn, { onClick: saveRules }, "保存 TTS 设置"))) : null,
 
         cloud && cloud.installed ? h(CloudForm, { toast }) : null,
 

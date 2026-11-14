@@ -146,6 +146,24 @@ function pushBounded(lines, line, budget, counters) {
  *   · 日记：当天的候选 + 已写条目
  * 这不是聊天全文，是给她的“原材料”；写不写、写什么由她决定。
  */
+/** 从 B站 侧日记里取某一天的 section（`## YYYY-MM-DD` 开头，直到下一个日期 section）。 */
+function extractDiaryDaySection(text, day, maxChars = 2000) {
+  const lines = String(text ?? '').split('\n');
+  let start = -1;
+  let end = lines.length;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^##\s+(\d{4}-\d{2}-\d{2})\b/.exec(lines[i]);
+    if (!m) continue;
+    if (start >= 0) { end = i; break; }
+    if (m[1] === day) start = i;
+  }
+  if (start < 0) return '';
+  const section = lines.slice(start, end).join('\n').trim();
+  if (!section) return '';
+  if (section.length <= maxChars) return section;
+  return `${section.slice(0, maxChars)}\n\n（中略：这篇 B站 日记今天太长，已截断）`;
+}
+
 export function buildDailyDigest({
   characterDir, qqStateDir, day = '', now = Date.now(), maxChars = 8000, history = null,
 } = {}) {
@@ -255,6 +273,34 @@ export function buildDailyDigest({
     }
   } catch {}
 
+  // ── B站 侧两本日记：今天到目前为止写下的改动 ──
+  try {
+    const biliDir = path.join(characterDir || '', 'bili');
+    const books = [
+      ['whale-diary.md', 'B站 冲浪日记（公开侧）'],
+      ['whale-diary-private.md', 'B站 私人日记'],
+    ];
+    const sections = [];
+    for (const [file, label] of books) {
+      try {
+        const text = fs.readFileSync(path.join(biliDir, file), 'utf8');
+        const section = extractDiaryDaySection(text, target, 2000);
+        if (section) sections.push({ label, section });
+      } catch {}
+    }
+    if (sections.length) {
+      lines.push('【今天在 B站 两本日记里写下的（到目前）】');
+      for (const { label, section } of sections) {
+        lines.push(`— ${label} —`);
+        for (const line of section.split('\n')) {
+          counters.biliDiary = (counters.biliDiary || 0) + 1;
+          pushBounded(lines, safeLine(line, 300), budget, counters);
+        }
+        lines.push('');
+      }
+    }
+  } catch {}
+
   // ── 候选 ──
   try {
     const candidates = listCandidates(path.join(characterDir || '', 'diary'), { day: target, now }).items;
@@ -315,7 +361,8 @@ export function buildReviewPrompt({
     '- 值得留、但还不想写成整篇的，用 diary_capture 记一句；想写就用 diary_write 保存（可传 source: "diary"）。',
     '- 可以翻自己以前的日记（diary_read / diary_search / diary_list）；想补写哪一天就传 date。',
     `- 今天 ${reviewTimes.length ? reviewTimes.join(' / ') : '14:30 / 23:30'} 是同一篇日记的两次提醒：下午写过，晚上就用 diary_edit 追加到同一篇；下午没写，晚上再 diary_write。不要新建第二篇重复的。`,
-    '- 如果今天已经写过、但漏了上午/某些事，优先 diary_edit 追加，不要重写整篇或再写一篇重复的。',
+    '- 如果今天已经写过、但漏了上午/某些事，优先 diary_edit 追加；追加后如果前后不连贯，可以稍作修改（不必重写整篇），但不要新建第二篇重复的。',
+    '- 每次追加后顺手检查 title 和 tags 是否还跟得上今天的正文。',
     '- 日记默认是私人的。主人要看时，你可以决定给看、只给一段，或拒绝；要展示先 diary_share。',
     '- 写完不用通知主人，也不要给任何人发消息。',
     characterId ? `- 当前角色 id：${characterId}（调用日记工具时可带上 characterId，防止角色切换后写错人）` : '',

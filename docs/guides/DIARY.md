@@ -89,6 +89,9 @@
     这解决了 `recentMessages` 只有最近 100 条、早上容易被挤出窗口的问题。
   - 回退：桥接/网关卡不可用时，用 `state/social-v2.json` 的 `recentMessages`（最多 100 条/会话）；
   - 角色 `bili/whale-log.jsonl` 的当天事件；
+  - **B站 两本日记当天到目前为止的 section**：
+    `bili/whale-diary.md`（公开侧）和 `bili/whale-diary-private.md`（私人）；
+    按 `## YYYY-MM-DD` 取当天段，每本最多 2000 字，超出截断；
   - 当天 `candidates/`；
   - 当天已写日记的标题。
 - 同一天每个时段只提交一次（14:30 / 23:30 各一次）；提交失败最多重试 `diary.maxAttempts` 次（默认 2），并记录

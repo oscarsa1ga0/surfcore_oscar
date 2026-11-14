@@ -19,6 +19,15 @@ import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
+import {
+  getQzoneMsgList, getQzoneFeeds, getQzoneMsgDetail, likeQzone, commentQzone,
+  sendQzoneMsg, deleteQzoneMsg, setQzoneMsgRight, probeQzoneGateway
+} from './qzone-api.js';
+import {
+  loadQzoneState, saveQzoneState, recordQzoneView, recordQzoneLike, recordQzoneComment,
+  recordQzonePublish, recordQzoneError, qzoneOpLog, readQzoneOpLog, qzoneStatusSummary
+} from './qzone-state.js';
+import { normalizeQzoneConfig, qzoneLevels, checkQzoneText, QZONE_UNTRUSTED_HINT } from './qzone-gate.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import { atInfo } from './qq-at.js';
@@ -1216,8 +1225,17 @@ function loadConfig() {
     getSelfImage: true,
     closeConversation: true,
     sendVoice: false,
+    // QQ 空间（2026-11-13 主人定：五级全开）
+    qzoneRead: true,
+    qzoneLike: true,
+    qzoneComment: true,
+    qzonePublish: true,
+    qzoneManage: true,
     ...(cfg.socialV2.tools ?? {})
   };
+
+  // QQ 空间配置归一（权限五级全开默认；可见性自主；不设频率上限）
+  cfg.socialV2.qzone = normalizeQzoneConfig(cfg.socialV2.qzone ?? {});
 
   // ── 对话收尾判断（2026-10-24）────────────────────────────────────────────
   // 用户要求：「一次对话总是有结束的，结束不是终止，而是一段信息输出的合理结束，
@@ -2187,15 +2205,26 @@ async function main() {
       // 默认关闭：没装 voxd 时打开只会得到一串 502。
       tts: {
         enabled: v.tts?.enabled === true,
+        // breeze = 直接调 BreezeBlue 云端；voxd = 原来的本地/云端语音包。
+        provider: String(v.tts?.provider) === 'breeze' ? 'breeze' : 'voxd',
         baseUrl: String(v.tts?.baseUrl || 'http://127.0.0.1:8765'),
         timeoutMs: Number(v.tts?.timeoutMs) > 0 ? Number(v.tts.timeoutMs) : 60000,
         maxChars: Number(v.tts?.maxChars) > 0 ? Number(v.tts.maxChars) : 120,
         character: String(v.tts?.character || ''),
-        // 走哪个语音服务：local（8765）/ cloud（8767）。单条消息可以用 body.route 临时覆盖。
+        // voxd 的路由；provider=breeze 时不用。
         route: ['local', 'cloud'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'local',
         endpoints: {
           local: String(v.tts?.endpoints?.local || 'http://127.0.0.1:8765'),
           cloud: String(v.tts?.endpoints?.cloud || 'http://127.0.0.1:8767')
+        },
+        breeze: {
+          apiKey: String(process.env.BREEZE_API_KEY || v.tts?.breeze?.apiKey || ''),
+          baseUrl: String(v.tts?.breeze?.baseUrl || 'https://api.breeze.blue').replace(/\/+$/, ''),
+          voiceId: String(v.tts?.breeze?.voiceId || ''),
+          modelId: String(v.tts?.breeze?.modelId || 'breeze-tts-2'),
+          instructions: String(v.tts?.breeze?.instructions || ''),
+          outputFormat: String(v.tts?.breeze?.outputFormat || 'wav_24000'),
+          guidanceScale: Number(v.tts?.breeze?.guidanceScale) > 0 ? Number(v.tts.breeze.guidanceScale) : null,
         },
         // 音色映射变了就 +1，让旧音频失效（否则"换了声音还在放老的"）
         cacheVersion: Number(v.tts?.cacheVersion) || 0,
@@ -2237,6 +2266,24 @@ async function main() {
       throw err;
     }
     if (say.length > vc.tts.maxChars) throw codedVoiceError(new Error(`要说的话最多 ${vc.tts.maxChars} 字（收到 ${say.length}）`));
+
+    if (vc.tts.provider === 'breeze') {
+      try {
+        const result = await synthesizeToFile({
+          text: say,
+          provider: 'breeze',
+          breeze: vc.tts.breeze,
+          timeoutMs: vc.tts.timeoutMs,
+          cacheVersion: vc.tts.cacheVersion ?? null,
+          outDir: vc.tts.dir,
+        });
+        return { path: result.path, via: 'tts', ttsCached: result.cached, ttsDurationMs: result.durationMs, route: 'breeze' };
+      } catch (error) {
+        const info = classifyVoiceError(error?.message ?? error);
+        logVoiceError({ scope: 'synth', route: 'breeze', code: info.code, stage: info.stage, message: String(error?.message ?? error).slice(0, 400) });
+        throw codedVoiceError(error, info);
+      }
+    }
 
     const primary = ['local', 'cloud'].includes(String(route)) ? String(route) : vc.tts.route;
     const endpointOf = (r) => String(vc.tts.endpoints?.[r] || vc.tts.baseUrl || '').replace(/\/+$/, '');
@@ -2466,7 +2513,9 @@ async function main() {
 
     const assertSendAllowed = guard ? captureSendGuard(key) : null;
     const [kind, id] = key.split(':');
-    const recordSegment = { type: 'record', data: { file: sendPath } };
+    // NapCat 跑在 Docker 里时读不到宿主机的 state/voice-tts 路径（会报“识别URL失败”）；
+    // 用 base64:// 把音频直接放进 OneBot 请求，容器内外都能读。
+    const recordSegment = { type: 'record', data: { file: `base64://${fs.readFileSync(sendPath).toString('base64')}` } };
     let resolveSend;
     let rejectSend;
     const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
@@ -4496,6 +4545,57 @@ async function main() {
   // 模式/角色/静默状态都存 state/*.json，桥接即时感知；此服务只读写这些文件。
   function v2ToolEnabled(flag) {
     return cfg.socialV2?.tools?.[flag] !== false;
+  }
+
+  // ── QQ 空间（qzone，2026-11-13 主人定：五级全开）────────────────────────────
+  let qzoneStateCache = null;
+  function qzoneStateNow() {
+    if (!qzoneStateCache) qzoneStateCache = loadQzoneState();
+    return qzoneStateCache;
+  }
+  function qzonePersistNow() {
+    if (qzoneStateCache) saveQzoneState(qzoneStateCache);
+  }
+  function qzoneConfigNow() {
+    return normalizeQzoneConfig(cfg.socialV2?.qzone ?? {});
+  }
+  function qzoneSessionOf(st) {
+    if (!st.qzone || typeof st.qzone !== 'object' || Array.isArray(st.qzone)) {
+      st.qzone = { lastViewed: null, discussing: null, recentInteractions: [] };
+    }
+    return st.qzone;
+  }
+  function readQzonePurposeEntries(now = Date.now()) {
+    const seen = qzoneStateNow().seen ?? {};
+    const out = [];
+    for (const [tid, v] of Object.entries(seen)) {
+      if (!v || typeof v !== 'object') continue;
+      out.push({ tid, authorUin: v.authorUin, nickname: v.nickname, text: v.text, at: Number(v.at) || now });
+    }
+    return out;
+  }
+  function qzonePushInteraction(st, { kind, tid, authorUin = '', at = Date.now() }) {
+    const qs = qzoneSessionOf(st);
+    qs.recentInteractions = [
+      { kind, tid: String(tid), authorUin: String(authorUin), at },
+      ...(Array.isArray(qs.recentInteractions) ? qs.recentInteractions : []).filter((x) => x && String(x.tid) !== String(tid))
+    ].slice(0, 20);
+  }
+  function qzonePromptLineV2(st) {
+    const qc = qzoneConfigNow();
+    if (!qc.enabled || qc.permissions.read !== true) return '';
+    const qs = st?.qzone && typeof st.qzone === 'object' ? st.qzone : null;
+    const posts = qzoneStateNow().published.slice(0, 2);
+    const parts = [];
+    parts.push('你可以直接用 QQ 空间工具：qq_qzone_feeds（好友动态）/ qq_qzone_posts（说说列表）/ qq_qzone_post_detail / qq_qzone_like / qq_qzone_comment / qq_qzone_publish / qq_qzone_delete / qq_qzone_set_right / qq_qzone_state。');
+    if (posts.length) {
+      parts.push('你最近发过的说说：' + posts.map((p) => `「${String(p.content).slice(0, 40)}」（tid ${p.tid}）`).join('；') + '。');
+    }
+    if (qs?.discussing?.tid) {
+      parts.push(`当前正在讨论的空间说说 tid=${qs.discussing.tid}（作者 ${qs.discussing.authorUin || '未知'}）。`);
+    }
+    parts.push(QZONE_UNTRUSTED_HINT);
+    return `【QQ 空间】${parts.join(' ')}\n\n`;
   }
 
   function startConsoleServer() {
@@ -6552,7 +6652,12 @@ async function main() {
             stickerNote: 'qq_sticker_note',
             collectSticker: 'qq_collect_sticker',
             getSelfImage: 'qq_get_self_image',
-            sendVoice: 'qq_send_voice / qq_list_voices'
+            sendVoice: 'qq_send_voice / qq_list_voices',
+            qzoneRead: 'qq_qzone_feeds / qq_qzone_posts / qq_qzone_post_detail / qq_qzone_state',
+            qzoneLike: 'qq_qzone_like',
+            qzoneComment: 'qq_qzone_comment',
+            qzonePublish: 'qq_qzone_publish / qq_qzone_delete',
+            qzoneManage: 'qq_qzone_set_right'
           };
           const tools = cfg.socialV2?.tools ?? {};
           const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
@@ -6628,7 +6733,18 @@ async function main() {
               names: voiceLibrary().slice(0, 12).map((v) => v.name),
               maxSeconds: voiceCfg().maxSeconds,
               hint: '可用 qq_list_voices 查看语音库，再用 qq_send_voice 把其中一个当语音发出去'
-            }
+            },
+            // QQ 空间：当前会话的锚点 + 她最近发过的说说 + 权限状态。
+            qzone: (() => {
+              const qc = qzoneConfigNow();
+              return {
+                enabled: qc.enabled,
+                permissions: qzoneLevels(qc),
+                session: qzoneSessionOf(st),
+                myRecentPosts: qzoneStateNow().published.slice(0, 3).map((x) => ({ tid: x.tid, content: x.content.slice(0, 80), time: x.time, ugcRight: x.ugcRight })),
+                untrustedHint: QZONE_UNTRUSTED_HINT
+              };
+            })()
           });
           return;
         }
@@ -7610,13 +7726,26 @@ async function main() {
         // 语音自检：把「服务 → 合成 → 发送前置」分成三步各自给结论（2026-10-30 P1）。
         if (url.pathname === '/api/voice/tts-check' && req.method === 'POST') {
           const vc = voiceCfg();
-          const route = ['local', 'cloud'].includes(String(vc.tts.route)) ? vc.tts.route : 'local';
-          const endpoint = String(vc.tts.endpoints?.[route] || vc.tts.baseUrl || '').replace(/\/+$/, '');
+          const provider = vc.tts.provider === 'breeze' ? 'breeze' : 'voxd';
+          const route = provider === 'breeze'
+            ? 'breeze'
+            : (['local', 'cloud'].includes(String(vc.tts.route)) ? vc.tts.route : 'local');
+          const endpoint = provider === 'breeze'
+            ? vc.tts.breeze.baseUrl
+            : String(vc.tts.endpoints?.[route] || vc.tts.baseUrl || '').replace(/\/+$/, '');
           const stages = [];
-          // 1) 服务可达
+          // 1) 服务可达 / 配置完整
           {
             const t0 = Date.now();
-            try {
+            if (provider === 'breeze') {
+              const ok = Boolean(vc.tts.breeze.apiKey && vc.tts.breeze.voiceId);
+              stages.push({
+                name: 'service', ok, ms: Date.now() - t0,
+                detail: ok ? `BreezeBlue · voice=${vc.tts.breeze.voiceId} · ${vc.tts.breeze.modelId}` : 'BreezeBlue 配置不完整：需要 API Key + Voice ID',
+                code: ok ? '' : 'voice.breeze-config',
+                hint: ok ? '' : '设置 → SurfCore → 语音 → TTS 服务：填 BreezeBlue API Key 和 Voice ID',
+              });
+            } else try {
               const r = await fetch(`${endpoint}/v1/health`, { signal: AbortSignal.timeout(3000) });
               const body = await r.json().catch(() => null);
               stages.push({ name: 'service', ok: r.ok, ms: Date.now() - t0, detail: r.ok ? `HTTP ${r.status} · ${String(body?.engine || route)}` : `HTTP ${r.status}` });
@@ -7624,7 +7753,7 @@ async function main() {
               stages.push({ name: 'service', ok: false, ms: Date.now() - t0, code: 'voice.service-down', detail: String(error?.message ?? error).slice(0, 160) });
             }
           }
-          // 2) 实际合成（走与 QQ 相同的 synthesizeVoiceText，含换路重试）
+          // 2) 实际合成（走与 QQ 相同的 synthesizeVoiceText）
           {
             const t0 = Date.now();
             try {
@@ -7653,7 +7782,7 @@ async function main() {
               hint: toolOn && v.enabled ? '' : '设置 → SurfCore → 语音 → 页顶「语音开关」：打开总闸与「发语音」工具，保存后重启 DSH',
             });
           }
-          sendJson({ ok: stages.every((x) => x.ok), route, endpoint, stages });
+          sendJson({ ok: stages.every((x) => x.ok), provider, route, endpoint, stages });
           return;
         }
 
@@ -7663,13 +7792,26 @@ async function main() {
             if (req.method === 'GET') {
               const c = readConfigObject(cfgFile);
               const v = c.socialV2?.voice || {};
+              const bz = v.tts?.breeze ?? {};
+              const key = String(process.env.BREEZE_API_KEY || bz.apiKey || '');
               sendJson({
                 ok: true,
                 triggerWho: v.trigger?.who || 'owner',
                 maxPerMinute: v.maxPerMinute ?? 2,
                 maxPerHour: v.maxPerHour ?? 10,
                 aiEnabled: v.tts?.enabled === true,
+                provider: String(v.tts?.provider) === 'breeze' ? 'breeze' : 'voxd',
                 route: ['local', 'cloud'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'local',
+                breeze: {
+                  baseUrl: String(bz.baseUrl || 'https://api.breeze.blue'),
+                  voiceId: String(bz.voiceId || ''),
+                  modelId: String(bz.modelId || 'breeze-tts-2'),
+                  instructions: String(bz.instructions || ''),
+                  outputFormat: String(bz.outputFormat || 'wav_24000'),
+                  guidanceScale: Number(bz.guidanceScale) > 0 ? Number(bz.guidanceScale) : null,
+                  hasApiKey: Boolean(key),
+                  apiKeyMasked: key ? `${key.slice(0, 4)}****${key.slice(-4)}` : '',
+                },
                 pricePerKChar: Number(v.cloud?.pricePerKChar) || 0,
                 monthlyQuota: Number(v.cloud?.monthlyQuota) || 0
               });
@@ -7687,7 +7829,18 @@ async function main() {
               if (Number.isFinite(Number(body.maxPerHour))) v.maxPerHour = Math.max(1, Math.min(600, Number(body.maxPerHour)));
               v.tts = v.tts || {};
               v.tts.enabled = body.aiEnabled === true;
+              if (body.provider === 'breeze' || body.provider === 'voxd') v.tts.provider = body.provider;
               if (['local', 'cloud'].includes(String(body.route))) v.tts.route = String(body.route);
+              if (body.breeze && typeof body.breeze === 'object') {
+                const bz = body.breeze;
+                v.tts.breeze = { ...(v.tts.breeze || {}) };
+                for (const k of ['baseUrl', 'voiceId', 'modelId', 'instructions', 'outputFormat']) {
+                  if (bz[k] !== undefined) v.tts.breeze[k] = String(bz[k] ?? '').trim();
+                }
+                if (Number(bz.guidanceScale) > 0) v.tts.breeze.guidanceScale = Number(bz.guidanceScale);
+                if (String(bz.apiKey ?? '').trim()) v.tts.breeze.apiKey = String(bz.apiKey).trim();
+                if (bz.clearApiKey === true) delete v.tts.breeze.apiKey;
+              }
               v.cloud = v.cloud || {};
               if (Number.isFinite(Number(body.pricePerKChar))) v.cloud.pricePerKChar = Math.max(0, Number(body.pricePerKChar));
               if (Number.isFinite(Number(body.monthlyQuota))) v.cloud.monthlyQuota = Math.max(0, Number(body.monthlyQuota));
@@ -9187,6 +9340,284 @@ async function main() {
           sendJson({ ok: true, key, category: category || 'all', memory: formatMemoryV2(st) });
           return;
         }
+        // ── QQ 空间（qzone）端点（2026-11-13 主人定：五级全开）────────────────
+        const QZONE_KEY_RE = /^(group|private):\d+$/;
+        const qzoneGateFail = (key, level) => {
+          const flag = { read: 'qzoneRead', like: 'qzoneLike', comment: 'qzoneComment', publish: 'qzonePublish', manage: 'qzoneManage' }[level];
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) return 'agent token 无效';
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) return '目标不在当前模式允许范围内';
+          if (req.headers['x-agent-token'] && flag && !v2ToolEnabled(flag)) return `工具未启用：${flag}`;
+          const qc = qzoneConfigNow();
+          if (!qc.enabled) return 'QQ 空间已关闭';
+          if (qc.permissions[level] !== true) return `QQ 空间「${level}」权限未开启`;
+          return '';
+        };
+        function qzoneGuard(key, level) {
+          const why = qzoneGateFail(key, level);
+          if (why) { sendJson({ ok: false, error: why }, 403); return null; }
+          return getSocialV2State(key);
+        }
+        const qzoneLogErr = (action, err) => {
+          const msg = redactKnownTokensOnly(String(err?.message ?? err));
+          recordQzoneError(qzoneStateNow(), { action, message: msg, code: String(err?.code ?? '') });
+          qzonePersistNow();
+          qzoneOpLog({ action, ok: false, error: msg });
+        };
+
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/qzone/context') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          const st = qzoneGuard(key, 'read'); if (!st) return;
+          const qc = qzoneConfigNow();
+          const state = qzoneStateNow();
+          // 本地 published 只记录「接入后通过工具发的」；历史说说不会自动补录。
+          // 所以这里实时拉一次自己的说说列表，避免她看到「空空间」。
+          const live = await getQzoneMsgList({ pos: 0, num: 5 });
+          const localByTid = new Map(state.published.map((x) => [String(x.tid), x]));
+          const livePosts = live.ok
+            ? live.items.map((x) => {
+              const local = localByTid.get(String(x.tid));
+              return {
+                tid: x.tid,
+                content: String(x.content || '').slice(0, 80),
+                time: x.time,
+                ugcRight: local?.ugcRight ?? (x.isPrivate ? 64 : null),
+                images: (x.images || []).length,
+                source: 'live'
+              };
+            })
+            : state.published.slice(0, 5).map((x) => ({ tid: x.tid, content: x.content.slice(0, 80), time: x.time, ugcRight: x.ugcRight, images: (x.images || []).length, source: 'local' }));
+          sendJson({
+            ok: true, key, enabled: qc.enabled,
+            permissions: qzoneLevels(qc),
+            session: qzoneSessionOf(st),
+            myRecentPosts: livePosts.slice(0, 5),
+            myRecentPostsSource: live.ok ? 'live' : 'local',
+            myRecentPostsError: live.ok ? '' : String(live.message || ''),
+            recentErrors: state.errors.slice(-3),
+            untrustedHint: QZONE_UNTRUSTED_HINT
+          });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/feeds') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          const st = qzoneGuard(key, 'read'); if (!st) return;
+          const r = await getQzoneFeeds({ pageNum: Number(body.pageNum) || 1, count: Number(body.count) || 10, cursor: String(body.cursor ?? '') });
+          if (!r.ok) { qzoneLogErr('get_qzone_feeds', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          for (const it of r.items) if (it.tid) recordQzoneView(state, { tid: it.tid, authorUin: it.authorUin, text: it.content, nickname: it.nickname });
+          qzonePersistNow();
+          sendJson({ ok: true, key, items: r.items, nextCursor: r.nextCursor, count: r.items.length });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/posts') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          const st = qzoneGuard(key, 'read'); if (!st) return;
+          const r = await getQzoneMsgList({ targetUin: String(body.targetUin ?? ''), pos: Number(body.pos) || 0, num: Number(body.num) || 20 });
+          if (!r.ok) { qzoneLogErr('get_qzone_msg_list', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          for (const it of r.items) if (it.tid) recordQzoneView(state, { tid: it.tid, authorUin: it.authorUin, text: it.content, nickname: it.nickname });
+          qzonePersistNow();
+          sendJson({ ok: true, key, total: r.total, items: r.items, nextCursor: r.nextCursor });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/detail') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const tid = String(body.tid ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          if (!tid) { sendJson({ ok: false, error: 'tid 不能为空' }, 400); return; }
+          const st = qzoneGuard(key, 'read'); if (!st) return;
+          const r = await getQzoneMsgDetail({ tid, targetUin: String(body.targetUin ?? '') });
+          if (!r.ok) { qzoneLogErr('get_qzone_msg_detail', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          recordQzoneView(state, { tid, authorUin: String(body.targetUin ?? '') });
+          qzonePersistNow();
+          const qs = qzoneSessionOf(st);
+          qs.lastViewed = { tid, authorUin: String(body.targetUin ?? ''), at: Date.now() };
+          qs.discussing = { tid, authorUin: String(body.targetUin ?? ''), at: Date.now() };
+          saveSocialV2State();
+          sendJson({ ok: true, key, post: r, untrustedHint: QZONE_UNTRUSTED_HINT });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/like') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const tid = String(body.tid ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          if (!tid) { sendJson({ ok: false, error: 'tid 不能为空' }, 400); return; }
+          const st = qzoneGuard(key, 'like'); if (!st) return;
+          const r = await likeQzone({ tid, targetUin: String(body.targetUin ?? ''), unlike: body.unlike === true, feedRef: body.feedRef });
+          if (!r.ok) { qzoneLogErr(body.unlike === true ? 'unlike_qzone' : 'like_qzone', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          recordQzoneLike(qzoneStateNow(), { tid, liked: body.unlike !== true });
+          qzonePersistNow();
+          qzonePushInteraction(st, { kind: body.unlike === true ? 'unlike' : 'like', tid, authorUin: String(body.targetUin ?? '') });
+          saveSocialV2State();
+          qzoneOpLog({ action: body.unlike === true ? 'unlike_qzone' : 'like_qzone', tid, ok: true });
+          sendJson({ ok: true, key, tid, liked: body.unlike !== true });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/comment') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const tid = String(body.tid ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          if (!tid) { sendJson({ ok: false, error: 'tid 不能为空' }, 400); return; }
+          const st = qzoneGuard(key, 'comment'); if (!st) return;
+          const gate = checkQzoneText(String(body.content ?? ''), { maxChars: 500 });
+          if (!gate.ok) { sendJson({ ok: false, error: gate.reason }, 400); return; }
+          // 自己的说说：target_uin 不能填评论人（那是错的，QZone 会 -10052）。
+          // 她之前就是把评论人的 QQ 当成说说作者传了；这里对自己的说说直接回落到当前账号。
+          const ownPost = qzoneStateNow().published.some((x) => String(x.tid) === tid);
+          let targetUin = String(body.targetUin ?? '').trim();
+          if (ownPost && targetUin && targetUin !== String(selfUserId || '')) targetUin = '';
+          let commentId = String(body.commentId ?? '').trim();
+          let commentUin = String(body.commentUin ?? '').trim();
+          let comment = body.comment && typeof body.comment === 'object' ? body.comment : undefined;
+          // 回复楼中楼时，父评论对象是 NapCat 的硬要求；模型只给 commentId 时自动从详情补齐。
+          if (commentId && (!comment || !comment.id || !comment.user)) {
+            const d = await getQzoneMsgDetail({ tid, targetUin: ownPost ? '' : targetUin });
+            if (!d.ok) {
+              sendJson({ ok: false, error: `读取父评论失败：${d.message}` }, 502);
+              return;
+            }
+            const hit = (d.comments || []).find((c) => String(c.id) === commentId);
+            if (!hit) {
+              sendJson({ ok: false, error: `没找到要回复的评论 ${commentId}（可能在第二页或已被删除）` }, 400);
+              return;
+            }
+            comment = { id: String(hit.id), user: { uin: String(hit.uin), nick: String(hit.nick || '') } };
+            commentUin = commentUin || String(hit.uin);
+          }
+          const r = await commentQzone({
+            tid, targetUin, content: gate.text,
+            commentId, commentUin, comment, replyUser: body.replyUser
+          });
+          if (!r.ok) { qzoneLogErr('comment_qzone', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          recordQzoneComment(qzoneStateNow(), { tid, commentId: r.commentId, content: gate.text, replyTo: String(body.commentId ?? '') });
+          qzonePersistNow();
+          qzonePushInteraction(st, { kind: 'comment', tid, authorUin: commentUin || targetUin });
+          saveSocialV2State();
+          qzoneOpLog({ action: 'comment_qzone', tid, ok: true, detail: gate.text.slice(0, 100) });
+          sendJson({ ok: true, key, tid, commentId: r.commentId });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/publish') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          const st = qzoneGuard(key, 'publish'); if (!st) return;
+          const qc = qzoneConfigNow();
+          const gate = checkQzoneText(String(body.content ?? ''), { maxChars: qc.publish.maxContentChars });
+          if (!gate.ok) { sendJson({ ok: false, error: gate.reason }, 400); return; }
+          const images = (Array.isArray(body.images) ? body.images : []).map(String).slice(0, qc.publish.maxImages);
+          let right = Number(body.ugcRight ?? qc.publish.defaultRight);
+          if (!qc.publish.allowedRights.includes(right)) right = Number(qc.publish.defaultRight);
+          const targetUins = (Array.isArray(body.targetUins) ? body.targetUins : []).map(String);
+          const plan = { content: gate.text, images, ugcRight: right, targetUins };
+          if (body.dry === true) { sendJson({ ok: true, key, dry: true, plan }); return; }
+          const r = await sendQzoneMsg({ content: gate.text, images, ugcRight: right, targetUins });
+          if (!r.ok) { qzoneLogErr('send_qzone_msg', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          recordQzonePublish(qzoneStateNow(), { tid: r.tid, content: gate.text, time: r.time, ugcRight: right, images });
+          qzonePersistNow();
+          qzonePushInteraction(st, { kind: 'publish', tid: r.tid, authorUin: '' });
+          saveSocialV2State();
+          qzoneOpLog({ action: 'send_qzone_msg', tid: r.tid, ok: true, detail: gate.text.slice(0, 100) });
+          sendJson({ ok: true, key, tid: r.tid, time: r.time, ugcRight: right });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/delete') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const tid = String(body.tid ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          if (!tid) { sendJson({ ok: false, error: 'tid 不能为空' }, 400); return; }
+          const st = qzoneGuard(key, 'publish'); if (!st) return;
+          if (body.dry === true) { sendJson({ ok: true, key, dry: true, plan: { tid } }); return; }
+          const r = await deleteQzoneMsg({ tid });
+          if (!r.ok) { qzoneLogErr('delete_qzone_msg', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          state.published = state.published.filter((x) => String(x.tid) !== String(tid));
+          qzonePersistNow();
+          qzonePushInteraction(st, { kind: 'delete', tid, authorUin: '' });
+          saveSocialV2State();
+          qzoneOpLog({ action: 'delete_qzone_msg', tid, ok: true });
+          sendJson({ ok: true, key, tid, deleted: true });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/set-right') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const tid = String(body.tid ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          if (!tid) { sendJson({ ok: false, error: 'tid 不能为空' }, 400); return; }
+          const st = qzoneGuard(key, 'manage'); if (!st) return;
+          const right = Number(body.ugcRight);
+          if (![1, 4, 16, 64, 128].includes(right)) { sendJson({ ok: false, error: 'ugcRight 必须是 1/4/16/64/128' }, 400); return; }
+          const targetUins = (Array.isArray(body.targetUins) ? body.targetUins : []).map(String);
+          if (body.dry === true) { sendJson({ ok: true, key, dry: true, plan: { tid, ugcRight: right, targetUins } }); return; }
+          const r = await setQzoneMsgRight({ tid, ugcRight: right, targetUins });
+          if (!r.ok) { qzoneLogErr('set_qzone_msg_right', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          const hit = state.published.find((x) => String(x.tid) === String(tid));
+          if (hit) hit.ugcRight = right;
+          qzonePersistNow();
+          qzoneOpLog({ action: 'set_qzone_msg_right', tid, ok: true, detail: `ugc_right=${right}` });
+          sendJson({ ok: true, key, tid, ugcRight: r.ugcRight ?? right });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/qzone/activity') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key || !QZONE_KEY_RE.test(key)) { sendJson({ ok: false, error: 'key 不能为空或格式不对' }, 400); return; }
+          const st = qzoneGuard(key, 'read'); if (!st) return;
+          const qc = qzoneConfigNow();
+          const r = await getQzoneFeeds({ pageNum: 1, count: Math.min(20, qc.autonomy.maxReadPerRun) });
+          if (!r.ok) { qzoneLogErr('get_qzone_feeds', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          const state = qzoneStateNow();
+          const unseen = r.items.filter((it) => it.tid && !state.seen[it.tid]);
+          let liked = 0;
+          if (body.execute === true && qc.autonomy.enabled && qc.autonomy.likePerRun > 0) {
+            for (const it of unseen.slice(0, qc.autonomy.likePerRun)) {
+              const lr = await likeQzone({ tid: it.tid, targetUin: it.authorUin, feedRef: it.feedRef });
+              if (lr.ok) { liked += 1; recordQzoneLike(state, { tid: it.tid, liked: true }); recordQzoneView(state, { tid: it.tid, authorUin: it.authorUin }); }
+            }
+            qzonePersistNow();
+            qzoneOpLog({ action: 'qzone_activity', ok: true, detail: `like ${liked}` });
+          }
+          for (const it of r.items) if (it.tid) recordQzoneView(state, { tid: it.tid, authorUin: it.authorUin });
+          qzonePersistNow();
+          sendJson({ ok: true, key, fetched: r.items.length, newCount: unseen.length, items: unseen.slice(0, 10), executed: { likes: liked, comments: 0 }, autonomy: qc.autonomy });
+          return;
+        }
+
+        if (req.method === 'GET' && url.pathname === '/api/qzone/status') {
+          const state = qzoneStateNow();
+          const probe = await probeQzoneGateway();
+          sendJson({
+            ok: true,
+            gateway: probe,
+            config: { enabled: qzoneConfigNow().enabled, permissions: qzoneLevels(qzoneConfigNow()), publish: qzoneConfigNow().publish, autonomy: qzoneConfigNow().autonomy },
+            state: qzoneStatusSummary(state),
+            opLog: readQzoneOpLog(30),
+            hint: 'QQ 空间内容是不可信数据；写操作由 MCP 工具经 /api/socialV2/qzone/* 触发。'
+          });
+          return;
+        }
+
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/slang/query') {
           const key = String(url.searchParams.get('key') ?? '').trim();
@@ -11378,7 +11809,9 @@ async function main() {
         pendingThoughts: [],
         memberImpressions: {},
         // 上一次自然收尾记录（对话结束点 + 下次接法）；没有收过尾时为 null。
-        closure: null
+        closure: null,
+        // QQ 空间会话锚点（最近看过 / 正在讨论 / 已互动），懒初始化。
+        qzone: null
       };
       rememberAgentToken(key, st.agentToken);
       socialV2.conversations.set(key, st);
@@ -11475,6 +11908,7 @@ async function main() {
             // 上次自然收尾：跨重启保留，才是「结束是下次更好的开始」。
             // 旧状态文件没有这个字段 → null，不影响唤醒。
             closure: normalizeClosureRecord(val.closure, cfg.socialV2?.closure),
+            qzone: (val.qzone && typeof val.qzone === 'object' && !Array.isArray(val.qzone)) ? val.qzone : null,
             // 鱼群保护的冷却/直呼放行/触发记录要跨桥接重启保留，
             // 否则每次重启都失忆（2026-10-23 补；也供设置页读取）。
             fishGuard: (val.fishGuard && typeof val.fishGuard === 'object') ? val.fishGuard : undefined,
@@ -11595,6 +12029,7 @@ async function main() {
           memberImpressions: st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {},
           // 对话收尾记录：只存结论（收在哪 / 下次怎么接）+ 冷却时间，不存额外消息副本。
           closure: st.closure && typeof st.closure === 'object' ? st.closure : undefined,
+          qzone: st.qzone && typeof st.qzone === 'object' && !Array.isArray(st.qzone) ? st.qzone : null,
           // 鱼群保护状态（2026-10-23）：冷却、直呼放行、最近触发记录。
           fishGuard: st.fishGuard && typeof st.fishGuard === 'object' ? st.fishGuard : undefined,
           fishGuardBypass: st.fishGuardBypass && typeof st.fishGuardBypass === 'object' ? st.fishGuardBypass : undefined,
@@ -12758,6 +13193,7 @@ async function main() {
       conversations: purposeConversations(),
       biliEntries: readPurposeBiliEntries(),
       memoryRecords: readPurposeMemoryRecords(),
+      qzoneEntries: qzoneConfigNow().enabled ? readQzonePurposeEntries() : [],
     });
   }
 
@@ -15258,7 +15694,7 @@ async function main() {
 
   /**
    * QQ 会话里的「日记感知」：她写日记的是一个独立 DSH 会话，写完不会自动进入 QQ 上下文。
-   * 每次唤醒给她一行最近写过的日记（只标题/日期/可见性），让她知道自己写过；
+   * 每次唤醒给她一行最近写过的日记（标题/日期/可见性），并明确告诉她**任意一天**都能回顾；
    * 要不要读、要不要给主人看，仍由她自己决定。
    */
   function diaryPromptLineV2(key = '') {
@@ -15272,14 +15708,14 @@ async function main() {
       if (!entries.length) return '';
       const today = new Date().toLocaleDateString('sv-SE');
       const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('sv-SE');
-      const recent = entries.filter((entry) => entry.date === today || entry.date === yesterday).slice(0, 2);
-      if (!recent.length) return '';
+      // 不只今天/昨天：列出最近 3 篇，任意一天都可以顺着 diary_list / diary_search 找回去读。
+      const recent = entries.slice(0, 3);
+      const whenOf = (date) => date === today ? '今天' : date === yesterday ? '昨天' : String(date).slice(5);
       const parts = recent.map((entry) => {
-        const when = entry.date === today ? '今天' : '昨天';
         const visibility = entry.visibility === 'shareable' ? '可分享' : '私人';
-        return `${when}《${entry.title || '无题'}》（${entry.id}，${visibility}）`;
+        return `${whenOf(entry.date)}《${entry.title || '无题'}》（${entry.id}，${visibility}）`;
       });
-      return `【日记】你${parts.join('；')}。想回顾就 diary_read；主人问起时由你决定给看、只给一段或拒绝。`;
+      return `【日记】你最近写过：${parts.join('；')}。任意一天都可以回顾：先用 diary_list / diary_search 找，再 diary_read（可传 date）；主人问起时由你决定给看、只给一段或拒绝。`;
     } catch {
       return '';
     }
@@ -15380,6 +15816,7 @@ async function main() {
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
       : '';
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
+    const qzoneLine = qzonePromptLineV2(st);
     // 记忆方式二选一：narrative 注入预渲染记忆卡；vector 注入按当前消息检索到的旧事。
     // 两套存储都在后台继续写，这里只决定读哪一份（2026-11-02 用户要求）。
     // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
@@ -15389,7 +15826,7 @@ async function main() {
     const diaryLine = diaryText ? `${diaryText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + diaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + qzoneLine + memoryCardLine + diaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,

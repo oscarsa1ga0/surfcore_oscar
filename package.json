@@ -79,7 +79,8 @@
     "version:tag": "node scripts/version.mjs tag",
     "test:version": "node scripts/test-version.mjs",
     "test:qq-last-context": "node scripts/test-qq-last-context.mjs",
-    "test:fav-move": "node scripts/test-fav-move.mjs"
+    "test:fav-move": "node scripts/test-fav-move.mjs",
+    "test:voice-breeze": "node scripts/test-voice-breeze.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh-host-apiproxy": "0.1.1-rc.2",

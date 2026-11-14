@@ -63,6 +63,9 @@ import { createBiliMemory } from '../src/bili-memory.js';
 import { createOutbox, historyAllowsReplay, neverDispatched } from '../src/outbox.js';
 import { isLoopbackBaseUrl } from '../src/dsh-port.js';
 import { oneBotWsToken, usesExternalOneBot } from '../src/snowluma-conn.js';
+import * as qzoneApi from '../src/qzone-api.js';
+import * as qzoneState from '../src/qzone-state.js';
+import * as qzoneGate from '../src/qzone-gate.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -293,6 +296,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...sessionRollover,
     ...wakeBatch,
     ...wakeFilter,
+    ...qzoneApi, ...qzoneState, ...qzoneGate,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,

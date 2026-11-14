@@ -305,6 +305,24 @@ function taToday() {
   } catch { return 0 }
 }
 
+/** 今天已经做了几条视频点赞/投币/关注（给唤醒提示看进度；读 quota 账本） */
+function actionCountToday(type) {
+  try {
+    const q = JSON.parse(fs.readFileSync(path.join(platformDir(), 'quota.json'), 'utf8'))
+    const t = new Date().toLocaleDateString('sv-SE')
+    return (q.log ?? []).filter((x) => x?.type === type && new Date(x.at).toLocaleDateString('sv-SE') === t).length
+  } catch { return 0 }
+}
+
+/** 今天已经收藏了几条（favorites.json 的 at 是 ISO 时间） */
+function favoritesToday() {
+  try {
+    const favorites = JSON.parse(fs.readFileSync(path.join(platformDir(), 'favorites.json'), 'utf8'))
+    const t = new Date().toLocaleDateString('sv-SE')
+    return (favorites.items ?? []).filter((x) => x?.at && new Date(x.at).toLocaleDateString('sv-SE') === t).length
+  } catch { return 0 }
+}
+
 const TICK_MS = 60_000
 const LISTEN_STATE = 'whale-listen.json'
 /** 实时额度：设置页改完下一轮生效（config() 按 mtime 缓存）。 */
@@ -436,7 +454,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     ...silenceLines(),
     '按 AGENTS.md 的「看的那晚」流程走一遍（不要等我说话，直接做）：',
     ...(SILENT
-      ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
+      ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止关注/取关、视频点赞/投币、评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 follow / like-video / coin / comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
       : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
     '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
     `2) 读两本 B站侧日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）；晚上写的那本私人日记用 \`diary_list\` / \`diary_read\` 看（公开分享只挑愿意公开的段落）`,
@@ -449,12 +467,21 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     · 要回就按倾听规则回，别逐条盖楼；没有新东西就跳过，继续后面的流程。',
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
-    '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
+    '3) `feed` 选题（默认 6 条；不够就按实际）→ 对这几条跑 `debrief --no-frames`',
     '   （**先看关注动态里 7 天内没看过的新视频**；不够 5 条再按「口味权重」补搜索/热门/排行/旧关注；看过的/最近推过的自动排除，**不看播放量** ✓）',
     '   3.2) 如果你发现自己总在看同一类：不要自己改配置文件 —— 让主人去设置页「B站 → 口味权重 / 一键抓取」调低那个词、调高别的。',
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
     '        写一段日记或扫一眼消息就按“轻醒”收工，保住这一趟的质量 ✓',
-    '4) 挑 2–3 条深读（完整 `debrief`，含抽帧）',
+    '4) **至少挑 2 条深读**（完整 `debrief`，含抽帧）；其余候选你自己判断，想细读就细读，不想就跳过',
+    '4.1) 关注/取关（可选，不是任务）：遇到反复看/收藏的 UP，可以 `follow --mid <mid> --status` → `--dry` → `--go`；取关加 `--unfollow`。',
+    '     ⚠️ 不能关注/取关自己，**不能取关主人**；关注/取关共用最小间隔和日上限；发完 notify 报备。',
+    '     ⚠️ 刚关注的 UP 的新视频会进入「关注动态优先」，别为了填 feed 乱关注。',
+    '4.2) 点赞/投币（可选，不是任务）：',
+    '     · 看完真觉得好，可以顺手点个赞；特别喜欢再考虑投币/关注，不做也正常。',
+    `     · 今天视频点赞 ${actionCountToday('like-video')}/${capText(B.likeVideo?.dailyMax ?? 10)} · 投币 ${actionCountToday('coin')}/${capText(B.coin?.dailyMax ?? 5)} · 关注 ${actionCountToday('follow')}/${capText(B.follow?.dailyMax ?? 3)} · 收藏 ${favoritesToday()}/3；看完真觉得好再动，不强制。`,
+    '     · 视频点赞：`like-video --bvid BV1,BV2 --dry` → `--go`（每天最多 10 个 · 每次最多 5 个）',
+    '     · 投币：`coin --bvid <BV> --reason "为什么特别好" --dry` → `--go`（先看硬币余额；每天最多 5 枚；单视频 1 枚需评分 ≥16，2 枚需 ≥18；没评分先 score）',
+    '     ⚠️ 投币只对**特别好的**视频；理由说不清就别投；别为了花而花。',
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
     // 2026-11-13（主人定）：收藏夹是可选工具，不是任务；建夹/改名/放哪儿都由她自己决定。
     '4.5) **收藏是可选的，不是任务**：深读的那几条里，只有你确实想留着才收；不想收就跳过，不收藏完全没问题。',
@@ -517,16 +544,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
     ...(insertBeforeShare.length ? ['', ...insertBeforeShare, ''] : []),
-    '5) 按「标尺」打分排序，只对第一名考虑分享：',
-    `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
-    '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
-    '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
-    `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
-    '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
-    '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
-    `     ⚠️ 必须带 --share：使用分享额度（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）。`,
-    '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
-    '5.5) 自由发布（可选，不是任务）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
+    '4.10) 自由发布（可选，不是任务）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
     '     可以是：刚刷到的视频/图片；一句突然想到的话；**B站侧两本日记（whale-diary / whale-diary-private）或你晚上用 diary_write 写的那本里，你愿意公开的一段**（先用 diary_list / diary_read 挑）；和主人/群友聊完后的心得感悟；一个站内链接/专栏。',
     '     形式：文字 / 一张图 / 任意视频卡片 / 链接；长文用 article（先 --draft 再 --go）。',
     '       `free-post --text "…" [--image <图>] [--bvid <任意BV>] [--link <站内URL>] --dry` → `--go`',
@@ -536,15 +554,17 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     ⚠️ **想发就发，不想发就不发；可以很多天一条都不发，这不是任务，不要为了“完成”硬发。**',
     `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
     '     ⚠️ 原创视频上传还没实现（接口预留）；视频用 `--bvid` 分享卡片，不要尝试 video-upload。',
-    '5.6) 视频弹幕（可选，不是任务）：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
+    '4.11) 视频弹幕（可选，不是任务）：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
     '     ⚠️ 一条视频别刷；和评论一样过身份闸；本地有 30 秒间隔/日上限；不是每条视频都要发。',
-    '5.7) 关注/取关（可选，不是任务）：遇到反复看/收藏的 UP，可以 `follow --mid <mid> --status` → `--dry` → `--go`；取关加 `--unfollow`。',
-    '     ⚠️ 不能关注/取关自己，**不能取关主人**；关注/取关共用最小间隔和日上限；发完 notify 报备。',
-    '     ⚠️ 刚关注的 UP 的新视频会进入「关注动态优先」，别为了填 feed 乱关注。',
-    '5.8) 点赞/投币（可选，只对真喜欢的，不是每条都做）：',
-    '     · 视频点赞：`like-video --bvid BV1,BV2 --dry` → `--go`（每天最多 10 个 · 每次最多 5 个）',
-    '     · 投币：`coin --bvid <BV> --reason "为什么特别好" --dry` → `--go`（先看硬币余额；每天最多 5 枚；单视频 1 枚需评分 ≥16，2 枚需 ≥18；没评分先 score）',
-    '     ⚠️ 投币只对**特别好的**视频；理由说不清就别投；别为了花而花。',
+    '5) 按「标尺」打分排序，只对第一名考虑分享：',
+    `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
+    '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
+    '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
+    `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
+    '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
+    '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
+    `     ⚠️ 必须带 --share：使用分享额度（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）。`,
+    '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
     '7.5) ⭐ `quota react --auto --hours 48` —— 扫一遍主人有没有表态（**点赞也算** ✓ 能看到是哪条评论 ✓）',
     '     → 有就记一次反馈，并**写进私人日记「偏好校准」**（哪条视频 / 他什么反应 / 我下次往哪偏）',
     // 2026-10-20：沉默 ≥7 天 → 提前告诉她"今天不分享"（闸门也会拒，但少浪费一轮 ✓）
@@ -552,13 +572,13 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
       let fb = {}
       try { fb = JSON.parse(fs.readFileSync(path.join(platformDir(), "feedback.json"), "utf8")) } catch {}
       const days = fb.last ? Math.floor((Date.now() - new Date(fb.last).getTime()) / 86400000) : 0
-      return days >= 7 ? ["5.5) ⛔ 已经 " + days + " 天没有主人的表态 → **今天不分享**（只看 + 写两本日记 + 推荐给我 ✓ 日记照写 ✓）"] : []
+      return days >= 7 ? ["⚠️ 已经 " + days + " 天没有主人的表态 → **今天不分享**（只看 + 写两本日记 + 推荐给我 ✓ 日记照写 ✓）"] : []
     })(),
     // 2026-11-13 用户定：日记放在所有逛/评论/收件箱/反馈之后，下线之前；
     // notify（给他的信）读的是日记，所以必须排在日记后面。
     '7.8) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）—— 放在所有事情之后，写完再统一 notify / 收工',
     ...diaryPushLines(),
-    ...(SILENT ? ['⛔ **再次强调：沉默逛已开启，以上 4.5–7.5 的所有对外发言步骤全部跳过；只读、评分、写日记。**'] : []),
+    ...(SILENT ? ['⛔ **再次强调：沉默逛已开启，以上 4.1–7.5 的所有对外动作全部跳过；只读、评分、写日记。**'] : []),
     '9) 收工：记 `diary log` ✓（今天想说的都说了吗？没说完留到下一趟，别憋着 ✗）',
   ].join('\n')
 }
@@ -1457,9 +1477,12 @@ export function startScheduler(ctx, opts) {
       const inSlotNow = slotOf(kind, now, KINDS_NOW)
       if (!inSlotNow && today() !== CATCHUP_DAY) continue
       const key = `${today()}:${kind}`
-      const lastNudge = ns[key] ? new Date(ns[key]).getTime() : 0
-      if (lastNudge && Date.now() - lastNudge < gapMs) continue
-      ns[key] = new Date().toISOString()
+      const remindedKey = `${key}:reminded`
+      // 用户 2026-11-14 定：动态没发出去也不再重试叫醒；每类每天只提醒一次。
+      // 旧状态里已有 ns[key]（曾经提醒过）也算已提醒，避免升级后当天再补一次。
+      if (ns[remindedKey] || ns[key]) continue
+      ns[remindedKey] = new Date().toISOString()
+      ns[key] = ns[remindedKey]
       try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
 
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
@@ -1499,7 +1522,7 @@ export function startScheduler(ctx, opts) {
             ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
             : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
           '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
-          '⚠️ 发完再继续第 5/5.5/5.6/5.7/5.8/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
+          '⚠️ 发完再继续第 4.10/4.11/5/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
         ]
         const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, insertBeforeShare: dynLines })
         await promptBili({

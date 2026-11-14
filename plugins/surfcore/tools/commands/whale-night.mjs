@@ -89,6 +89,34 @@ const MIN_GAP_MIN = Math.max(0, Number(cfg.minGapMin ?? 20) || 20)
 const st = load(STATE, {})
 const wakesToday = (s) => (s.date === today() ? Number(s.wakes ?? 0) : 0)
 
+// clock 是长驻进程：cfg/WINDOWS 在进程启动时读一次，之后用户在设置页改窗口
+// 它不会知道（今天 6:00 没醒就是这个原因：00:00 跨天排程用了启动时的旧窗口）。
+// 排程前重新读一次配置，并给计划记 configSig；窗口变了就重建。
+function runtimeScheduleConfig() {
+  const c = load(CFG, config().night)
+  // buildNightSchedule 自己会把 HH:MM 文本归一化；不能把已经归一化的数字分钟再传进去，
+  // 否则 parseClock('1320') 失败 → 掉回默认 20:00–24:00（今天 6:00 没醒的根因）。
+  const raw = Array.isArray(c.windows) && c.windows.length
+    ? c.windows
+    : [{ start: c.windowStart ?? '20:00', end: c.windowEnd ?? '24:00', wakes: c.maxWakesPerDay ?? 1 }]
+  const wins = windowsOf(c)
+  return {
+    cfg: c,
+    rawWindows: raw,
+    windows: wins,
+    maxWakes: Math.min(12, Math.max(0, Number(c.maxWakesPerDay ?? 12) || 12)),
+    minGapMin: Math.max(0, Number(c.minGapMin ?? 20) || 20),
+  }
+}
+function scheduleSignature(rt) {
+  return JSON.stringify({
+    v: 2,
+    windows: rt.windows.map((w) => [w.start, w.end, w.wakes]),
+    maxWakes: rt.maxWakes,
+    minGapMin: rt.minGapMin,
+  })
+}
+
 function donePlan(state, reason) {
   return {
     ...(state && typeof state === 'object' ? state : {}),
@@ -99,7 +127,7 @@ function donePlan(state, reason) {
   }
 }
 
-function planFromSlot(state, slot) {
+function planFromSlot(state, slot, cfgNow = cfg) {
   const kind = slot.kind === 'base' ? '保底' : '加餐'
   return {
     ...state,
@@ -121,35 +149,37 @@ function planFromSlot(state, slot) {
       ? `这次不想看（掷骰子掷到了「不看」那 ${Math.round(Number(cfg.skipChance ?? 0.3) * 100)}%）`
       : '',
     roll: slot.action === 'wake' ? 'watch' : 'skip',
-    maxVideos: cfg.maxVideos ?? 5,
+    maxVideos: cfgNow.maxVideos ?? 5,
     createdAt: new Date().toISOString(),
   }
 }
 
 function makePlan() {
   const now = nowMin()
-  if (MAX_WAKES === 0) return donePlan(st, 'maxWakesPerDay=0 → 今天不醒')
+  const rt = runtimeScheduleConfig()
+  const sig = scheduleSignature(rt)
+  if (rt.maxWakes === 0) return donePlan(st, 'maxWakesPerDay=0 → 今天不醒')
 
-  // 已经生成过今天的排程：只推进 slots，不重新掷骰子。
-  if (st?.date === today() && Array.isArray(st.slots)) {
+  // 已经生成过今天的排程，且窗口配置没变：只推进 slots，不重新掷骰子。
+  if (st?.date === today() && Array.isArray(st.slots) && st.configSig === sig) {
     const slot = nextPendingSlot(st, now)
-    if (slot) return planFromSlot(st, slot)
+    if (slot) return planFromSlot(st, slot, rt.cfg)
     return donePlan(st, '今天的排程已走完（含错过/轻醒）')
   }
 
-  // 新的一天：一次性排完，之后只按 slots 执行。
+  // 新的一天，或窗口配置在当天被改过：按当前配置重建剩余排程。
+  // 已醒次数保留，避免改配置后白送额外次数。
   const already = st?.date === today() ? Number(st.wakes ?? 0) || 0 : 0
-  // 旧状态可能只有 wakes、没有 watchWakes；迁移时按“醒过=看过”算，别把上午那次吞掉。
   const alreadyWatched = st?.date === today()
     ? Number(st.watchWakes ?? st.wakes ?? 0) || 0
     : 0
   const schedule = buildNightSchedule({
-    windows: WINDOWS,
-    maxWakes: Math.max(0, MAX_WAKES - already),
-    minGapMin: MIN_GAP_MIN,
-    skipChance: Number(cfg.skipChance ?? 0.3),
+    windows: rt.rawWindows,
+    maxWakes: Math.max(0, rt.maxWakes - already),
+    minGapMin: rt.minGapMin,
+    skipChance: Number(rt.cfg.skipChance ?? 0.3),
     nowMin: now,
-    quality: qualityByWindow(loadScores(), WINDOWS, { days: 30 }),
+    quality: qualityByWindow(loadScores(), rt.windows, { days: 30 }),
   })
   const base = {
     date: today(),
@@ -161,10 +191,11 @@ function makePlan() {
     extraCount: schedule.extraCount,
     wakes: already,
     watchWakes: alreadyWatched,
+    configSig: sig,
   }
   const slot = nextPendingSlot(base, now)
   if (!slot) return donePlan(base, '今天没有可排的窗口（都已过/没有次数）')
-  return planFromSlot(base, slot)
+  return planFromSlot(base, slot, rt.cfg)
 }
 
 function logEvent(kind, note) {
@@ -224,6 +255,7 @@ if (cmd === 'clock') {
   let p = load(STATE, {})
   const stale = p.date !== today() || !p.action || p.woke === true || p.done === true
     || (p.action === 'skip' && p.fired === true)
+    || p.configSig !== scheduleSignature(runtimeScheduleConfig())
   if (stale) {
     p = makePlan(); save(STATE, p)
     logEvent('night-plan', p.action === 'wake' ? `${p.atText} 看视频（窗口 ${p.window}${p.withinWindow ? ' · ' + p.withinWindow : ''}）` : `不醒：${p.reason}`)
