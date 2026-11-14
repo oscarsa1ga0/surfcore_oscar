@@ -1,15 +1,45 @@
-// 原创视频投稿 —— 阶段三接线（方案 §7）。
-//
-// 阶段一/二只做本地创作与导出：先走 video-project（见 tools/commands/video-project.mjs）。
-// 这里保留入口名；接投稿时从这里开始：
-//   1) 本地投稿预检（--dry：包摘要/风险检查/当前授权模式，不上传任何字节）
-//   2) --draft 保存本地待投稿包；--go 按 publishMode（draft/confirm/auto）流转
-//   3) 网页上传适配器：preupload → 分片 PUT → 合片 → 封面 → add/v3 → 创作中心回读
-// 已核对可用端点（2026-11）：见插件 docs 与方案 §7。
-console.error([
-  '原创视频投稿在阶段三开放。',
-  '当前（阶段一）可用：',
-  '  · video-project create/save/render/status/preview  本地创作、出片、试听与导出',
-  '  · 导出后在 B 站官方创作中心手动提交',
-].join('\n'))
-process.exit(2)
+#!/usr/bin/env node
+import { parseArgs } from 'node:util'
+import { readBiliConfig } from '../../lib/store.js'
+import { openVideoStore } from '../../lib/video/project-store.js'
+import { requireVideoRoot } from '../../lib/video/paths.js'
+import { requestPublication, safePublish, refreshPublication, PROJECT_ID } from '../../lib/video/publish-state.js'
+
+const usage = 'video-upload <项目ID> --revision <版本> --dry|--draft|--go [--json]\nvideo-upload status <项目ID> [--refresh] [--json]'
+let store
+try {
+  const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+    revision: { type: 'string' }, dry: { type: 'boolean' }, draft: { type: 'boolean' }, go: { type: 'boolean' },
+    refresh: { type: 'boolean' }, json: { type: 'boolean' }, help: { type: 'boolean' },
+  } })
+  if (values.help) {
+    console.log(usage)
+  } else {
+    const isStatus = positionals[0] === 'status'
+    const projectId = positionals[isStatus ? 1 : 0]
+    const actions = ['dry', 'draft', 'go'].filter((kind) => values[kind])
+    const revision = Number(values.revision)
+    if (!PROJECT_ID.test(projectId ?? '') || positionals.length !== (isStatus ? 2 : 1)
+      || (isStatus ? actions.length || values.revision != null : actions.length !== 1 || !Number.isInteger(revision) || revision < 1 || values.refresh)) {
+      throw Object.assign(new Error('缺少项目、版本或动作，或提供了冲突的参数'), { code: 'VIDEO_PUBLISH_USAGE' })
+    }
+    const { root } = requireVideoRoot()
+    store = openVideoStore(root)
+    const cfg = readBiliConfig().config
+    if (isStatus && !store.getProject(projectId)) throw Object.assign(new Error('视频项目不存在'), { code: 'VIDEO_PROJECT_NOT_FOUND' })
+    const ctx = { store, root, projectId, revision, cfg }
+    const result = isStatus
+      ? { ok: true, ...(values.refresh ? refreshPublication(ctx) : {}), publishes: store.listPublishes(projectId).map(safePublish) }
+      : await requestPublication(ctx, actions[0])
+    if (values.json) console.log(JSON.stringify(result))
+    else console.log(JSON.stringify(result, null, 2))
+  }
+} catch (error) {
+  const result = { ok: false, code: error.code?.startsWith('VIDEO_') ? error.code : 'VIDEO_PUBLISH_FAILED',
+    error: error.code?.startsWith('VIDEO_') ? error.message : '无法处理视频投稿请求',
+    hint: error.hint ?? usage }
+  console.error(JSON.stringify(result))
+  process.exitCode = 1
+} finally {
+  store?.close()
+}

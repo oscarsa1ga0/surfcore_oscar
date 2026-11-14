@@ -1,6 +1,6 @@
-# 视频创作（本地剪辑与自主审片）
+# 视频创作、审片与 B 站投稿
 
-> 阶段二以 `feat/video-creation@499f246` 为基线。支持本地创作与导出，视频投稿属于第三阶段。
+> 投稿沿用鱼姬的扫码登录。首次使用账号和分区时须确认一条稿件，创作中心回读验证通过后才可在该分区自主投稿。
 
 ## 能做什么
 
@@ -58,7 +58,7 @@ video-project review <id> --revision <n> --decision keep|revise|shelve [--reason
 - 视频镜头在 `visual` 写 `inMs/outMs`，用 `duration: {"mode":"clip"}` 令镜头长度取裁切后的时长。默认保留画面，`"audio":"mix"` 才混入该段原声。
 - 顶层 `audioTracks` 支持 `{"kind":"music","assetId":"a_…","startMs":0,"inMs":500,"outMs":15500,"gainDb":-18}`。`kind` 可用 `sfx`；相同时间重合的轨道会叠加。旁白存在时自动压低配乐，混音目标约 −16 LUFS。
 - `transitionOut` 支持 `cut` 和 `{"kind":"fade_black","durationMs":500}`，淡入淡出在相邻镜头内进行，总时长不变。
-- 素材限本地普通文件。导入上限 100 MiB / 30 分钟，视频画幅最高 4096×4096。设置页记录的是使用者提供的授权信息；真实授权仍须由使用者核对。上传前的来源和公开权限留到投稿阶段验收。
+- 素材限本地普通文件。导入上限 100 MiB / 30 分钟，视频画幅最高 4096×4096。设置页记录的是使用者提供的授权信息；真实授权仍须由使用者核对。要投稿的外部图片、视频和音频需在素材库登记时勾选「允许用于公开 B 站视频」。存量导入素材可用原文件重新登记权限。
 
 ## 审片与修订
 
@@ -95,17 +95,33 @@ video-project review <id> --revision <n> --decision keep|revise|shelve [--reason
 | `POST /assets/:id/revoke` | 撤销新剪辑使用，保留旧稿 |
 | `POST /projects/:id/retry` | 重试任务（终态回队列） |
 | `POST /projects/:id/shelve` | 搁置并取消待执行任务 |
-| `POST /projects/:id/approve` | 阶段三开放（当前 501） |
+| `POST /projects/:id/prepare-publish` | 按版本生成本地稿件包或待确认请求 |
+| `POST /projects/:id/approve` | 确认账号、版本与稿件包后排队 |
+| `POST /projects/:id/refresh-publish` | 复查审核或恢复尚未提交的任务。回执不明时可提供对账 BV |
 
 ## 配置（bili.config.json → `video`，全部默认关闭）
 
-`enabled=false`、`offerOnWake=false`、`publishMode='draft'`（confirm/auto 阶段三生效）、`maxProjects=3`、`concurrentRenders=1`、`maxDurationSec=90`、`maxScenes=12`、`maxOutputMB=100`、`videoDirMaxMB=2048`、`dailyTtsChars=5000`、`dailyRenderSeconds=600`、`renderTimeoutMs=600000`。
+`enabled=false`、`offerOnWake=false`、`publishMode='draft'`、`publishTid=0`（未设分区）、`maxProjects=3`、`concurrentRenders=1`、`maxDurationSec=90`、`maxScenes=12`、`maxOutputMB=100`、`videoDirMaxMB=2048`、`dailyTtsChars=5000`、`dailyRenderSeconds=600`、`renderTimeoutMs=600000`。
+
+## 投稿步骤
+
+1. 在「设置 → SurfCore → 视频创作」填好 B 站创作中心的分区 ID，选择投稿档并保存。也可以在计划的 `submission.tid` 指定分区。稿件默认自制。如要转载，计划须有 `submission.copyright="repost"` 和 `submission.source` 来源链接。接口会向 B 站核对分区。
+2. 用 `video-project review <项目> --revision N --decision keep` 完成审片。`video-upload <项目> --revision N --dry` 校验文件摘要和稿件信息。加 `--draft` 只存本地，`--go` 按当前模式处理。也可在版本页点「准备投稿」，它会生成供管理员核对的稿件。
+3. 确认档在设置页核对版本、账号、分区、自制属性、标题、简介、素材和声明，再点「确认这版并投稿」。自主档首次会走同一确认流程。该账号和分区回读通过后，鱼姬主动调用 `--go` 才会自行排队。功能开关、沉默逛和素材撤销都会在远端写入前复查。
+4. 上传中断可按分片回执继续。最终投递回执不明时，在创作中心查稿。可以将 BV 填入项目页辅助对账，后台仍须核对唯一视频媒体 ID。没有匹配项时保持待核实，刷新只继续查稿。审核通过且匹配公开账号后，写入作品日志并按已有通知渠道报备。通知不明时在页面提示核实。
+5. 若 B 站返回需要补 AI 声明或发现创作中心字段变化，在创作中心修正后回项目刷新。仅有 BV 不代表账号/分区通过了自主投稿验收。
+
+`video-upload status <项目> [--refresh] [--json]` 查看稿件。`--refresh` 由后台执行，当前结果会即时返回。
+
+**账号范围。** 投稿使用现有鱼姬登录凭据。确认和自主权限在正常的 SurfCore 工具链生效。拥有系统级文件访问和 Shell 权限的管理员能自行调用外部程序，系统级隔离需使用受限的 DSH 会话。
+
+**网页适配。** UPOS 分片和网页投稿依据现有方案和社区实现接入，B 站的 [AI 生成合成内容标识公告](https://www.bilibili.com/opus/1106496554576904197) 要求在站内声明。上传协议参考 [biliup](https://github.com/biliup/biliup/blob/master/crates/biliup/src/uploader/bilibili.rs) 和 [网页投稿字段](https://github.com/Lucas-Qh-Lai/bilibili-publish/blob/main/references/bilibili-upload-api.md)。第一次确认投稿是该账号上的真机验收；自动投稿依赖创作中心能回读本稿的声明、分区及自制属性。
 
 ## 测试与回滚
 
 - `npm run test:video`：本地 fixture（临时 DSH_HOME，不碰真实账号/云端 TTS），包含第一阶段出片和恢复，以及混剪、素材授权、审片、缓存复用和预算断言；依赖 Homebrew ffmpeg/ffprobe 与带 Pillow 的 Python。
 - 依赖体检：Node ≥22.5（node:sqlite）、ffmpeg/ffprobe、Pillow + 中文字体（PingFang/Noto CJK），缺项时渲染任务带可读错误。
-- 回滚：功能默认关闭；关闭 `video.enabled` 即停执行器。本地项目库与已出片文件保留；本阶段无任何远端写。
+- 回滚：功能默认关闭；关闭 `video.enabled` 即停执行器。本地项目库与已出片文件保留；已受理稿件保留本地审核记录，并可在创作中心查询。
 
 资源预算按上海时间累计。只在实际调用 TTS 时记字数；重新编码时以项目时间轴记一次渲染秒数，纯换封面能复用 MP4 编码。由于一个任务会写临时媒体，目录体积在任务检查点核对；硬链接只按一份文件计空间。UI 出片与对照复用现有管理入口。
 

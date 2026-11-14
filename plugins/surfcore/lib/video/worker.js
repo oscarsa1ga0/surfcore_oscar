@@ -27,12 +27,14 @@ const DEFAULT_LEASE_MS = 20 * 60 * 1000;
 const DEFAULT_TICK_MS = 1500;
 const HEARTBEAT_MS = 60 * 1000;
 
-export function createVideoWorker({ store, root, getVoiceSettings = null, getLimits = () => ({}), synth = null, log = () => {}, maxConcurrent = 1, leaseMs = DEFAULT_LEASE_MS, tickMs = DEFAULT_TICK_MS, renderTimeoutMs = 10 * 60 * 1000 }) {
+export function createVideoWorker({ store, root, getVoiceSettings = null, getLimits = () => ({}), synth = null, log = () => {}, maxConcurrent = 1, leaseMs = DEFAULT_LEASE_MS, tickMs = DEFAULT_TICK_MS, renderTimeoutMs = 10 * 60 * 1000, publisher = null }) {
   const owner = `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   let running = false;
   let timer = null;
   const active = new Map(); // jobId → { abort: AbortController, task }
   let stopped = false;
+  let publishAbort = null;
+  let publishing = false;
   let status = { running: false, startedAt: null, activeCount: 0, jobs: [] };
 
   const refreshStatus = () => {
@@ -115,8 +117,22 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
     }
   }
 
+  function tickPublisher() {
+    if (!publisher || publishing) return;
+    publishing = true;
+    const controller = new AbortController();
+    publishAbort = controller;
+    void publisher.tick(controller.signal).catch(() => {
+      if (!controller.signal.aborted) log('[video-worker] 投稿队列暂不可用，请刷新稿件状态');
+    }).finally(() => {
+      publishAbort = null;
+      publishing = false;
+    });
+  }
+
   async function tick() {
     if (!running || stopped) return;
+    tickPublisher();
     try {
       const claimed = store.claimNextTask({ owner, leaseMs, maxConcurrent });
       if (claimed) {
@@ -156,6 +172,7 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
 
     stop() {
       stopped = true;
+      publishAbort?.abort();
       running = false;
       if (timer) clearTimeout(timer);
       timer = null;
@@ -183,7 +200,7 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
     /** 等待所有在跑任务结束（宿主退出前的 grace 收尾）。 */
     async drain(timeoutMs = 3000) {
       const deadline = Date.now() + timeoutMs;
-      while (active.size > 0 && Date.now() < deadline) {
+      while ((active.size > 0 || publishing) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       return active.size;

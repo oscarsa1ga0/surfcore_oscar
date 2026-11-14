@@ -12,7 +12,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { QQ_STATE_DIR, maskPath } from './paths.js';
+import { readBiliPosts } from '../tools/lib/bili-posts.mjs';
+import { BILI_DIR, QQ_STATE_DIR, maskPath } from './paths.js';
 import { activeMemoryPaths, activePlatformStateDir } from '../../../src/character-persona.js';
 import { readUnified } from './store.js';
 import { consoleBase, consoleToken } from './bridge.js';
@@ -75,12 +76,14 @@ function biliStateDir() {
 }
 
 function readBiliEntries() {
+  let entries = [];
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(biliStateDir(), 'bili-memory.json'), 'utf8'));
-    return Array.isArray(raw?.entries) ? raw.entries : [];
-  } catch {
-    return [];
-  }
+    if (Array.isArray(raw?.entries)) entries = raw.entries;
+  } catch {}
+  const ids = new Set(entries.map((entry) => entry?.id));
+  const own = readBiliPosts(path.join(activePlatformStateDir(BILI_DIR), 'bili-posts.jsonl'));
+  return entries.concat(own.filter((item) => item.type === 'video' && !ids.has(item.id)));
 }
 
 function readInboxLines() {

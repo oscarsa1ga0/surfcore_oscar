@@ -234,7 +234,8 @@ export function validateAssetGrant(input) {
     || credit.length > 200 || sourceRef.length > 300 || (mode === 'licensed' && !sourceRef)) {
     throw pyFail('VIDEO_ASSET_AUTH_REQUIRED', '由设置页登记原创或授权说明；获授权素材还需来源或凭据说明');
   }
-  return { mode, note, credit, sourceRef, scope: 'local-edit', grantedAt: Date.now() };
+  const publishAllowed = input.publishAllowed === true;
+  return { mode, note, credit, sourceRef, publishAllowed, scope: publishAllowed ? 'bilibili' : 'local-edit', grantedAt: Date.now() };
 }
 
 function probeMedia(src, kind) {

@@ -67,6 +67,7 @@ export const DEFAULTS = {
     enabled: false,
     offerOnWake: false,
     publishMode: 'draft',
+    publishTid: 0,
     maxProjects: 3,
     concurrentRenders: 1,
     maxDurationSec: 90,

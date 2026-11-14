@@ -1,5 +1,5 @@
 /**
- * 视频创作的管理 API（阶段一：项目浏览 + 工件流式读取；投稿操作是阶段三）。
+ * 视频创作的管理 API：项目、素材、工件预览、投稿确认和状态刷新。
  *
  * 路径挂在现有管理 API 的 /bili/video 下，由 lib/index.js 的 handleBili 分发进来。
  * 安全约定与现有管理 API 一致（外层 route() 已做回环/同源/鉴权）：
@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { registerAuthorizedAsset } from './assets.js';
 import { assertVideoDiskBudget } from './budget.js';
+import { approvePublication, refreshPublication, requestPublication, safePublish } from './publish-state.js';
 import { compareVersions } from './review.js';
 import { revisionDirFor } from './paths.js';
 
@@ -54,7 +55,7 @@ function parseRange(header, size) {
 }
 
 /** 创建 /bili/video 处理器；storeFactory 每次请求时解析（角色可能刚切换）。 */
-export function createVideoApi({ storeFactory, log = () => {} }) {
+export function createVideoApi({ storeFactory, getPublishConfig = () => ({}), log = () => {} }) {
   async function projectList(req, res, url) {
     try {
       const { store, character } = storeFactory();
@@ -74,13 +75,13 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       const videosEnabled = videoConfig().enabled === true;
       json(res, 200, {
         ok: true,
-        character: { id: character.id, name: character.name },
+        character: { id: character.id, name: character.name, epoch: character.epoch },
         enabled: videosEnabled,
         project,
         artifactsByRevision: Object.fromEntries(
           (project.revisions ?? []).map((r) => [String(r.revision), store.listArtifacts(id, r.revision)]),
         ),
-        publishes: (project.revisions ?? []).flatMap((r) => store.listPublishes(id, r.revision)),
+        publishes: store.listPublishes(id).map(safePublish),
       });
     } catch (error) {
       failJson(res, error.code ?? 'VIDEO_STORE_ERROR', String(error.message ?? error), error.hint, 503);
@@ -203,9 +204,25 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
     }
   }
 
-  async function approve(req, res, id) {
-    // 阶段三：投稿确认。现在明确返回“未开放”，避免静默假成功。
-    failJson(res, 'VIDEO_PHASE3', '投稿确认在阶段三开放（当前阶段只做本地创作与导出）', '先在设置页播放/导出，B 站官方创作中心手动提交', 501);
+  async function publishAction(req, res, id, action) {
+    try {
+      if (!PROJECT_ID_RE.test(id)) return failJson(res, 'VIDEO_BAD_PROJECT', '项目 id 格式非法');
+      const body = JSON.parse(await readBody(req) || '{}');
+      const { store, root, character } = storeFactory();
+      if (body.characterId !== character.id || body.characterEpoch !== character.epoch) {
+        return failJson(res, 'VIDEO_CHARACTER_CHANGED', '角色已切换或页面已过期', '刷新项目后再操作', 409);
+      }
+      const ctx = { store, root, projectId: id, revision: Number(body.revision), cfg: getPublishConfig() };
+      const result = action === 'approve'
+        ? { publish: await approvePublication(ctx, { attemptId: body.attemptId, packageHash: body.packageHash }) }
+        : action === 'prepare-publish'
+          ? await requestPublication(ctx, ctx.cfg.video?.publishMode === 'draft' ? 'draft' : 'go', { forceApproval: true })
+          : refreshPublication(ctx, body.attemptId, body.bvid);
+      json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      failJson(res, error.code ?? 'VIDEO_PUBLISH_REQUEST_FAILED',
+        error.code?.startsWith('VIDEO_') ? error.message : '无法处理稿件请求', error.hint, 409);
+    }
   }
 
   return {
@@ -236,11 +253,11 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       if (artifactMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         return artifact(req, res, url, artifactMatch[1], artifactMatch[2], artifactMatch[3]);
       }
-      const actionMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/(retry|shelve|approve)$/.exec(pathname);
+      const actionMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/(retry|shelve|approve|prepare-publish|refresh-publish)$/.exec(pathname);
       if (actionMatch && req.method === 'POST') {
         if (actionMatch[2] === 'retry') return retry(req, res, actionMatch[1]);
         if (actionMatch[2] === 'shelve') return shelve(req, res, actionMatch[1]);
-        return approve(req, res, actionMatch[1]);
+        return publishAction(req, res, actionMatch[1], actionMatch[2]);
       }
       return failJson(res, 'VIDEO_NOT_FOUND', `未知视频接口：${pathname}`, '', 404);
     },

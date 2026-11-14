@@ -13,6 +13,7 @@
 //   POST https://member.bilibili.com/x/web/draft/delete                → 删草稿
 //
 // 和自由动态共用 `daily-dynamic.json` 的 30 分钟间隔；B站每天最多 5 篇，代码也会挡第 6 篇。
+import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -251,6 +252,7 @@ async function resolvePublishedArticleId(submitData = {}) {
   return '';
 }
 
+const publication = acquireLegacyPublicationSlot(readPublicationMid(cfg.self?.mid), stateFile, gapMin)
 form.set('aid', aid)
 const submit = await postForm('https://api.bilibili.com/x/article/creative/article/submit')
 if (!submit.ok || submit.out.code !== 0) {
@@ -259,6 +261,7 @@ if (!submit.ok || submit.out.code !== 0) {
   process.exit(6)
 }
 
+recordLegacyPublication(publication)
 const publishedId = await resolvePublishedArticleId(submit.out?.data ?? {});
 if (!publishedId) console.log(`  ⚠️ 没能确认正式 cv id，先按草稿 aid=${aid} 记录；下次 B站记忆刷新可能会多出一条，请检查 bili-posts.jsonl`);
 const recordId = publishedId || aid;

@@ -263,7 +263,8 @@ export function recordsFromBiliEntries(entries, { now = Date.now() } = {}) {
     const sourceId = String(entry.id ?? '').trim();
     if (!sourceId || seen.has(sourceId)) continue;
     seen.add(sourceId);
-    const type = String(entry.type ?? 'video');
+    const ownVideo = (entry.own === true && entry.ownKind === 'video') || (entry.type === 'video' && entry.source === 'video-project');
+    const type = ownVideo ? 'video' : String(entry.type ?? 'video');
     const title = redactVectorText(entry.title ?? entry.text ?? '', { maxChars: 100 });
     const body = redactVectorText(
       type === 'dynamic' ? (entry.text ?? entry.title ?? '')
@@ -273,13 +274,13 @@ export function recordsFromBiliEntries(entries, { now = Date.now() } = {}) {
     );
     if (!title && !body) continue;
     const text = type === 'video'
-      ? `在 B 站看了《${short(title, 60)}》${body ? `：${short(body, 260)}` : ''}`
+      ? `在 B 站${ownVideo ? '发布了视频' : '看了'}《${short(title, 60)}》${body ? `：${short(body, 260)}` : ''}`
       : body;
     const at = timeOf(entry.at, timeOf(entry.date, now));
     out.push({
       id: `vm_bili_${hash(sourceId, 20)}`,
       text: redactVectorText(text, { maxChars: 600 }),
-      title: type === 'video' ? `看过《${short(title, 40)}》` : short(title || body, 40),
+      title: type === 'video' ? `${ownVideo ? '我发的视频' : '看过'}《${short(title, 40)}》` : short(title || body, 40),
       platform: 'bili',
       scope: 'bili',
       source: `bili-${type === 'dynamic' ? 'dynamic' : (type === 'comment' ? 'comment' : 'video')}`,
@@ -288,7 +289,7 @@ export function recordsFromBiliEntries(entries, { now = Date.now() } = {}) {
       groupId: '',
       conversationKey: '',
       isOwner: false,
-      isSelf: false,
+      isSelf: ownVideo,
       private: false,
       important: entry.favorite === true,
       direct: false,

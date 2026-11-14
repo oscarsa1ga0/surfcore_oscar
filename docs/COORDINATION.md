@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| 视频创作阶段三 | `surfcore-video-stage3` | `feat/video-creation-stage3` | 投稿、审核、报备和记忆 | 本地实现，待合入实际安装分支 |
 | 视频创作阶段二 | `surfcore-video-stage2` | `feat/video-creation-stage2` | 视频素材、混剪、版本和审片 | 本地专项通过，待合并与 DSH 真机验收 |
 | macOS QQ 适配 | `surfcore-qq-macos` | `feat/macos-qq` | Mac QQ 适配、NapCat 会话诊断、B 站生物钟 | B 站单次唤醒专项通过，待 DSH 重开后实际使用；NapCat 快速登录已保存 |
 | **协调/发布**（本对话） | `D:\deepseekwork\surfcore` | `dev` | 规则、登记表、合并、发版 | 进行中 |

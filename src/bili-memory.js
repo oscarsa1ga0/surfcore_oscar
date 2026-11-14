@@ -451,7 +451,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
             const item = JSON.parse(line);
             if (!item || typeof item !== 'object') continue;
             const rawType = String(item.type ?? 'dynamic');
-            const type = rawType === 'article' ? 'article' : 'dynamic';
+            const type = ['article', 'video'].includes(rawType) ? rawType : 'dynamic';
             out.push({
               id: String(item.id ?? `${type}:${out.length}`),
               type,
@@ -615,7 +615,9 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
         shareable: false,
       });
     }
+    const postedVideos = new Set(data.postItems?.filter((item) => item.ownKind === 'video').map((item) => item.bvid) ?? []);
     for (const d of data.dynamicItems) {
+      if (d.bvid && postedVideos.has(d.bvid)) continue;
       entries.push({
         id: `dynamic:${d.id}`,
         type: 'dynamic',
@@ -676,7 +678,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push('# B站记忆');
     lines.push('');
     lines.push(`> 自动同步：${now}`);
-    lines.push('> 来源：公开视频打分、公开评论、公开收藏、自己的公开动态/原创专栏、日记里的公开看片见闻。');
+    lines.push('> 来源：公开视频打分、公开评论、公开收藏、自己的公开动态/原创专栏/原创视频、日记里的公开看片见闻。');
     lines.push('> **私信内容一律不进入本文件**（生成器不读 dm-*.json，日记里转述私信的段落整段丢弃）。');
     lines.push('');
     lines.push('## 一、我是谁（B 站侧）');
@@ -707,7 +709,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
         ? `- ${e.date || ''} B站动态：${short(e.text, 260)}`
         : e.type === 'article'
           ? `- ${e.date || ''} B站专栏《${short(e.title, 60)}》：${short(e.text, 260)}`
-          : actLabel
+          : e.ownKind === 'video' ? `- ${e.date || ''} 我发的视频《${short(e.title, 60)}》：${short(e.summary || e.text, 260)}`
+            : actLabel
             ? `- ${e.date || ''} B站${actLabel}：${short(e.title, 60)}${e.type === 'coin'
               ? `（${Number(e.amount) || 1} 枚${e.text ? `：${short(e.text, 140)}` : ''}）`
               : (e.text && e.text !== e.title ? `（${short(e.text, 160)}）` : '')}`

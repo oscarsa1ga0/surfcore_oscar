@@ -109,6 +109,7 @@ import { fileStamp, isStale } from '../../../src/config-stamps.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
+import { createVideoPublisher } from './video/publish-worker.js';
 import { createVideoWorker } from './video/worker.js';
 import { createVideoApi, setVideoConfigReader } from './video/publish-web.js';
 import { ensureVideoDirs, requireVideoRoot } from './video/paths.js';
@@ -237,13 +238,15 @@ export function apply(ctx) {
   let memoryCardTimer = null;
   let vectorMemoryTimer = null;
   let characterTimer = null;
-  // 视频创作（阶段一）：后台渲染执行器 + 管理 API，由插件生命周期管理。
+  // 视频创作：渲染、投稿和管理 API 随插件生命周期管理。
   let videoWorker = null;
   let videoStore = null;
   let videoRoot = null;
+  let videoWorkerEpoch = null;
   let closingVideoWorker = null;
   let videoStatus = { running: false, enabled: false, storeError: null };
   const videoApi = createVideoApi({
+    getPublishConfig: () => readBiliConfig().config,
     storeFactory: () => {
       const { root, character } = requireVideoRoot();
       if (videoStore && videoRoot === root) return { store: videoStore, root, character };
@@ -422,6 +425,14 @@ export function apply(ctx) {
       sessionId,
       automatic,
       tokenBudget,
+      getVideoSummary: () => {
+        const video = readBiliConfig().config?.video;
+        if (!video?.enabled || !video.offerOnWake || !videoStore || videoRoot !== requireVideoRoot().root) return [];
+        return videoStore.listProjects({ limit: 5 }).items.map((project) => {
+          const posting = videoStore.listPublishes(project.id)[0];
+          return `     视频项目 ${project.id} · v${project.revision} · ${project.editState}${posting ? ` · 投稿 ${posting.state}` : ''}`;
+        });
+      },
       chat: petChat,
       log: (message) => pluginLog(message),
     });
@@ -562,6 +573,7 @@ export function apply(ctx) {
       pluginLog('[video] 执行器停止失败：', String(error?.message ?? error));
     }
     videoWorker = null;
+    videoWorkerEpoch = null;
     if (wasRunning) pluginLog(`[video] 执行器已停止${reason ? `（${reason}）` : ''}`);
     return { ok: true, wasRunning };
   }
@@ -593,8 +605,15 @@ export function apply(ctx) {
         videoStore = openVideoStore(root);
         videoRoot = root;
       }
+      if (videoWorker && videoWorkerEpoch !== character.epoch) stopVideoWorker('role-epoch');
       if (!videoWorker) {
+        const bind = (candidate) => candidate.id === character.id && candidate.epoch === character.epoch;
+        const publisher = createVideoPublisher({
+          store: videoStore, root: videoRoot, getConfig: () => readBiliConfig().config,
+          isCurrent: () => { try { return bind(requireVideoRoot().character); } catch { return false; } },
+        });
         videoWorker = createVideoWorker({
+          publisher,
           store: videoStore,
           root: videoRoot,
           getLimits: videoLimits,
@@ -603,6 +622,7 @@ export function apply(ctx) {
           renderTimeoutMs: Number(cfg.renderTimeoutMs) > 0 ? Number(cfg.renderTimeoutMs) : 600_000,
           log: (message) => pluginLog(message),
         });
+        videoWorkerEpoch = character.epoch;
         videoWorker.start();
         pluginLog(`[video] 执行器已启动（角色 ${character.id}${reason ? `，${reason}` : ''}）`);
       }

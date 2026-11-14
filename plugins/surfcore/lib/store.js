@@ -65,7 +65,8 @@ const BIDI_DEFAULTS = {
   video: {
     enabled: false,
     offerOnWake: false,
-    publishMode: 'draft',            // draft | confirm | auto（auto 阶段三才生效）
+    publishMode: 'draft',            // draft | confirm | auto
+    publishTid: 0,                   // 由用户或计划指定
     maxProjects: 3,                  // 每角色最多活动项目数
     concurrentRenders: 1,            // 全机同时渲染任务数
     maxDurationSec: 90,              // 单稿最长秒数
@@ -642,6 +643,7 @@ export function normalizeBiliConfig(input) {
   cfg.video.enabled = cfg.video.enabled === true;
   cfg.video.offerOnWake = cfg.video.offerOnWake === true;
   cfg.video.publishMode = ['draft', 'confirm', 'auto'].includes(cfg.video.publishMode) ? cfg.video.publishMode : 'draft';
+  cfg.video.publishTid = finiteNumber(cfg.video.publishTid, 0, 0, 100_000, { integer: true });
   cfg.video.maxProjects = finiteNumber(cfg.video.maxProjects, 3, 1, 20, { integer: true });
   cfg.video.concurrentRenders = finiteNumber(cfg.video.concurrentRenders, 1, 1, 4, { integer: true });
   cfg.video.maxDurationSec = finiteNumber(cfg.video.maxDurationSec, 90, 15, 600, { integer: true });

@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createPublishStore, PUBLISH_SCHEMA } from './publish-store.js';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -25,7 +26,7 @@ export const TASK_STATES = ['queued', 'running', 'succeeded', 'retryable', 'bloc
 export const PUBLISH_STATES = [
   'local_draft', 'awaiting_approval', 'authorized', 'uploading', 'uploaded',
   'submitting', 'submitted', 'processing', 'reviewing', 'published',
-  'submission_unknown', 'rejected', 'blocked', 'withdrawn',
+  'submission_unknown', 'rejected', 'blocked', 'withdrawn', 'superseded',
 ];
 
 const SCHEMA = `
@@ -105,33 +106,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   updatedAt INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state, nextAt);
-CREATE TABLE IF NOT EXISTS publishes (
-  attemptId TEXT PRIMARY KEY,
-  accountMid TEXT NOT NULL,
-  projectId TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  packageHash TEXT NOT NULL,
-  approvalRef TEXT,
-  remoteSession TEXT,
-  partAcks TEXT NOT NULL DEFAULT '[]',
-  archiveId TEXT,
-  bvid TEXT,
-  state TEXT NOT NULL DEFAULT 'local_draft',
-  nextPollAt INTEGER,
-  errorCode TEXT,
-  error TEXT,
-  createdAt INTEGER NOT NULL,
-  updatedAt INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS side_effects (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  publishId TEXT NOT NULL,
-  eventKind TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  nextAt INTEGER,
-  UNIQUE (publishId, eventKind)
-);
+
 `;
 
 /** 探测 node:sqlite 是否可用（老运行时没有这个模块时给出可读原因）。 */
@@ -219,7 +194,7 @@ export function openVideoStore(root) {
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA busy_timeout=5000');
   db.exec('PRAGMA synchronous=NORMAL');
-  db.exec(SCHEMA);
+  db.exec(SCHEMA + PUBLISH_SCHEMA);
   db.prepare(
     'INSERT INTO schema_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run('schemaVersion', String(STORE_SCHEMA_VERSION));
@@ -303,16 +278,7 @@ export function openVideoStore(root) {
     getAssetBySha: db.prepare('SELECT * FROM assets WHERE sha256 = ?'),
     listAssets: db.prepare('SELECT * FROM assets ORDER BY createdAt DESC LIMIT ? OFFSET ?'),
     deleteAsset: db.prepare('DELETE FROM assets WHERE id = ?'),
-    insertPublish: db.prepare(
-      `INSERT INTO publishes(attemptId, accountMid, projectId, revision, packageHash, approvalRef, remoteSession, partAcks, archiveId, bvid, state, nextPollAt, errorCode, error, createdAt, updatedAt)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ),
-    getPublish: db.prepare('SELECT * FROM publishes WHERE attemptId = ?'),
-    listPublishes: db.prepare('SELECT * FROM publishes WHERE projectId = ? AND revision = ? ORDER BY createdAt DESC'),
-    updatePublish: db.prepare(
-      `UPDATE publishes SET state = ?, remoteSession = ?, partAcks = ?, archiveId = ?, bvid = ?, nextPollAt = ?, errorCode = ?, error = ?, updatedAt = ?
-       WHERE attemptId = ?`,
-    ),
+
   };
 
   function withTx(fn) {
@@ -326,6 +292,8 @@ export function openVideoStore(root) {
       throw error;
     }
   }
+
+  const publication = createPublishStore(db, withTx, () => newId('pub'));
 
   function taskToView(row) {
     return taskView(row);
@@ -690,42 +658,7 @@ export function openVideoStore(root) {
       return { ok: true };
     },
 
-    // ── 投稿（阶段三骨架，先有表和方法形状）──────────────
-    recordPublish({ attemptId, accountMid, projectId, revision, packageHash, state = 'local_draft', approvalRef = null }) {
-      const t = now();
-      st.insertPublish.run(
-        attemptId, String(accountMid), projectId, Number(revision), packageHash, approvalRef, null, '[]', null, null,
-        state, null, null, null, t, t,
-      );
-      return publishView(st.getPublish.get(attemptId));
-    },
-
-    getPublish(attemptId) {
-      const row = st.getPublish.get(attemptId);
-      return row ? publishView(row) : null;
-    },
-
-    listPublishes(projectId, revision) {
-      return st.listPublishes.all(projectId, Number(revision)).map(publishView);
-    },
-
-    updatePublish(attemptId, patch = {}) {
-      const row = st.getPublish.get(attemptId);
-      if (!row) return null;
-      st.updatePublish.run(
-        patch.state ?? row.state,
-        patch.remoteSession ?? row.remoteSession,
-        patch.partAcks != null ? JSON.stringify(patch.partAcks) : row.partAcks,
-        patch.archiveId ?? row.archiveId,
-        patch.bvid ?? row.bvid,
-        patch.nextPollAt ?? row.nextPollAt,
-        patch.errorCode ?? row.errorCode,
-        patch.error ?? row.error,
-        now(),
-        attemptId,
-      );
-      return publishView(st.getPublish.get(attemptId));
-    },
+    ...publication,
   };
 }
 
@@ -756,26 +689,5 @@ function assetView(row) {
     authorization: parseJson(row.authorization, {}),
     revocable: Boolean(row.revocable),
     createdAt: Number(row.createdAt),
-  };
-}
-
-function publishView(row) {
-  return {
-    attemptId: row.attemptId,
-    accountMid: row.accountMid,
-    projectId: row.projectId,
-    revision: Number(row.revision),
-    packageHash: row.packageHash,
-    approvalRef: row.approvalRef,
-    remoteSession: row.remoteSession,
-    partAcks: parseJson(row.partAcks, []),
-    archiveId: row.archiveId,
-    bvid: row.bvid,
-    state: row.state,
-    nextPollAt: row.nextPollAt == null ? null : Number(row.nextPollAt),
-    errorCode: row.errorCode,
-    error: row.error,
-    createdAt: Number(row.createdAt),
-    updatedAt: Number(row.updatedAt),
   };
 }

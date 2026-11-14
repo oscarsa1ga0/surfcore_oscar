@@ -290,8 +290,8 @@ const badKind = await apiGet(`${base}/projects/${project.id}/revisions/1/artifac
 check('API 拒绝穿越工件路径', badKind.res.statusCode === 404 && badKind.json?.code === 'VIDEO_NOT_FOUND');
 const badId = await apiGet(`${base}/projects/..%2F..%2Fetc/revisions/1/artifacts/mp4`);
 check('API 拒绝非法项目 id', badId.res.statusCode === 400);
-const approveRes = await apiGet(`${base}/projects/${project.id}/approve`, { method: 'POST' });
-check('API approve 阶段三 501', approveRes.res.statusCode === 501 && approveRes.json?.code === 'VIDEO_PHASE3');
+const approveRes = await apiGet(`${base}/projects/${project.id}/approve`, { method: 'POST', body: {} });
+check('API approve 拒绝缺少角色及版本的请求', approveRes.res.statusCode === 409 && approveRes.json?.code === 'VIDEO_CHARACTER_CHANGED');
 
 // ── 6. 阶段二：素材授权、混剪、对照与增量渲染 ────────────────
 const mediaDir = path.join(DSH_HOME, 'media-fixture');

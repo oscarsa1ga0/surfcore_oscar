@@ -1494,7 +1494,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
           F(`dynamics.kinds.${key}.prefix`, `${label} · 固定开头`, "留空 = 不加前缀", "text", { wide: true }),
         ]),
       ]},
-      { group: "自由发布（不是任务）", note: "逛 B 站时想发就发，不设每日上限；和四类动态/分享/原创专栏共用「任意两条动态间隔」。想发就发，很多天一条不发也正常。原创视频上传接口已预留，当前未实现。", fields: [
+      { group: "自由发布（不是任务）", note: "逛 B 站时想发就发，不设每日上限；和四类动态/分享/原创专栏共用「任意两条动态间隔」。想发就发，很多天一条不发也正常。原创视频投稿和审核状态在「视频创作」页。", fields: [
         F("freePost.enabled", "允许自由动态", "文字 / 一张图 / 任意视频卡片 / 链接；不要求是推荐视频", "switch"),
         F("article.enabled", "允许原创专栏", "先 --draft 进草稿箱验证，再用 --go 发布", "switch"),
         F("article.category", "专栏默认分类", "0 = B站默认；有需要再填分类 ID", "number", { min: 0, max: 1000 }),
@@ -4296,9 +4296,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [assets, setAssets] = useState(null);
       const [assetError, setAssetError] = useState("");
       const [assetBusy, setAssetBusy] = useState(false);
-      const [grant, setGrant] = useState({ kind: "clip", mode: "original", file: "", note: "", sourceRef: "", credit: "" });
+      const [grant, setGrant] = useState({ kind: "clip", mode: "original", file: "", note: "", sourceRef: "", credit: "", publishAllowed: false });
       const [comparison, setComparison] = useState(null);
       const [compareError, setCompareError] = useState("");
+      const [reconcileBvs, setReconcileBvs] = useState({});
       const video = cfg?.video && typeof cfg.video === "object" ? cfg.video : {};
       const setVideo = (path, value) => set(["video", ...path], value);
 
@@ -4337,7 +4338,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           const role = { characterId: assets.character.id, characterEpoch: assets.character.epoch };
           const url = assetId ? `/bili/video/assets/${encodeURIComponent(assetId)}/revoke` : "/bili/video/assets";
           await api(url, { method: "POST", body: assetId ? role : { ...role, file: file.trim(), kind, authorization } });
-          if (!assetId) setGrant((previous) => ({ ...previous, file: "", note: "", sourceRef: "", credit: "" }));
+          if (!assetId) setGrant((previous) => ({ ...previous, file: "", note: "", sourceRef: "", credit: "", publishAllowed: false }));
           await loadAssets();
         } catch (e) { setAssetError([e.message, e.hint].filter(Boolean).join(" · ")); }
         finally { setAssetBusy(false); }
@@ -4387,17 +4388,64 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
       };
 
+      const postingAction = async (row, action) => {
+        setActing(row.attemptId);
+        setActErr("");
+        try {
+          const { id, epoch } = detail.character;
+          await api(`/bili/video/projects/${encodeURIComponent(viewId)}/${action}`, {
+            method: "POST",
+            body: { revision: row.revision, attemptId: row.attemptId, packageHash: row.packageHash, characterId: id, characterEpoch: epoch, bvid: reconcileBvs[row.attemptId]?.trim() || undefined },
+          });
+          await loadDetail(viewId);
+        } catch (e) { setActErr([e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setActing(""); }
+      };
+      const postingCard = (row, currentRevision) => {
+        const labels = { local_draft: "本地草稿", awaiting_approval: "待确认", authorized: "投稿排队",
+          uploading: "正在上传", uploaded: "上传完成", submitting: "正在投递", submission_unknown: "投递结果待核实",
+          submitted: "B 站已受理", processing: "转码中", reviewing: "审核中", published: "已公开",
+          rejected: "审核未通过", withdrawn: "稿件已撤回", blocked: "已暂停", superseded: "版本已失效" };
+        return h("div", { key: row.attemptId, className: "qbw-card" },
+          h("h4", null, `v${row.revision} · ${labels[row.state] ?? row.state}`),
+          h("div", null, row.metadata?.title),
+          h("p", { className: "qbw-hint" }, row.metadata?.description),
+          h("div", { className: "qbw-hint" }, [
+            row.accountMid && `账号 UID ${row.accountMid}`,
+            row.metadata?.tid && `分区 ${row.metadata.tid}`, row.metadata?.copyright === 2 ? "转载" : "自制",
+            row.metadata?.source && `来源 ${row.metadata.source}`,
+            row.metadata?.tags?.length && `标签 ${row.metadata.tags.join("、")}`,
+            row.aiVerified ? "AI 声明已回读" : "提交附 AI 创作声明",
+            row.totalParts ? `分片 ${row.uploadedParts}/${row.totalParts}` : null,
+          ].filter(Boolean).join(" · ")),
+          row.bvid && row.state === "published" ? h("a", { href: `https://www.bilibili.com/video/${row.bvid}/`, target: "_blank", rel: "noreferrer" }, row.bvid) : null,
+          row.error || row.remoteReason ? h("div", { className: "qbw-err" }, [row.error, row.remoteReason, row.hint].filter(Boolean).join(" · ")) : null,
+          row.memoryState === "failed" || row.noticeState === "needs_check" ? h("div", { className: "qbw-err" },
+            row.memoryState === "failed" ? "记忆同步失败。刷新可安排补写。" : "报备结果待核实。请检查已配置的通知渠道。") : null,
+          row.state === "submission_unknown" ? h(Row, { label: "对账 BV 号（可选）", hint: "填创作中心里的 BV 后刷新，仍会校验媒体 ID" },
+            h("input", { className: "qbw-input", value: reconcileBvs[row.attemptId] ?? "",
+              onChange: (e) => setReconcileBvs((values) => ({ ...values, [row.attemptId]: e.target.value })) })) : null,
+          row.nextPollAt > 0 ? h("div", { className: "qbw-hint" }, `下次处理：${new Date(row.nextPollAt).toLocaleString()}`) : null,
+          row.state === "awaiting_approval" && row.revision === currentRevision
+            ? h(Btn, { onClick: () => postingAction(row, "approve"), disabled: !!acting || video.publishMode === "draft" }, "确认这版并投稿")
+            : !["local_draft", "awaiting_approval", "superseded"].includes(row.state)
+              ? h(Btn, { kind: "qbw-btn3", onClick: () => postingAction(row, "refresh-publish"), disabled: !!acting }, "刷新投稿状态") : null);
+      };
+
       const configCard = h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
-        h("h4", null, "视频创作（本地）"),
+        h("h4", null, "视频创作"),
         h(Row, { label: "启用视频创作", hint: "总开关：打开后才能新建 / 渲染视频项目（默认关）" },
           h("input", { className: "qbw-switch", type: "checkbox", checked: video.enabled === true, onChange: (e) => setVideo(["enabled"], e.target.checked) })),
         h(Row, { label: "唤醒时提示", hint: "B站 醒来时问她要不要开视频项目（默认关）" },
           h("input", { className: "qbw-switch", type: "checkbox", checked: video.offerOnWake === true, onChange: (e) => setVideo(["offerOnWake"], e.target.checked) })),
-        h(Row, { label: "投稿模式", hint: "draft 只存本地草稿；confirm 投稿前要你确认；auto 自主投稿是阶段三，暂未开放" },
+        h(Row, { label: "投稿模式", hint: "自主投稿需要先在同一账号和分区成功回读一次 AI 声明" },
           h("select", { className: "qbw-select", value: video.publishMode ?? "draft", onChange: (e) => setVideo(["publishMode"], e.target.value) },
-            h("option", { value: "draft" }, "draft · 只存草稿"),
-            h("option", { value: "confirm" }, "confirm · 投稿前确认"),
-            h("option", { value: "auto" }, "auto · 自主投稿（阶段三，暂未开放）"))),
+            h("option", { value: "draft" }, "只存本地草稿"),
+            h("option", { value: "confirm" }, "投稿前确认"),
+            h("option", { value: "auto" }, "允许自主投稿"))),
+        h(Row, { label: "默认投稿分区 ID", hint: "用 B 站创作中心的分区 ID，也可在项目计划里指定" },
+          h("input", { className: "qbw-input", type: "number", min: 0, max: 100000, value: video.publishTid || "",
+            onChange: (e) => setVideo(["publishTid"], Number(e.target.value)) })),
         h(Row, { label: "单稿最长（秒）", hint: "15~600；默认 90" },
           h("input", { className: "qbw-input", type: "number", min: 15, max: 600, placeholder: "90", value: video.maxDurationSec ?? "", onChange: (e) => setVideo(["maxDurationSec"], e.target.value === "" ? undefined : Number(e.target.value)) })),
         h(Row, { label: "单稿最多镜头数", hint: "1~40；默认 12" },
@@ -4420,7 +4468,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           assetError ? h("div", { className: "qbw-err" }, assetError) : null,
           assets ? h("div", null,
             assets.assets.map((asset) => h("div", { key: asset.id, className: "qbw-actions" },
-              h("span", null, `${asset.name} · ${asset.kind} · ${asset.id}${asset.authorization?.revokedAt ? " · 已撤销" : ""}`),
+              h("span", null, `${asset.name} · ${asset.kind} · ${asset.id}${asset.authorization?.revokedAt ? " · 已撤销" : asset.authorization?.publishAllowed || asset.source === "generated" ? " · 可公开" : " · 本地剪辑"}`),
               asset.source === "imported" && asset.revocable && !asset.authorization?.revokedAt
                 ? h(Btn, { kind: "qbw-btn3", disabled: assetBusy || !video.enabled, onClick: () => updateAsset(asset.id) }, "撤销使用")
                 : null)),
@@ -4436,6 +4484,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               input("note", "原创或使用权限说明"),
               grant.mode === "licensed" ? input("sourceRef", "出处或授权凭据") : null,
               input("credit", "署名（可选）"),
+              h(Row, { label: "允许用于公开 B 站视频", hint: "确认素材画面和声音可公开，且授权允许使用或改编" },
+                h("input", { type: "checkbox", checked: grant.publishAllowed, onChange: (e) => editGrant("publishAllowed", e.target.checked) })),
               h("button", { className: "qbw-btn qbw-btn2", type: "submit",
                 disabled: assetBusy || !grant.file.trim() || !grant.note.trim() || (grant.mode === "licensed" && !grant.sourceRef.trim()),
               }, "登记素材")) : null) : null);
@@ -4503,6 +4553,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             detailErr ? h("div", { className: "qbw-err" }, `✗ ${detailErr}`) : null,
             actErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, `✗ ${actErr}`) : null,
             actMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, actMsg) : null),
+          (detail.publishes ?? []).map((row) => postingCard(row, project.revision)),
           revisions.length === 0 ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
             h("div", { className: "qbw-hint" }, "还没有版本：先在 CLI 用 video-project save 存一版计划，再 render 渲染。")) : null,
           revisions.map((rev, index) => {
@@ -4561,6 +4612,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   }, `下载${downloadLabel[kind] ?? kind}${size}`);
                 })) : null,
               h("div", { className: "qbw-actions" },
+                rev.revision === project.revision && rev.reviewDecision === "keep" && project.editState === "ready" && video.enabled
+                  ? h(Btn, { onClick: () => postingAction({ revision: rev.revision, attemptId: "prepare" }, "prepare-publish"), disabled: !!acting },
+                    video.publishMode === "draft" ? "保存投稿草稿" : "准备投稿") : null,
                 h(Btn, { onClick: () => act("retry", rev.revision), disabled: !!busy || acting === `retry-${rev.revision}` },
                   acting === `retry-${rev.revision}` ? "提交中…" : "重试渲染"),
                 h(Btn, { kind: "qbw-btn2", onClick: () => act("shelve", rev.revision), disabled: !!busy || rev.revision !== project.revision || acting === `shelve-${rev.revision}` },
