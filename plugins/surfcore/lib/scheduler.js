@@ -675,6 +675,7 @@ export function startScheduler(ctx, opts) {
     agentPreset = '',  // 空 = 自动选 DSH 的 standard/default preset
     sessionId = 'bili-whale',
     automatic = true,
+    dispatch = null,
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
     chat = null,        // 桌宠/小型摘要用的模型调用（可选）
     log = () => {},
@@ -769,7 +770,35 @@ export function startScheduler(ctx, opts) {
     }
   }
 
-  async function promptBili(args, signal, where = '叫醒') {
+  const schedulerLifetime = new AbortController();
+
+  function scheduleDeadline(st) {
+    const end = (Array.isArray(st.slots) ? st.slots : []).find((slot) => slot.id === st.slotId)?.end;
+    if (!Number.isFinite(end)) return undefined;
+    const deadline = new Date();
+    deadline.setHours(0, end, 0, 0);
+    return deadline.getTime();
+  }
+
+  function queueBili({ id, signal, priority = 'interaction', deadline }, run) {
+    const lifetime = signal ? AbortSignal.any([schedulerLifetime.signal, signal]) : schedulerLifetime.signal;
+    const execute = (submit) => {
+      lifetime.throwIfAborted();
+      if (dispatch && priority === 'interaction' && !interactEnabled()) throw new Error('B 站互动已关闭');
+      return run((args, where) => submitBili({ ...args, requestId: id }, lifetime, where, submit), lifetime);
+    };
+    return dispatch ? dispatch({ id, priority, deadline, signal: lifetime }, execute) : execute();
+  }
+
+  function promptBili(args, signal, where, { validate, ...schedule } = {}) {
+    return queueBili({ ...schedule, id: args.requestId, signal }, (submit) => {
+      validate?.();
+      return submit(args, where);
+    });
+  }
+
+  async function submitBili(args, signal, where = '叫醒', submit = ctx.sessionController.prompt.bind(ctx.sessionController)) {
+    signal.throwIfAborted();
     if (tokenBudget?.block) {
       try {
         const gate = await tokenBudget.block('bili')
@@ -792,7 +821,11 @@ export function startScheduler(ctx, opts) {
       }
     } catch {}
     signal?.throwIfAborted()
-    return ctx.sessionController.prompt(args, signal)
+    const result = await submit(args, signal);
+    if (result?.accepted === false || result?.ok === false || result?.result?.ok === false) {
+      throw new Error('DSH 拒绝接收 B站回合');
+    }
+    return result
   }
 
   // ⚠️ 2026-10-18 大坑：插件跑在 DSH 的 **Electron** 里，`process.execPath` = DeepSeek Harness.exe ✗
@@ -965,18 +998,29 @@ export function startScheduler(ctx, opts) {
     return true
   }
 
-  async function submitWatchRound(st, signal) {
-    if (!(await ensureSession(!st))) throw new Error('B站生物钟会话无法准备')
-    await prepareQqLastContextForBili()
-    const videoSummary = await Promise.resolve().then(() => opts.getVideoSummary?.()).catch(() => []);
-    const result = await promptBili({
-      requestId: st ? `bili-whale-${Date.now()}` : `bili-whale-manual-${randomUUID()}`,
-      sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text: wakePrompt(st, TOOL_CMD, { videoSummary: Array.isArray(videoSummary) ? videoSummary : [] }) }],
-    }, signal, st ? '叫醒' : '手动唤醒')
-    if (result?.accepted === false || result?.ok === false || result?.result?.ok === false) {
-      throw new Error('DSH 拒绝接收 B站浏览回合')
+  function submitWatchRound(st, signal) {
+    const id = st ? `bili-whale-watch-${sessionId}-${st.date}-${st.slotId ?? st.at}` : `bili-whale-manual-${randomUUID()}`;
+    return queueBili({
+      id, signal, priority: st ? 'scheduled' : 'manual', deadline: st ? scheduleDeadline(st) : undefined,
+    }, async (submit, lifetime) => {
+      if (st) assertCurrentPlan(st);
+      if (!(await ensureSession(!st))) throw new Error('B站生物钟会话无法准备');
+      await prepareQqLastContextForBili();
+      lifetime.throwIfAborted();
+      const videoSummary = await Promise.resolve().then(() => opts.getVideoSummary?.()).catch(() => []);
+      await submit({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: wakePrompt(st, TOOL_CMD, { videoSummary: Array.isArray(videoSummary) ? videoSummary : [] }) }],
+      }, st ? '叫醒' : '手动唤醒');
+    });
+  }
+
+  function assertCurrentPlan(st) {
+    const latest = readState();
+    if (!latest || latest.fired || today() !== st.date || latest.date !== st.date || latest.slotId !== st.slotId
+      || latest.at !== st.at || latest.action !== st.action) {
+      throw new Error('B 站作息计划已更新');
     }
   }
 
@@ -991,6 +1035,7 @@ export function startScheduler(ctx, opts) {
     }
   }
   function stopManualWake() {
+    schedulerLifetime.abort()
     manualWake?.abort()
     try { permissionListenerOff?.() } catch {}
   }
@@ -1030,7 +1075,7 @@ export function startScheduler(ctx, opts) {
         await ensureSession()
         await promptBili(
           {
-            requestId: `bili-whale-skip-${Date.now()}`,
+            requestId: `bili-whale-skip-${sessionId}-${st.date}-${st.slotId ?? st.at}`,
             sessionId,
             mode: 'queue',
             content: [{
@@ -1057,6 +1102,8 @@ export function startScheduler(ctx, opts) {
             }],
           },
           new AbortController().signal,
+          '生物钟轻醒',
+          { priority: 'scheduled', deadline: scheduleDeadline(st), validate: () => assertCurrentPlan(st) },
         )
         const slots = Array.isArray(st.slots) ? st.slots : []
         if (st.slotId) markScheduleSlot(st, st.slotId, 'skipped', nowMin())
@@ -1165,45 +1212,54 @@ export function startScheduler(ctx, opts) {
       try {
         // 2026-10-20（用户定）：listen.dmScope = 'all' 时**谁找她都叫醒她**（不只主人）
         const any = String(L.dmScope ?? "owner") === "all"
-        const r = await runBili(["dm-await", "--once", "--json", ...(any ? ["--any"] : [])])
-        const line = String(r.out ?? "").trim().split("\n").pop() ?? ""
-        let j = null
-        try { j = JSON.parse(line) } catch { j = null }
-        if (!j?.hit) return
-        const ownerMid = String(cfg.owner?.mid ?? "")
-        const items = any
-          ? (j.items ?? [])
-          : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
-        if (!items.length) return
-        const block = items.slice(0, 5).map((it) => {
-          const mine = String(it.mid) === ownerMid
-          const who = `${it.name || "mid " + it.mid}（${it.mid}）`
-          return mine
-            ? `· 主人 ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
-            : `· ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
-        })
-        await ensureSession()
-        await promptBili({
-          requestId: `bili-whale-dm-${Date.now()}`,
-          sessionId,
-          mode: "queue",
-          content: [{
-            type: "text",
-            text: [
-              ...identityContextLines(),
-              toolLine(),
-              any ? `【有 ${items.length} 条新私信】` : `【主人私信】${j.name}（mid ${j.mid}）刚给你发私信：`,
-              "",
-              ...block,
-              "",
-              "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
-              "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
-              "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
-              "3) 吵架 / 要隐私 / 要你代表主人承诺 / 明显是广告或引流 → **不回** ✗（直接不理，别解释）",
-              "4) 回完把对方说的写进日记「偏好校准」✓",
-            ].join("\n"),
-          }],
-        }, new AbortController().signal)   // 2026-10-19 修：prompt 的第二个参数是 signal ✗ 漏传会 TypeError
+        const pollArgs = ['dm-await', '--once', '--json', '--peek', ...(any ? ['--any'] : [])];
+        async function peek() {
+          const r = await runBili(pollArgs);
+          try { return JSON.parse(String(r.out ?? '').trim().split('\n').pop()); } catch { return null; }
+        }
+        const first = await peek();
+        if (!first?.hit) return;
+        const ownerMid = String(cfg.owner?.mid ?? "");
+        const priority = !any || first.items?.some((item) => String(item.mid) === ownerMid) ? 'manual' : 'interaction';
+        await queueBili({ id: `bili-whale-dm-${randomUUID()}`, priority }, async (submit) => {
+          if (!interactEnabled()) return;
+          const latest = await peek();
+          if (!latest?.hit) return;
+          const items = (any ? latest.items : (latest.items ?? [{ ts: latest.ts, text: latest.text }])
+            .map((item) => ({ ...item, mid: latest.mid, name: latest.name }))).slice(0, 5);
+          if (!items.length) return;
+          const block = items.map((it) => {
+            const mine = String(it.mid) === ownerMid;
+            const who = `${it.name || "mid " + it.mid}（${it.mid}）`;
+            return mine
+              ? `· 主人 ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
+              : `· ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`;
+          });
+          await ensureSession();
+          await submit({
+            sessionId,
+            mode: "queue",
+            content: [{
+              type: "text",
+              text: [
+                ...identityContextLines(),
+                toolLine(),
+                any ? `【有 ${items.length} 条新私信】` : `【主人私信】${latest.name}（mid ${latest.mid}）刚给你发私信：`,
+                "",
+                ...block,
+                "",
+                "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
+                "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
+                "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
+                "3) 吵架 / 要隐私 / 要你代表主人承诺 / 明显是广告或引流 → **不回** ✗（直接不理，别解释）",
+                "4) 回完把对方说的写进日记「偏好校准」✓",
+              ].join("\n"),
+            }],
+          });
+          const ack = any ? items.map(({ mid, ts }) => ({ mid, ts })) : Math.max(...items.map(({ ts }) => ts));
+          const result = await runBili(['dm-await', '--ack', JSON.stringify(ack), ...(any ? ['--any'] : [])]);
+          if (!result.ok) throw new Error('私信已交给 DSH，无法记录本次接收水位');
+        });
       } catch (e) {
         try { fs.appendFileSync(path.join(platformDir(), "dm-tick-err.log"), new Date().toISOString() + " " + (e?.stack ?? e) + "\n") } catch {}
       }
@@ -1415,7 +1471,15 @@ export function startScheduler(ctx, opts) {
   //   正常：按设置页的 slot 到点提醒（默认 08/12/16/20）
   //   补发：重启后发现今天有类错过了时段 → **一次只提醒一类**，两条之间隔 dynamics.gapMin
   //   （`daily-nudge.json` 记每类最近一次提醒，gapMin 内不重复吵她 ✓）
+  let dynamicBusy = false;
   async function dynTick() {
+    if (dynamicBusy) return;
+    dynamicBusy = true;
+    try { await submitDynamicNudge(); }
+    finally { dynamicBusy = false; }
+  }
+
+  async function submitDynamicNudge() {
     if (!interactEnabled()) return
     if (!ctx.sessionController) return
     if (peakBlockedNow('动态提醒')) return
@@ -1465,7 +1529,9 @@ export function startScheduler(ctx, opts) {
                   toolLine(),
                 ].join('\n'),
               }],
-            }, new AbortController().signal)
+            }, new AbortController().signal, undefined, { priority: 'scheduled', validate: () => {
+              if (!interactEnabled()) throw new Error('B 站互动已关闭');
+            } })
             log(`[bili-whale] 23:00 待审提醒（${n} 条）`)
           } catch (e) { log(`[bili-whale] 待审提醒失败：${String(e.message).slice(0, 100)}`) }
           return
@@ -1502,7 +1568,9 @@ export function startScheduler(ctx, opts) {
                   toolLine(),
                 ].join('\n'),
               }],
-            }, new AbortController().signal)
+            }, new AbortController().signal, undefined, { priority: 'scheduled', validate: () => {
+              if (!interactEnabled()) throw new Error('B 站互动已关闭');
+            } })
             log(`[bili-whale] 搭话催进度：${used}/${L.taDaily}`)
           } catch (e) { log(`[bili-whale] 搭话提醒失败：${String(e.message).slice(0, 100)}`) }
           return
@@ -1530,49 +1598,57 @@ export function startScheduler(ctx, opts) {
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
       // 2026-11-13 用户定：dynTick 不再“只发动态”，而是先完整逛 B 站（feed/debrief/评论/收件箱/点赞/收藏/日记），
       // 逛到第 4.99 步后再发这一类动态；抑制完整流程里的 4.95/4.97，避免同一天重复发。
-      const inSlot = inSlotNow
+      const day = today()
       try {
-        await ensureSession()
-        await prepareQqLastContextForBili()
-        const nowD = new Date()
-        const st = {
-          atText: `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`,
-          window: '动态提醒',
-          withinWindow: '',
-        }
-        const dynLines = [
-          `【这一趟的额外任务：发 ${k.n} 类 · ${k.label} 动态】`,
-          inSlot
-            ? `今天「${k.n} 类 · ${k.label}」那条还没发（本该 ${String(k.slot).padStart(2, '0')}:00）。`
-            : `今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了，现在补上。`,
-          '',
-          '先按上面的完整流程逛（私信 / 评论 / 收件箱 / feed / debrief / 点赞；收藏可选，想收才收）；逛到这里再发这条，不要提前发，也不要漏：',
-          ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
-          ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
-          kind === 'best'
-            ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
-            : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
-          `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
-          inSlot
-            ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
-            : `3) \`daily --kind ${kind} --catchup --text "…" --dry\` → \`--go\`（**补发必须带 --catchup**）`,
-          '',
-          k.prefix
-            ? `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`
-            : '⚠️ 这类当前**不添加固定前缀**：正文直接从内容开始（留空 ✓）',
-          inSlot
-            ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
-            : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
-          '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
-          '⚠️ 发完再继续第 4.10/4.11/5/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
-        ]
-        const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, insertBeforeShare: dynLines })
-        await promptBili({
-          requestId: `bili-whale-daily-${kind}-${Date.now()}`,
-          sessionId,
-          mode: 'queue',
-          content: [{ type: 'text', text }],
-        }, new AbortController().signal)
+        await queueBili({
+          id: `bili-whale-daily-${kind}-${day}`,
+          priority: 'scheduled',
+          deadline: new Date().setHours(24, 0, 0, 0),
+        }, async (submit) => {
+          const latestConfig = config()
+          const inSlot = slotOf(kind, new Date(), kindsNow(latestConfig))
+          if (!interactEnabled() || !dynamicsEnabled(latestConfig) || (!inSlot && day !== CATCHUP_DAY)) return
+          await ensureSession()
+          await prepareQqLastContextForBili()
+          const nowD = new Date()
+          const st = {
+            atText: `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`,
+            window: '动态提醒',
+            withinWindow: '',
+          }
+          const dynLines = [
+            `【这一趟的额外任务：发 ${k.n} 类 · ${k.label} 动态】`,
+            inSlot
+              ? `今天「${k.n} 类 · ${k.label}」那条还没发（本该 ${String(k.slot).padStart(2, '0')}:00）。`
+              : `今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了，现在补上。`,
+            '',
+            '先按上面的完整流程逛（私信 / 评论 / 收件箱 / feed / debrief / 点赞；收藏可选，想收才收）；逛到这里再发这条，不要提前发，也不要漏：',
+            ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
+            ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
+            kind === 'best'
+              ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
+              : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
+            `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
+            inSlot
+              ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
+              : `3) \`daily --kind ${kind} --catchup --text "…" --dry\` → \`--go\`（**补发必须带 --catchup**）`,
+            '',
+            k.prefix
+              ? `⚠️ 开头必须是固定前缀：${k.prefix}（脚本会自动补 ✓）`
+              : '⚠️ 这类当前**不添加固定前缀**：正文直接从内容开始（留空 ✓）',
+            inSlot
+              ? `⚠️ 这类只在 ${String(k.slot).padStart(2, '0')}:00 起这段时间能发，过了就得用 --catchup 补 ✗`
+              : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
+            '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
+            '⚠️ 发完再继续第 4.10/4.11/5/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
+          ]
+          const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, insertBeforeShare: dynLines })
+          await submit({
+            sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text }],
+          }, '动态提醒')
+        })
         log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
       } catch (e) {
         log(`[bili-whale] 动态提醒失败：${String(e.message).slice(0, 120)}`)

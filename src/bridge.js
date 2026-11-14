@@ -40,6 +40,7 @@ import { downloadOneBotImageStream, isProbablySafeImageFileRef, uploadOneBotStic
 import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
+import { createQqRoleDispatch, usesLocalDispatch } from './qq-role-dispatch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
@@ -3054,12 +3055,15 @@ async function main() {
     // 关键顺序：先注册 waiter，再发 prompt。
     // DSH 可能在 prompt 的 HTTP 响应返回前就发出 turn/start、turn/end；
     // 旧顺序会先收完答案、再注册等待者，答案直接丢失，只能等 120 秒超时。
-    const turnWait = waitLearnerTurn(sessionId);
-    // prompt 本身如果慢过 120s，turnWait 会先 reject；先挂一个空 catch 防止
-    // Node 把它当成 unhandled rejection。真正的 await 仍在下面，错误照常处理。
-    turnWait.catch(() => {});
+    let turnWait;
     try {
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+      const accepted = await withQqDispatch({ id: crypto.randomUUID(), priority: 'scheduled',
+        stillCurrent: () => slangLearnerSessionId === sessionId && dshReady,
+      }, (submit) => {
+        turnWait = waitLearnerTurn(sessionId);
+        turnWait.catch(() => {});
+        return submit({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+      });
       if (!accepted.result.ok) {
         turnWait.cancel();
         const code = String(accepted.result.error?.code ?? '');
@@ -3102,7 +3106,7 @@ async function main() {
         queueSlangTask(() => runSlangResearch(researchCandidates));
       }
     } catch (error) {
-      turnWait.cancel();
+      turnWait?.cancel();
       if (error?.code === 'LEARNER_TURN_TIMEOUT') {
         log('黑话提取等待超时：重建学习会话，避免旧 turn 继续影响下一轮');
         invalidateSlangLearnerSession();
@@ -3131,12 +3135,15 @@ async function main() {
       return;
     }
     const promptText = buildResearchPrompt(targets);
-    const turnWait = waitLearnerTurn(sessionId);
-    // prompt 本身如果慢过 120s，turnWait 会先 reject；先挂一个空 catch 防止
-    // Node 把它当成 unhandled rejection。真正的 await 仍在下面，错误照常处理。
-    turnWait.catch(() => {});
+    let turnWait;
     try {
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+      const accepted = await withQqDispatch({ id: crypto.randomUUID(), priority: 'scheduled',
+        stillCurrent: () => slangLearnerSessionId === sessionId && dshReady,
+      }, (submit) => {
+        turnWait = waitLearnerTurn(sessionId);
+        turnWait.catch(() => {});
+        return submit({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+      });
       if (!accepted.result.ok) {
         turnWait.cancel();
         const code = String(accepted.result.error?.code ?? '');
@@ -3167,7 +3174,7 @@ async function main() {
       saveSlangStore();
       log(`黑话研究：已更新 ${results.length} 条候选解释`);
     } catch (error) {
-      turnWait.cancel();
+      turnWait?.cancel();
       if (error?.code === 'LEARNER_TURN_TIMEOUT') {
         log('黑话研究等待超时：重建学习会话，避免旧 turn 继续影响下一轮');
         invalidateSlangLearnerSession();
@@ -3342,6 +3349,21 @@ async function main() {
     // 默认只允许把 launch token 交给回环地址；远程 DSH 需要显式 opt-in（见 dsh-client.ensureAuth）。
     allowRemote: cfg.dsh.allowRemote === true
   });
+  const roleDispatchEnabled = isLoopbackBaseUrl(cfg.dsh.baseUrl) && usesLocalDispatch(ROOT, DSH_HOME, process.env);
+  const withQqDispatch = createQqRoleDispatch({
+    api,
+    getBaseUrl: () => api.baseUrl,
+    getToken: () => {
+      const configured = String(cfg.consoleToken ?? '').trim();
+      if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
+      try { return fs.readFileSync(path.join(STATE_DIR, 'console-token'), 'utf8').trim(); } catch { return ''; }
+    },
+    getCharacter: readCurrentCharacter,
+    expectedCharacter: ACTIVE_CHARACTER,
+    enabled: roleDispatchEnabled,
+    log,
+  });
+
   // DSH 的模型目录 RPC：0.1.5 是 `session/modelCatalog`。**不能走基类门面**
   // `api.sessions.modelCatalog` —— 桥接钉住的 `@deepseek-ai/dsh-host-apiproxy@0.1.1-rc.2`
   // 的 sessions 门面里根本没有这个方法（只有 `models` → 已下线的 `session/models`），
@@ -3952,8 +3974,8 @@ async function main() {
           } catch (error) {
             log(`补投异常 ${key}: ${error?.message ?? error}`);
             failed += 1;
-            // 当前项 + 剩余项整体放回，避免丢失；旧消息优先
-            const rest = items.slice(i);
+            // Uncertain submissions may already have replied. Requeue only untouched items.
+            const rest = items.slice(error?.code === 'ROLE_DISPATCH_UNCERTAIN' ? i + 1 : i);
             const existing = queued.get(key) ?? [];
             queued.set(key, rest.concat(existing));
             break;
@@ -4951,6 +4973,7 @@ async function main() {
           sendJson({
             mode: currentMode,
             root: ROOT,
+            roleDispatch: roleDispatchEnabled,
             dshBaseUrl: cfg.dsh.baseUrl,
             closedAgentPreset,
             role: rs.role ?? null,
@@ -13807,7 +13830,7 @@ async function main() {
       return { ok: false, retry: true, reason: 'QQ 暂不可发送' };
     }
     try {
-      await deliverPrompt(key, promptText);
+      await deliverPrompt(key, promptText, { priority: manual ? 'manual' : 'scheduled' });
       if (!manual) {
         writeGreetingsState({
           lastMorningDate: today,
@@ -13884,11 +13907,24 @@ async function main() {
       }
       throw error;
     }
+    return withQqDispatch({
+      id: crypto.randomUUID(),
+      priority: key === `private:${cfg.ownerQQ}` && !opts.priority ? 'manual' : opts.priority || 'interaction',
+      stillCurrent: () => isCurrentSession(key, sessionId),
+    }, async (submit) => {
+      if (wakeBlocked()) return skipWake();
+      return submitQqPrompt(key, sessionId, promptText, opts, (prompt) => {
+        if (wakeBlocked()) throw new Error('QQ 唤醒已关闭');
+        return submit(prompt);
+      });
+    });
+  }
+
+  async function submitQqPrompt(key, sessionId, promptText, opts, submit) {
     let wakeState;
     let wakeToken;
     let wakeSnapshot;
     if (opts.wakeReason) {
-      if (wakeBlocked()) return skipWake();
       // Build only after session creation: retries may rotate the token, and an
       // offline queue may have received more messages since this wake was queued.
       wakeState = getSocialV2State(key);
@@ -13965,7 +14001,7 @@ async function main() {
     if (opts.farewell) social.exitingSessions.add(sessionId);
     let accepted;
     try {
-      accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content });
+      accepted = await submit({ sessionId, mode: 'queue', content });
     } catch (error) {
       if (opts.farewell) social.exitingSessions.delete(sessionId);
       throw error;
@@ -16145,7 +16181,7 @@ async function main() {
     try {
       pendingWakeKeys.add(key);
       armPendingWakeLease(key);
-      const result = await deliverPrompt(key, promptText, { wakeReason: reason, vectorBlock });
+      const result = await deliverPrompt(key, promptText, { wakeReason: reason, vectorBlock, ...(isTimerWakeReason(reason) ? { priority: 'scheduled' } : {}) });
       const restoreFiniteSleep = () => {
         if (hadFiniteSleep) {
           st.wakeConfig.sleepUntil = prevSleepUntil;
@@ -17406,11 +17442,10 @@ async function main() {
       content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }, ...imageParts];
     }
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
-    const accepted = await api.sessions.prompt({
-      sessionId,
-      mode: 'queue',
-      content
-    });
+    const accepted = await withQqDispatch({
+      id: crypto.randomUUID(), priority: key === `private:${cfg.ownerQQ}` ? 'manual' : 'interaction',
+      stillCurrent: () => isCurrentSession(key, sessionId),
+    }, (submit) => submit({ sessionId, mode: 'queue', content }));
     if (!accepted.result.ok) {
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
       const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;

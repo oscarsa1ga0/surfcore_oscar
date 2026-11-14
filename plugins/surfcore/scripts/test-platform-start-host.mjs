@@ -10,6 +10,8 @@
  * 用临时 DSH_HOME，不读写真实 ~/.dsh。
  */
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +22,7 @@ const stateDir = path.join(tmp, 'surfcore');
 const fakeRoot = path.join(tmp, 'qq-bridge');
 fs.mkdirSync(path.join(fakeRoot, 'src'), { recursive: true });
 fs.writeFileSync(path.join(fakeRoot, 'src', 'bridge.js'), '// fixture\n');
-fs.writeFileSync(path.join(fakeRoot, 'config.json'), JSON.stringify({ consolePort: 1 }));
+fs.writeFileSync(path.join(fakeRoot, 'config.json'), JSON.stringify({ consolePort: 1, consoleToken: 'fixture-console-token' }));
 fs.mkdirSync(stateDir, { recursive: true });
 fs.writeFileSync(path.join(stateDir, 'config.json'), `${JSON.stringify({
   version: 1,
@@ -59,6 +61,9 @@ const ctx = {
     rename: async (params) => { workspaceTitles.push(params); },
   },
   sessionController: {
+    list: async () => ({ items: [] }),
+    state: async () => ({ active: true, running: false, queue: [], pendingInput: [] }),
+    wait: async () => ({ reason: 'idle', state: { active: true, running: false, queue: [], pendingInput: [] } }),
     resolveAgent: async (sessionId) => sessions.some((session) => session.sessionId === sessionId)
       ? { agent: { id: sessionId } }
       : { error: { code: 'session/not-found' } },
@@ -80,11 +85,11 @@ function fakeRes() {
     end(body = '') { this.body += body; },
   };
 }
-function fakeReq(method, url, body) {
+function fakeReq(method, url, body, headers) {
   const req = new EventEmitter();
   req.method = method;
   req.url = url;
-  req.headers = { host: '127.0.0.1:58750', ...(body ? { 'content-type': 'application/json' } : {}) };
+  req.headers = { host: '127.0.0.1:58750', ...(body ? { 'content-type': 'application/json' } : {}), ...headers };
   if (body) {
     process.nextTick(() => {
       req.emit('data', Buffer.from(JSON.stringify(body)));
@@ -93,9 +98,9 @@ function fakeReq(method, url, body) {
   }
   return req;
 }
-async function invoke(route, method, url, body) {
+async function invoke(route, method, url, body, headers) {
   const res = fakeRes();
-  await route.handler(fakeReq(method, url, body), res);
+  await route.handler(fakeReq(method, url, body, headers), res);
   return { status: res.statusCode, data: JSON.parse(res.body || '{}') };
 }
 
@@ -169,21 +174,36 @@ try {
     completePrompt = resolve;
     markPromptEntered();
   });
-  const firstWake = invoke(api, 'POST', wakePath, {});
-  await Promise.race([promptEntered, firstWake]);
-  assert.equal(prompts.length, 1, '手动唤醒必须绕过已结束的自动计划');
+  const firstWake = await invoke(api, 'POST', wakePath, {});
+  const waitEntered = await Promise.race([promptEntered.then(() => true), delay(5000, false, { ref: false })]);
+  assert.equal(waitEntered, true, '手动唤醒必须绕过已结束的自动计划');
+  assert.equal(prompts.length, 1);
   const duplicate = await invoke(api, 'POST', wakePath, {});
-  completePrompt({ accepted: true });
   assert.equal(duplicate.status, 409);
   assert.equal(duplicate.data.code, 'BILI_WAKE_BUSY');
   assert.ok(duplicate.data.hint);
-  assert.deepEqual(await firstWake, { status: 200, data: { ok: true, sessionId: 'bili-whale' } });
+  assert.deepEqual(firstWake, { status: 202, data: { ok: true, queued: true, sessionId: 'bili-whale' } });
+
+  const dispatchPath = '/dsh-surfcore/api/role-dispatch';
+  const qqPath = `${dispatchPath}/qq`;
+  const headers = { 'x-console-token': 'fixture-console-token' };
+  const qq = { id: randomUUID(), role: { characterId: 'default', epoch: 0 }, action: 'reserve', priority: 'manual' };
+  assert.equal((await invoke(api, 'POST', qqPath, qq)).status, 403);
+  assert.equal((await invoke(api, 'POST', qqPath, qq, { ...headers, origin: 'http://127.0.0.1:58750' })).status, 403);
+  assert.equal((await invoke(api, 'POST', qqPath, qq, headers)).data.state, 'queued');
+  const duringWake = await invoke(api, 'GET', dispatchPath);
+  assert.equal(duringWake.data.active.source, 'bili');
+  assert.deepEqual(duringWake.data.waiting, [{ source: 'qq', count: 1 }]);
+  assert.ok(!JSON.stringify(duringWake.data).includes('fixture-console-token'));
+  await invoke(api, 'POST', qqPath, { ...qq, action: 'release' }, headers);
+  assert.equal(prompts[0].signal.aborted, false);
+  completePrompt({ accepted: true });
+  await delay(30);
   assert.deepEqual(workspaces, [{ path: path.join(stateDir, 'state', 'bili-agents') }]);
   assert.deepEqual(workspaceTitles, [{ workspaceId: 'ws-bili', title: 'B站生物钟' }]);
   assert.deepEqual(sessions, [{ sessionId: 'bili-whale', workspaceId: 'ws-bili' }]);
   assert.equal(prompts[0].args.mode, 'queue');
   assert.match(prompts[0].args.content[0].text, /【手动唤醒】.*逛一轮 B 站/);
-  assert.equal(prompts[0].signal.aborted, false, '一次性调度器清理不能取消已提交的回合');
   assert.equal(fs.readFileSync(schedule, 'utf8'), plan);
   assert.equal(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'), originalConfig);
   const afterWake = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
@@ -192,9 +212,15 @@ try {
 
   promptResult = async () => ({ accepted: false });
   const rejected = await invoke(api, 'POST', wakePath, {});
-  assert.equal(rejected.status, 503);
-  assert.equal(rejected.data.code, 'BILI_WAKE_FAILED');
-  assert.ok(rejected.data.hint);
+  assert.equal(rejected.status, 202);
+  let failure;
+  for (let attempt = 0; attempt < 60 && !failure; attempt += 1) {
+    await delay(75);
+    failure = (await invoke(api, 'GET', dispatchPath)).data.lastError;
+  }
+  assert.equal(failure?.source, 'bili');
+  assert.match(failure?.error ?? '', /唤醒失败/);
+  assert.ok(failure?.hint);
   assert.equal(sessions.length, 1, '再次唤醒复用现有会话');
   assert.equal(fs.readFileSync(schedule, 'utf8'), plan);
 
@@ -211,7 +237,8 @@ try {
   const started = await invoke(api, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-bili' });
   assert.equal(started.data.scheduler.running, true);
   promptResult = async () => ({ accepted: true });
-  assert.deepEqual(await invoke(api, 'POST', wakePath, {}), { status: 200, data: { ok: true, sessionId: 'bili-whale' } });
+  assert.deepEqual(await invoke(api, 'POST', wakePath, {}), { status: 202, data: { ok: true, queued: true, sessionId: 'bili-whale' } });
+  for (let attempt = 0; attempt < 60 && prompts.length < 3; attempt += 1) await delay(75);
   const whileRunning = await invoke(api, 'GET', '/dsh-surfcore/api/overview');
   assert.deepEqual(whileRunning.data.scheduler, started.data.scheduler, '手动唤醒不能重启自动调度器');
   assert.equal(sessions.length, 1);

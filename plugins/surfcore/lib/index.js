@@ -64,10 +64,11 @@ import {
   consoleBase, consoleToken } from './bridge.js';
 import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
-import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
+import { isLoopbackReq, json, readBody, safeEqual, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
 import { createDiaryToolDefinitions } from './diary-tools.js';
 import { startDiaryScheduler } from './diary-scheduler.js';
+import { createRoleDispatch, dispatchError, QQ_DISPATCH_ROUTE, roleRef, validQqDispatchRequest } from './role-dispatch.js';
 import { diaryStatus as readDiaryStatus, listEntries as listDiaryEntries } from '../../../src/diary-store.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
@@ -130,6 +131,8 @@ function readOwnVersion() {
 
 const VERSION = readOwnVersion();
 const API_PREFIX = '/dsh-surfcore/api';
+// Survive a plugin hot reload while the previous instance's local prompt call is still in progress.
+const DISPATCH_FLIGHTS = Symbol.for('surfcore.roleDispatch.inFlight');
 const EXT_PREFIX = '/dsh-surfcore/ext';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -198,6 +201,39 @@ export const inject = ['webServer', 'connection', 'sessionController', 'tools'];
 
 export function apply(ctx) {
   ensureDirs();
+  const dispatchJournal = path.join(STATE_DIR, 'role-dispatch.json');
+  const dispatchFlights = globalThis[DISPATCH_FLIGHTS] ??= new Set();
+  const currentDispatchRole = () => roleRef(readCurrentCharacter());
+  const roleDispatch = createRoleDispatch({
+    controller: ctx.sessionController,
+    getRole: currentDispatchRole,
+    load: () => {
+      try { return JSON.parse(fs.readFileSync(dispatchJournal, 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    },
+    save: (record) => writeJsonAtomic(dispatchJournal, record),
+    inFlight: dispatchFlights,
+    startupSessions: async () => {
+      // On first installation or reload, drain already-accepted SurfCore work before sending anything.
+      const controller = ctx.sessionController;
+      if (typeof controller?.wait !== 'function' || typeof controller?.list !== 'function') {
+        throw dispatchError('ROLE_DISPATCH_UNSUPPORTED', 'DSH 缺少会话状态接口', '升级 DSH 后重开 SurfCore');
+      }
+      const qq = await bridgeStatus();
+      if (qq.running && !qq.raw?.roleDispatch) {
+        throw dispatchError('ROLE_DISPATCH_BRIDGE_UPGRADE', 'QQ 桥接正在切换到串行调度', '在概览中重启 QQ 桥接后继续');
+      }
+      const { items } = await controller.list({}, AbortSignal.timeout(5000));
+      const qqFile = path.join(QQ_STATE_DIR(), 'sessions.json');
+      const qqIds = new Set(Object.values(readJson(qqFile, {})?.sessions ?? {}));
+      qqIds.add(readJson(path.join(QQ_STATE_DIR(), 'slang-session.json'), {})?.sessionId);
+      return items.filter(({ sessionId, projections, running, agentAvailable }) =>
+        (running || agentAvailable) && (/^(?:bili-whale|diary)(?:-|$)/.test(sessionId) || qqIds.has(sessionId)
+        || /^qq-chat(?:-|$)/.test(projections?.agentPreset ?? '')))
+        .map(({ sessionId }) => sessionId);
+    },
+    log: pluginLog,
+  });
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
@@ -369,8 +405,12 @@ export function apply(ctx) {
   });
 
   let sessionEventOff = null;
+  let dispatchEventOff = null;
   try {
     if (typeof ctx.on === 'function') {
+      dispatchEventOff = ctx.on('session/event', (session, event) => {
+        if (event.type === 'turn/end') roleDispatch.onTurnEnd(session.id);
+      }, { global: true });
       sessionEventOff = ctx.on('session/event', (session, event) => {
         try { tokenBudget.ingestEvent(session, event); }
         catch (error) { pluginLog('token 用量采集失败：', String(error?.message ?? error).slice(0, 160)); }
@@ -414,6 +454,7 @@ export function apply(ctx) {
     return biliSessionEpoch ? `${base}-r${biliSessionEpoch}` : base;
   }
   function createBiliScheduler(sessionId, automatic = true) {
+    const role = currentDispatchRole();
     const biliWorkspace = biliWorkspacePath(DSH_HOME);
     return startScheduler(ctx, {
       dshHome: DSH_HOME,
@@ -424,6 +465,7 @@ export function apply(ctx) {
       workspaceTitle: BILI_WORKSPACE_TITLE,
       sessionId,
       automatic,
+      dispatch: (spec, run) => roleDispatch.enqueue({ ...spec, role, source: 'bili' }, run),
       tokenBudget,
       getVideoSummary: () => {
         const video = readBiliConfig().config?.video;
@@ -513,6 +555,7 @@ export function apply(ctx) {
         characterDir: paths.dir,
         characterName: current.name,
         sessionId,
+        dispatch: (spec, run) => roleDispatch.enqueue({ ...spec, role: roleRef(current), source: 'diary' }, run),
         qqStateDir: QQ_STATE_DIR(),
         readConfig: diaryConfig,
         log: pluginLog,
@@ -547,6 +590,7 @@ export function apply(ctx) {
     if (wasRunning) pluginLog(`日记回顾已停止${reason ? `（${reason}）` : ''}`);
     return { ok: true, wasRunning };
   }
+  roleDispatch.start();
   startSchedulerNow();
   startDiarySchedulerNow();
 
@@ -887,6 +931,7 @@ export function apply(ctx) {
     const expected = currentDshUrl().replace(/\/+$/, '');
     const actual = String(status.dshBaseUrl ?? '').trim().replace(/\/+$/, '');
     if (!actual) return '桥接是旧版本，无法报告 DSH 地址';
+    if (!status.raw?.roleDispatch) return '桥接尚未加载会话串行调度';
     if (expected && actual !== expected) return `桥接还连着旧 DSH（${actual} ≠ ${expected}）`;
     return '';
   }
@@ -3885,18 +3930,20 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       try {
         const sessionId = schedulerStatus.running ? schedulerStatus.sessionId : biliSessionId();
         const runner = scheduler ?? (oneOff = createBiliScheduler(sessionId, false));
-        await runner.wakeNow();
-        json(res, 200, { ok: true, sessionId });
-      } catch (error) {
-        if (error?.code === 'token-budget-blocked') {
-          json(res, 409, { ok: false, code: 'BILI_WAKE_BUDGET', error: 'B 站今日 Token 额度已用完', hint: '在「Token 额度」调整 B 站额度，或等明天再试' });
-        } else {
+        void runner.wakeNow().catch((error) => {
+          roleDispatch.reportFailure('bili', error?.code === 'token-budget-blocked'
+            ? 'B 站今日 Token 额度已用完' : 'B 站手动唤醒失败',
+          error?.hint || '检查 B 站额度和工作区后再试');
           pluginLog('[bili-whale] 手动唤醒失败：', String(error?.message ?? error).slice(0, 160));
-          json(res, 503, { ok: false, code: 'BILI_WAKE_FAILED', error: 'DSH 未能接收 B 站唤醒', hint: '检查 DSH 是否可正常发起对话，再重试' });
-        }
-      } finally {
+        }).finally(() => {
+          oneOff?.stop();
+          manualBiliWake = false;
+        });
+        json(res, 202, { ok: true, queued: true, sessionId });
+      } catch (error) {
         oneOff?.stop();
         manualBiliWake = false;
+        json(res, 503, { ok: false, code: 'BILI_WAKE_FAILED', error: '无法登记 B 站唤醒', hint: error?.hint || '检查 DSH 连接后再试' });
       }
       return;
     }
@@ -4514,17 +4561,56 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         json(res, 409, { ok: false, error: '日记回顾没有启动（检查 diary.enabled 与当前角色）' });
         return;
       }
-      const result = await diaryScheduler.reviewNow();
-      json(res, result.ok ? 200 : 500, result);
+      const runner = diaryScheduler;
+      if (runner.status().manualReview) {
+        json(res, 409, { ok: false, code: 'DIARY_REVIEW_BUSY', error: '已有一次手动整理正在等候', hint: '到 SurfCore → 概览查看进度' });
+        return;
+      }
+      void runner.reviewNow().then((result) => {
+        if (!result.ok) roleDispatch.reportFailure('diary', result.error || '日记手动整理失败', result.hint || '检查日记配置后再试');
+      }, (error) => roleDispatch.reportFailure('diary', '日记手动整理失败', error?.hint || '检查日记配置后再试'));
+      json(res, 202, { ok: true, queued: true });
       return;
     }
     json(res, 405, { ok: false, error: '只支持 GET/POST' });
+  }
+
+  async function handleRoleDispatch(req, res, pathname) {
+    try {
+      if (pathname === QQ_DISPATCH_ROUTE && req.method === 'POST') {
+        if (!safeEqual(req.headers['x-console-token'], consoleToken()) || req.headers.origin) {
+          json(res, 403, { ok: false, code: 'ROLE_DISPATCH_FORBIDDEN', error: '只接受本机 QQ 桥接请求', hint: '从 SurfCore 重启 QQ 桥接' });
+          return;
+        }
+        let body;
+        try { body = JSON.parse(await readBody(req, 48 * 1024 * 1024)); } catch {}
+        if (!validQqDispatchRequest(body)) throw dispatchError('ROLE_DISPATCH_INVALID', 'QQ 调度请求参数无效', '从 SurfCore 重启 QQ 桥接');
+        json(res, 200, { ok: true, ...await roleDispatch.qq(body) });
+        return;
+      }
+      if (pathname === `${API_PREFIX}/role-dispatch` && req.method === 'GET') {
+        json(res, 200, { ok: true, ...roleDispatch.status() });
+        return;
+      }
+      if (pathname === `${API_PREFIX}/role-dispatch/stop` && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        await roleDispatch.stopTurn(body.id);
+        json(res, 200, { ok: true });
+        return;
+      }
+      json(res, 405, { ok: false, code: 'ROLE_DISPATCH_METHOD', error: '调度接口不支持这个操作', hint: '刷新 SurfCore 设置页' });
+    } catch (error) {
+      const known = error?.code?.startsWith('ROLE_DISPATCH_');
+      json(res, known ? 409 : 503, { ok: false, code: known ? error.code : 'ROLE_DISPATCH_FAILED',
+        error: known ? error.message : 'DSH 调度操作失败', hint: error?.hint || '检查 DSH 会话状态后再试' });
+    }
   }
 
   // ── 路由：API 前缀 ──────────────────────────────────────────────────────
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    if (pathname.startsWith(`${API_PREFIX}/role-dispatch`)) { await handleRoleDispatch(req, res, pathname); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/diary`) { await handleDiary(req, res); return; }
@@ -4717,6 +4803,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
+    roleDispatch.dispose();
     try { scheduler?.stop?.(); } catch {}
     try { diaryScheduler?.stop?.(); } catch {}
     stopVideoWorker('dispose');
@@ -4724,6 +4811,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
+    try { dispatchEventOff?.(); } catch {}
     try { sessionEventOff?.(); } catch {}
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}

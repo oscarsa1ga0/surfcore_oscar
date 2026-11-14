@@ -34,8 +34,11 @@ const researchAt = bridge.indexOf('async function runSlangResearch');
 for (const [name, at] of [['extraction', extractionAt], ['research', researchAt]]) {
   assert.ok(at > 0, `${name} 必须存在`);
   const section = bridge.slice(at, at + 2600);
-  assert.ok(section.indexOf('waitLearnerTurn(sessionId)') < section.indexOf('api.sessions.prompt'),
-    `${name} 必须先注册 waiter 再发 prompt`);
+  const gateAt = section.indexOf('await withQqDispatch');
+  const waitAt = section.indexOf('waitLearnerTurn(sessionId)');
+  const submitAt = section.indexOf('return submit({ sessionId');
+  assert.ok(gateAt >= 0 && waitAt > gateAt && submitAt > waitAt,
+    `${name} 必须拿到名额后、发 prompt 前注册 waiter`);
   assert.ok(section.includes('turnWait.cancel()'), `${name} prompt 失败必须取消 waiter`);
 }
 assert.ok(bridge.includes("error.code = 'LEARNER_TURN_TIMEOUT'"), '超时必须有稳定 code');

@@ -1979,6 +1979,52 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "关闭"))));
     }
 
+    function RoleDispatchCard() {
+      const [state, setState] = useState(null);
+      const [error, setError] = useState("");
+      const [stopError, setStopError] = useState("");
+      const [stopping, setStopping] = useState(false);
+      const labels = { qq: "QQ", bili: "B 站", diary: "日记" };
+      const stages = { preparing: "准备中", submitting: "正在提交", running: "工作中", checking: "等待 DSH 核对" };
+      useEffect(() => {
+        let mounted = true;
+        let polling = false;
+        const refresh = async () => {
+          if (polling) return;
+          polling = true;
+          try {
+            const next = await api("/role-dispatch");
+            if (mounted) { setState(next); setError(""); }
+          } catch (e) {
+            if (mounted) setError(e.message);
+          } finally { polling = false; }
+        };
+        void refresh();
+        const timer = setInterval(refresh, 2500);
+        return () => { mounted = false; clearInterval(timer); };
+      }, []);
+      const stop = async () => {
+        setStopError("");
+        setStopping(true);
+        try { await api("/role-dispatch/stop", { method: "POST", body: { id: state.active.id } }); }
+        catch (e) { setStopError([e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setStopping(false); }
+      };
+      const active = state?.active;
+      const pending = state?.waiting?.map(({ source, count }) => `${labels[source]} ${count}`).join(" · ");
+      return h("div", { className: "qbw-card" },
+        h("h4", null, "鱼姬当前在做什么"),
+        h("div", null, active ? `${labels[active.source]} · ${stages[active.stage]}`
+          : state?.checking ? "正在核对旧会话"
+            : state ? "空闲" : "读取调度状态…"),
+        pending ? h("div", { className: "qbw-hint" }, `等待中 · ${pending}`) : null,
+        state?.lastError ? h("div", { className: "qbw-warnbox" },
+          [state.lastError.source ? labels[state.lastError.source] : "", state.lastError.error, state.lastError.hint].filter(Boolean).join(" · ")) : null,
+        error || stopError ? h("div", { className: "qbw-warnbox" }, error || stopError) : null,
+        active?.canStop ? h("div", { className: "qbw-actions" },
+          h(Btn, { kind: "qbw-btn2", onClick: stop, disabled: stopping }, stopping ? "正在停止…" : "停止本轮")) : null);
+    }
+
     function OverviewTab({ overview, reload, busy, setBusy, toast, unified, setUnified, goTab }) {
       const bridge = overview?.bridge ?? {};
       const qqSessionFailure = bridge.snowluma?.sessionFailure;
@@ -2327,6 +2373,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h(Btn, { kind: "qbw-btn2", onClick: () => setSnowAccountOpen(false), disabled: !!snowAccountBusy }, "关闭")),
               snowAccountData?.webui ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `SnowLuma 控制台：${snowAccountData.webui}`) : null));
         })() : null,
+        h(RoleDispatchCard),
         h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
         // 今日唤醒额度用完 = 它不回消息的最常见原因；以前只在 state/bridge.log 里写一行。
         (() => {
@@ -4955,7 +5002,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         try {
           const r = await api("/bili/wake-now", { method: "POST", body: {} });
           setWakeStatus(r.ok
-            ? { ok: true, text: "已提交一轮。到 DSH 的「B站生物钟」工作区查看进度。" }
+            ? { ok: true, text: "已登记唤醒。到 SurfCore「概览」查看排队，开始后可到 B 站生物钟工作区查看。" }
             : { ok: false, text: [r.error || "唤醒失败", r.hint].filter(Boolean).join(" · ") });
         } catch (e) {
           setWakeStatus({ ok: false, text: `${e.message} · ${e.hint || "刷新设置页后重试"}` });
@@ -7331,7 +7378,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         setBusy("diary-review");
         try {
           const r = await api("/diary/review", { method: "POST", body: { action: "review" } });
-          toast(r.ok ? "✓ 已叫醒她整理今天的日记（会话里能看到过程）" : `✗ ${r.error || "提交失败"}`);
+          toast(r.ok ? "✓ 已登记日记整理。可在 SurfCore「概览」查看排队。" : `✗ ${r.error || "提交失败"}`);
           await load();
         } catch (e) {
           toast(`✗ ${e.message}`);
@@ -7353,7 +7400,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             "日记存在当前角色的 characters/<id>/diary/ 里，和记忆卡分开。写不写、写什么由她自己决定；这里只控制自动整理和隐私闸。"),
           h(Row, { label: "启用日记", hint: "关掉后不再自动整理；她仍可在聊天里被你要求写。" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.enabled !== false, onChange: (e) => set("enabled", e.target.checked) })),
-          h(Row, { label: "每日自动回顾", hint: "到点叫醒一个专用日记会话；不会打断 QQ 聊天。" },
+          h(Row, { label: "每日自动回顾", hint: "到点排队，轮到日记时使用专用会话整理。" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.autoReview !== false, onChange: (e) => set("autoReview", e.target.checked) })),
           h(Row, { label: "下午回顾（本地）", hint: "默认 14:30；和晚上那次写同一篇日记。" },
             h("input", { className: "qbw-input", type: "time", value: scheduler?.reviewAt ?? cfg.reviewAt ?? "14:30", onChange: (e) => set("reviewAt", e.target.value) })),

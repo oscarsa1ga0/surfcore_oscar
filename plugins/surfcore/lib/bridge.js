@@ -28,7 +28,7 @@ export function consoleBase() {
 export function consoleToken() {
   const cfg = readJson(QQ_CONFIG, {}) ?? {};
   const configured = String(cfg.consoleToken ?? '').trim();
-  if (configured) return configured;
+  if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
   try { return fs.readFileSync(path.join(QQ_STATE_DIR, 'console-token'), 'utf8').trim(); } catch { return ''; }
 }
 
@@ -153,6 +153,7 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
     activityTail: typeof payload.activity === 'string' ? payload.activity.split('\n').slice(-8).join('\n') : '',
     raw: {
       mode: payload.mode ?? null,
+      roleDispatch: payload.roleDispatch === true,
       socialV2Paused: payload.socialV2Paused ?? null,
       allowGroups: payload.allowGroups ?? null,
       allowPrivate: payload.allowPrivate ?? null,
@@ -185,6 +186,7 @@ export async function start({ dshWebUrl = '' } = {}) {
   }
   const env = { ...process.env };
   if (dshWebUrl) env.DSH_WEB_URL = String(dshWebUrl);
+  env.SURFCORE_ROLE_DISPATCH = '1';
   // 直接 spawn node.exe，不经过 cmd/start.bat：
   // Windows 11 的默认终端会把 start.bat 里的 node 控制台托管成 WindowsTerminal 窗口，
   // 即使 cmd 用了 windowsHide 也仍会弹一个标题为“node src/bridge.js”的黑框。

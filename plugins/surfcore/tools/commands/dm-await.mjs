@@ -6,9 +6,11 @@
 //   用法:
 //     node dm-await.mjs --baseline [--any]        把当前状态记为"已读"，从现在起只认新消息
 //     node dm-await.mjs --once [--json] [--any]   轮询一次（命中打印 DM_HIT / JSON）
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+//     node dm-await.mjs --once --peek --json     检查待处理私信，保留入站水位
+import { accountBili, biliState } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { config } from '../lib/config.mjs'
 
 const argv = process.argv.slice(2)
@@ -24,8 +26,8 @@ const BASE = !!opt.baseline
 const ONCE = !!opt.once || BASE
 const JSONOUT = !!opt.json
 const ANY = !!opt.any
+const PEEK = !!opt.peek
 
-const U = process.env.USERPROFILE || process.env.HOME || '/'
 const STATE = biliState('dm-await-state.json')
 const c = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))
 const cfg = config()
@@ -40,7 +42,17 @@ const H = {
   cookie: `SESSDATA=${c.sessdata}; bili_jct=${c.bili_jct}; buvid3=${c.buvid3}`,
 }
 const loadState = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } }
-const saveState = (o) => { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(o, null, 2) + '\n') }
+function saveState(state) {
+  fs.mkdirSync(path.dirname(STATE), { recursive: true });
+  const temp = `${STATE}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(temp, STATE);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    throw error;
+  }
+}
 const parsed = (content) => {
   // 私信内容可能是 {"content":"…"} 或纯文本
   try { const j = JSON.parse(String(content)); return String(j.content ?? j.text ?? content) } catch { return String(content ?? '') }
@@ -52,6 +64,21 @@ async function fetchSessions() {
   const j = await r.json().catch(() => ({}))
   if (j.code !== 0) return { ok: false, why: `get_sessions code=${j.code} ${j.message ?? ''}` }
   return { ok: true, list: j.data?.session_list ?? [] }
+}
+
+if (opt.ack) {
+  const ack = JSON.parse(String(opt.ack))
+  const st = loadState()
+  if (ANY) {
+    const seen = { ...st.seen }
+    for (const { mid, ts } of ack) {
+      if (/^\d+$/.test(mid) && Number.isSafeInteger(ts) && ts > 0) seen[mid] = Math.max(Number(seen[mid] ?? 0), ts)
+    }
+    saveState({ ...st, seen, at: new Date().toISOString() })
+  } else if (Number.isSafeInteger(ack) && ack > 0) {
+    saveState({ ...st, lastSeen: Math.max(Number(st.lastSeen ?? 0), ack), at: new Date().toISOString() })
+  }
+  process.exit(0)
 }
 
 const st0 = loadState()
@@ -105,7 +132,7 @@ if (ANY) {
   }
   if (items.length && !FIRST_ANY) {
     for (const it of items) seenMap[it.mid] = it.ts
-    saveState({ seen: seenMap, seenAt: now, at: new Date().toISOString() })
+    if (!PEEK) saveState({ seen: seenMap, seenAt: now, at: new Date().toISOString() })
     if (JSONOUT) console.log(JSON.stringify({ hit: true, items }))
     else for (const it of items) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${it.text.replace(/\n/g, ' ').slice(0, 200)}`)
     process.exit(0)
@@ -173,7 +200,7 @@ if (hit) {
     ? r.items
     : [{ ts: r.ts, sender: OWNER, text: r.text }]
   const maxTs = Math.max(r.ts, ...items.map((m) => Number(m.ts) || 0))
-  saveState({ ...st, lastSeen: maxTs, at: new Date().toISOString() })
+  if (!PEEK) saveState({ ...st, lastSeen: maxTs, at: new Date().toISOString() })
   if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: maxTs, count: items.length, items }))
   else {
     console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${maxTs} count=${items.length} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)

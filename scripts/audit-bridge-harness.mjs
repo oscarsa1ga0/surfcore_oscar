@@ -58,6 +58,7 @@ import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import * as qqAt from '../src/qq-at.js';
+import { createQqRoleDispatch, usesLocalDispatch } from '../src/qq-role-dispatch.js';
 import * as modelOptions from '../src/model-options.js';
 import { createBiliMemory } from '../src/bili-memory.js';
 import { createOutbox, historyAllowsReplay, neverDispatched } from '../src/outbox.js';
@@ -277,7 +278,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
     ...stickerSemantics,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
-    ...qqAt,
+    ...qqAt, createQqRoleDispatch, usesLocalDispatch,
     ...modelOptions,
     ...dshModelFollow,
     ...commandSpam,
