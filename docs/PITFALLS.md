@@ -4066,3 +4066,10 @@ Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不�
 - 根因两层：① 那次调用没带 `commentId`，空间只能按一级评论处理；② 桥接原本会把父评论对象 `comment` 一起发给 NapCat，而 NapCat 4.18.42 在 `tid` 模式下只认 `comment_id/comment_uin/reply_uin/reply_name`，多传 `comment` 直接 400「当前QQ空间调用不支持 comment 参数」——所以就算带了 id 也回不出去。
 - 处置：`src/qzone-api.js` 只下发 SnowLuma 参数并把 `replyUser` 映射成 `reply_uin/reply_name`；`src/bridge.js` 只补 `commentUin`；工具说明同步。已用临时「仅自己可见」说说验证 `replies` 真的嵌套，验证后删除。
 - 预防：验证空间评论要看详情的 `replies`，别只看接口 ok。见 [案例](cases/2026-11-14-qzone-nested-reply.md)。
+
+## #137（2026-11-14）B 站唤醒看不到「最近写过什么日记」
+
+- 现象：QQ 侧 12:50 已经发过第一条语音，B 站 18:00 醒来仍说「语音包还在你那边训」。
+- 根因：B 站唤醒上下文只有「第 2 步：去读两本冲浪日记」这条**指令**，没有「你最近写过什么」的事实；QQ 侧有 `diaryPromptLineV2` 注入标题级日记，B 站没有对应行。共享日记里明明写着「第一次开口」，但没进 B 站上下文。
+- 处置：`plugins/surfcore/lib/scheduler.js` 新增 `diaryLineForBili()`，只注入最近 3 篇的日期/标题/可见性/id（正文仍走 `diary_read`），并写明公开内容不要引用私人日记。
+- 预防：判断「她知不知道某件事」要看上下文里有没有注入事实，别把「提示里让她去读」当成已覆盖。见 [案例](cases/2026-11-14-bili-diary-prompt.md)。
