@@ -62,6 +62,22 @@ export const DEFAULTS = {
   likeVideo: { enabled: true, dailyMax: 10, perRunMax: 5 },
   // 投币（2026-11-13 用户定）：每天最多 5 枚，单视频可选 1/2 枚；先看余额，只对特别好的视频投。
   coin: { enabled: true, dailyMax: 5, perVideoMax: 2, oneMinScore: 16, twoMinScore: 18 },
+  // 视频创作（2026-11-14，阶段一）：默认关闭；打开后允许本地创作（见 lib/video/*）。
+  video: {
+    enabled: false,
+    offerOnWake: false,
+    publishMode: 'draft',
+    maxProjects: 3,
+    concurrentRenders: 1,
+    maxDurationSec: 90,
+    maxScenes: 12,
+    maxOutputMB: 100,
+    videoDirMaxMB: 2048,
+    dailyTtsChars: 5000,
+    dailyRenderSeconds: 600,
+    renderTimeoutMs: 600000,
+    maxProjectsPerRole: 3,
+  },
   // 2026-10-23 用户定：默认发自己的动态（视频卡片），不再默认评论区 @ 主人。
   share: { enabled: true, via: 'dynamic', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },  // 分享型开关与评分阈值
   // 倾听（2026-10-18 补默认值，与设置页对齐）：评论区 + 直播间

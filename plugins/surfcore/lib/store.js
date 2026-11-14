@@ -60,6 +60,23 @@ const BIDI_DEFAULTS = {
   likeVideo: { enabled: true, dailyMax: 10, perRunMax: 5 },
   coin: { enabled: true, dailyMax: 5, perVideoMax: 2, oneMinScore: 16, twoMinScore: 18 },
   diary: { push: true, enabled: true },
+  // 视频创作（2026-11-14，阶段一）：默认全关——打开后才允许本地创作。
+  // 生物钟提示、上传、管理员审查是各自独立的动作（方案 §6）。
+  video: {
+    enabled: false,
+    offerOnWake: false,
+    publishMode: 'draft',            // draft | confirm | auto（auto 阶段三才生效）
+    maxProjects: 3,                  // 每角色最多活动项目数
+    concurrentRenders: 1,            // 全机同时渲染任务数
+    maxDurationSec: 90,              // 单稿最长秒数
+    maxScenes: 12,
+    maxOutputMB: 100,                // 单稿输出体积上限
+    videoDirMaxMB: 2048,             // 视频目录预算（含素材）
+    dailyTtsChars: 5000,             // 每日 TTS 字数预算
+    dailyRenderSeconds: 600,         // 每日总渲染秒数预算
+    renderTimeoutMs: 600_000,
+    maxProjectsPerRole: 3,
+  },
   notify: { type: 'none', url: '', template: 'text', cmd: '', args: [], timeoutMutes: [] },
   interact: { enabled: true, maxCommentAgeDays: 14 },
   listen: {
@@ -621,6 +638,20 @@ export function normalizeBiliConfig(input) {
   cfg.diary = isPlainObject(cfg.diary) ? cfg.diary : {};
   cfg.diary.enabled = true;
   cfg.diary.push = cfg.diary.push !== false;
+  cfg.video = isPlainObject(cfg.video) ? cfg.video : {};
+  cfg.video.enabled = cfg.video.enabled === true;
+  cfg.video.offerOnWake = cfg.video.offerOnWake === true;
+  cfg.video.publishMode = ['draft', 'confirm', 'auto'].includes(cfg.video.publishMode) ? cfg.video.publishMode : 'draft';
+  cfg.video.maxProjects = finiteNumber(cfg.video.maxProjects, 3, 1, 20, { integer: true });
+  cfg.video.concurrentRenders = finiteNumber(cfg.video.concurrentRenders, 1, 1, 4, { integer: true });
+  cfg.video.maxDurationSec = finiteNumber(cfg.video.maxDurationSec, 90, 15, 600, { integer: true });
+  cfg.video.maxScenes = finiteNumber(cfg.video.maxScenes, 12, 1, 40, { integer: true });
+  cfg.video.maxOutputMB = finiteNumber(cfg.video.maxOutputMB, 100, 10, 2000, { integer: true });
+  cfg.video.videoDirMaxMB = finiteNumber(cfg.video.videoDirMaxMB, 2048, 256, 102_400, { integer: true });
+  cfg.video.dailyTtsChars = finiteNumber(cfg.video.dailyTtsChars, 5000, 100, 200_000, { integer: true });
+  cfg.video.dailyRenderSeconds = finiteNumber(cfg.video.dailyRenderSeconds, 600, 30, 86_400, { integer: true });
+  cfg.video.renderTimeoutMs = finiteNumber(cfg.video.renderTimeoutMs, 600_000, 30_000, 3_600_000, { integer: true });
+  cfg.video.maxProjectsPerRole = finiteNumber(cfg.video.maxProjectsPerRole, 3, 1, 20, { integer: true });
   cfg.toolsPath = String(cfg.toolsPath ?? '');
   cfg.shots = isPlainObject(cfg.shots) ? cfg.shots : {};
   cfg.shots.dir = String(cfg.shots.dir ?? '').trim().slice(0, 1024);

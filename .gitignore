@@ -80,3 +80,4 @@ dist/*.zip
 # embedding runtime local pid/log
 plugins/surfcore/runtime/service.pid
 plugins/surfcore/runtime/service.log
+pnpm-lock.yaml

@@ -1,23 +1,15 @@
-// 原创视频上传 —— 预留接口，当前未实现。
+// 原创视频投稿 —— 阶段三接线（方案 §7）。
 //
-// 为什么先不做：
-//   · 需要本地视频文件、封面、分区、分片上传、转码/审核，和动态/专栏不是一条管线；
-//   · 她目前没有“生成视频”的能力，上传下载来的视频还涉及版权；
-//   · 用户 2026-11-12 明确：视频先不做，但留接口。
-//
-// 以后要接的位置（已核对可用端点，2026-11）：
-//   1) GET  https://member.bilibili.com/preupload?name=...&size=...&r=upos&profile=ugcfx/bup
-//   2) 按返回的 chunk_size 分片 PUT 上传
-//   3) POST https://member.bilibili.com/x/vu/web/add/v3?csrf=...（标题/简介/分区/标签/封面/版权）
-//   4) 发布后走 notify + appendBiliPost({type:'video', bvid, cover, summary, text})，让记忆卡/B站 brief 记住
-//
-// 安全约定与 free-post/article 相同：--dry 先看、--go 才发、interact 守卫、身份闸、
-// 30 分钟间隔、notify 报备、bili-posts.jsonl 记忆同步。
+// 阶段一/二只做本地创作与导出：先走 video-project（见 tools/commands/video-project.mjs）。
+// 这里保留入口名；接投稿时从这里开始：
+//   1) 本地投稿预检（--dry：包摘要/风险检查/当前授权模式，不上传任何字节）
+//   2) --draft 保存本地待投稿包；--go 按 publishMode（draft/confirm/auto）流转
+//   3) 网页上传适配器：preupload → 分片 PUT → 合片 → 封面 → add/v3 → 创作中心回读
+// 已核对可用端点（2026-11）：见插件 docs 与方案 §7。
 console.error([
-  '原创视频上传尚未实现（预留接口）。',
-  '当前可用：',
-  '  · free-post --bvid BV...  分享/转发任意视频卡片（配她自己的话）',
-  '  · article ...             发布原创专栏',
-  '以后接视频上传时，从 commands/video-upload.mjs 的注释端点开始。',
+  '原创视频投稿在阶段三开放。',
+  '当前（阶段一）可用：',
+  '  · video-project create/save/render/status/preview  本地创作、出片、试听与导出',
+  '  · 导出后在 B 站官方创作中心手动提交',
 ].join('\n'))
 process.exit(2)
