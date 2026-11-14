@@ -17,7 +17,7 @@ const tests = [
   // 认错形状的后果不是"少清几条"，而是**每一次退役会话都抛错**、旧任务继续跑，
   // 且只留下一行日志 —— 必须有登记期断言钉住（活 DSH 侧的实测见
   // scripts/test-dsh-session-retire.mjs）。
-  'test-dsh-inbox-projection.mjs',
+  'test-dsh-inbox-projection.mjs', 'test-role-dispatch.mjs',
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
   // DSH 端口漂移兜底：401/200+SERVER 才算 DSH、别的 Web 服务不算、回环之外不覆盖。
   'test-dsh-port.mjs',

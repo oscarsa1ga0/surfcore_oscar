@@ -12,6 +12,7 @@
  * 同一天只提交一次；失败最多重试 maxAttempts 次；离线恢复只补最近一次（窗口内）。
  */
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
   archiveCandidates, ensureDiaryDir, listCandidates, localDay, readSchedulerState,
@@ -383,7 +384,7 @@ function service(ctx, name) {
 export function startDiaryScheduler(ctx, {
   dshHome, characterId, characterDir, characterName = '', sessionId, qqStateDir = '',
   readConfig = () => ({}), now = () => Date.now(), log = () => {}, tokenBudget = null, autoTick = true,
-  fetchDayHistory = null,
+  fetchDayHistory = null, dispatch = null,
 } = {}) {
   if (!ctx?.sessionController) throw new Error('sessionController 不可用，无法启动日记回顾');
   if (!characterDir) throw new Error('缺少角色目录，无法启动日记回顾');
@@ -414,7 +415,11 @@ export function startDiaryScheduler(ctx, {
   async function ensureSession() {
     if (sessionReady) return true;
     try {
-      await ctx.sessionController.inspect(sid);
+      if (typeof ctx.sessionController.state === 'function') {
+        await ctx.sessionController.state({ sessionId: sid }, AbortSignal.timeout(5000));
+      } else {
+        await ctx.sessionController.inspect(sid);
+      }
       sessionReady = true;
       return true;
     } catch {}
@@ -482,8 +487,22 @@ export function startDiaryScheduler(ctx, {
     } catch { return ''; }
   }
 
-  async function submitReview(day, { force = false, slot = '' } = {}) {
+  const schedulerLifetime = new AbortController();
+  let manualReview = false;
+  function queueReview(day, { force = false, slot = '', at } = {}) {
+    if (!dispatch) return submitReview(day, { force, slot });
+    return dispatch({
+      id: force ? randomUUID() : `diary-review-${sid}-${day}-${slot}`,
+      priority: force ? 'manual' : 'scheduled',
+      signal: schedulerLifetime.signal,
+      deadline: force || !cfg().catchUpHours ? Infinity : at + cfg().catchUpHours * 60 * 60 * 1000,
+    }, (prompt) => submitReview(day, { force, slot, prompt }));
+  }
+
+  async function submitReview(day, { force = false, slot = '', prompt: submit = ctx.sessionController.prompt.bind(ctx.sessionController) } = {}) {
+    schedulerLifetime.signal.throwIfAborted();
     const conf = cfg();
+    if (conf.enabled === false || (!force && conf.autoReview === false)) return { ok: true, skipped: 'disabled' };
     const state = readSchedulerState(diaryDir);
     const slotKey = slot ? `${day}|${slot}` : '';
     if (!force && slotKey && state.lastReviewedSlot === slotKey) return { ok: true, skipped: 'already-reviewed' };
@@ -529,12 +548,12 @@ export function startDiaryScheduler(ctx, {
     try {
       // DSH 的 sessionController.prompt(args, signal) 第二个参数是必需的 AbortSignal
       // （B 站生物钟也是这么调的）；少传会在服务端 reading 'throwIfAborted' 崩掉。
-      const result = await ctx.sessionController.prompt({
+      const result = await submit({
         requestId: `diary-review-${day}-${now()}`,
         sessionId: sid,
         mode: 'queue',
         content: [{ type: 'text', text: prompt }],
-      }, new AbortController().signal);
+      }, schedulerLifetime.signal);
       if (result?.accepted === false || result?.ok === false || result?.result?.ok === false) {
         throw new Error('DSH 拒绝接收日记回合');
       }
@@ -573,7 +592,7 @@ export function startDiaryScheduler(ctx, {
       const state = readSchedulerState(diaryDir);
       const plan = planDueReview({ now: now(), config: conf, state });
       if (!plan) return { ok: true, skipped: 'not-due' };
-      return await submitReview(plan.due, { slot: plan.slot });
+      return await queueReview(plan.due, plan);
     } catch (error) {
       lastError = String(error?.message ?? error).slice(0, 500);
       log(`[diary] tick 失败：${lastError}`);
@@ -584,8 +603,10 @@ export function startDiaryScheduler(ctx, {
   }
 
   async function reviewNow() {
-    const day = localDay(now());
-    return submitReview(day, { force: true });
+    if (manualReview) return { ok: false, code: 'DIARY_REVIEW_BUSY', error: '已有一次手动整理正在等候', hint: '到 SurfCore → 概览查看进度' };
+    manualReview = true;
+    try { return await queueReview(localDay(now()), { force: true }); }
+    finally { manualReview = false; }
   }
 
   function nextReviewClock(at = now(), conf = cfg()) {
@@ -602,6 +623,7 @@ export function startDiaryScheduler(ctx, {
     const conf = cfg();
     return {
       running: !stopped,
+      manualReview,
       sessionId: sid,
       sessionReady,
       characterId,
@@ -630,6 +652,7 @@ export function startDiaryScheduler(ctx, {
     status,
     stop() {
       stopped = true;
+      schedulerLifetime.abort();
       if (timer) clearInterval(timer);
       timer = null;
       try { ctx.sessionController?.cancel?.({ sessionId: sid }); } catch {}
