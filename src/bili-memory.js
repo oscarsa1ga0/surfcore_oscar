@@ -824,14 +824,22 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
 
     const seen = new Set();
     const picks = [];
+    const activityType = (entry) => ['follow', 'unfollow', 'like', 'coin'].includes(entry.type);
     const takePick = (entry) => {
-      const activity = ['follow', 'unfollow', 'like', 'coin'].includes(entry.type);
-      const key = activity ? entry.id : (entry.bvid || entry.id);
+      const key = activityType(entry) ? entry.id : (entry.bvid || entry.id);
       if (key && seen.has(key)) return false;
       if (key) seen.add(key);
       picks.push(entry);
       return true;
     };
+    // 行为条目（关注/取关/点赞/投币）先占 4 个名额：否则当天动态一多，
+    // 它们会被晚于动态排进 10 条窗口之外，简报里就“看起来没关注过人”。
+    const activityQuota = 4;
+    for (const entry of sorted) {
+      if (picks.length >= activityQuota) break;
+      if (ownWorkKind(entry) || !activityType(entry)) continue;
+      takePick(entry);
+    }
     for (const entry of sorted) {
       if (picks.length >= 10) break;
       if (ownWorkKind(entry)) continue;

@@ -133,7 +133,12 @@ export function createBiliVideoAdapter({ login = readFishLogin(), fetchImpl = fe
 
   async function creatorDetail(query) {
     try {
-      return archiveView(await member('/x/web/archive/view', query));
+      // 2026-11 实测：/x/web/archive/view 已 404；/x/vupre/web/archive/view 返回
+      // 完整稿件详情（含 creation_statement 原生 AI 声明与 videos 列表）。
+      const data = await member('/x/vupre/web/archive/view', query);
+      const archive = data?.archive ?? data;
+      if (!archive || (!archive.aid && !archive.bvid)) throw remoteError('稿件详情', '缺稿件编号');
+      return archiveView(data);
     } catch (error) {
       if (!query.aid || error.code === 'VIDEO_BILI_LOGIN' || error.retryable) throw error;
       return archiveView(await member('/x/web/archive/videos', { aid: query.aid }));
@@ -200,7 +205,8 @@ export function createBiliVideoAdapter({ login = readFishLogin(), fetchImpl = fe
       const csrf = login.bili_jct;
       const data = await member('/x/vu/web/cover/up', { ts: Date.now() }, { method: 'POST',
         body: new URLSearchParams({ csrf, cover: `data:image/png;base64,${bytes.toString('base64')}` }) });
-      if (!/^https:\/\/[a-z0-9.-]+\.hdslb\.com\//i.test(data?.url ?? '')) throw remoteError('上传封面', '封面地址');
+      // 2026-11 实测：封面 CDN 已从 *.hdslb.com 迁到 archive.biliimg.com，两者都要认。
+      if (!/^https:\/\/[a-z0-9.-]+\.(hdslb|biliimg)\.com\//i.test(data?.url ?? '')) throw remoteError('上传封面', '封面地址');
       return data.url;
     },
 
@@ -223,10 +229,11 @@ export function createBiliVideoAdapter({ login = readFishLogin(), fetchImpl = fe
     },
 
     async getArchive(receipt, accountMid) {
-      const query = receipt.bvid ? { bvid: receipt.bvid } : { aid: receipt.archiveId };
+      // 2026-11 实测：vupre 详情按 aid 查询最稳；bvid 先解析成 aid 再查。
+      const query = receipt.archiveId ? { aid: receipt.archiveId } : { bvid: receipt.bvid };
       let creator = null;
       try {
-        const detailed = await creatorDetail(receipt.archiveId ? { aid: receipt.archiveId } : query);
+        const detailed = await creatorDetail(query);
         if ((receipt.archiveId && detailed.archiveId === receipt.archiveId) || (receipt.bvid && detailed.bvid === receipt.bvid)) creator = detailed;
       } catch {}
       if (!creator?.aiMarked && !['rejected', 'withdrawn'].includes(creator?.state)) {
@@ -240,7 +247,7 @@ export function createBiliVideoAdapter({ login = readFishLogin(), fetchImpl = fe
         && BV_RE.test(out.data?.bvid ?? '') && (!receipt.bvid || out.data.bvid === receipt.bvid)
         && (!receipt.archiveId || String(out.data.aid) === receipt.archiveId)) {
         return { ...creator, state: 'published', bvid: out.data.bvid, archiveId: String(out.data.aid),
-          cover: /^https:\/\/[a-z0-9.-]+\.hdslb\.com\//i.test(out.data.pic ?? '') ? out.data.pic : '',
+          cover: /^https:\/\/[a-z0-9.-]+\.(hdslb|biliimg)\.com\//i.test(out.data.pic ?? '') ? out.data.pic : '',
           publishedAt: Number.isFinite(Number(out.data.pubdate)) && Number(out.data.pubdate) > 0 ? new Date(Number(out.data.pubdate) * 1000).toISOString() : null };
       }
       if (out?.code === 0) throw publishError('VIDEO_BILI_ARCHIVE_MISMATCH', '公开稿件身份或状态不一致', '到创作中心核对稿件和账号');

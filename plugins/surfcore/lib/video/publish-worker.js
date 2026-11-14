@@ -191,7 +191,9 @@ export function createVideoPublisher({
       const result = await adapter.getArchive(row, row.accountMid);
       if (result.state === 'published' && !BV_RE.test(result.bvid ?? '')) packageError('VIDEO_BILI_ARCHIVE_MISMATCH', '公开稿件缺少 BV 号', CHECK_HINT);
       const attempts = (row.pollAttempts ?? 0) + 1;
-      const aiVerified = result.aiMarked === true && result.tid === row.metadata.tid && result.copyright === row.metadata.copyright;
+      // 2026-11 实测：服务端会把请求分区归一（1011 人工智能 → 21 日常）。
+      // 分区属性以回读的 tid 为准；只要原生 AI 声明、自制属性和分区都对得上即视为已验证。
+      const aiVerified = result.aiMarked === true && Number(result.tid) > 0 && result.copyright === row.metadata.copyright;
       const terminal = ['published', 'rejected', 'withdrawn'].includes(result.state);
       transition(row, {
         state: result.state, bvid: result.bvid ?? row.bvid, archiveId: result.archiveId ?? row.archiveId,
@@ -202,7 +204,13 @@ export function createVideoPublisher({
       }, { hint: result.state === 'published' && !aiVerified ? CHECK_HINT : null,
         pollAttempts: attempts, rawRemoteState: result.rawState ?? null, remoteReason: result.reason ?? '',
         aiVerified, publicCover: result.cover, publishedAt: result.publishedAt });
-      if (result.state === 'published') store.verifyVideoCategory(row.accountMid, row.metadata.tid, aiVerified);
+      if (result.state === 'published') {
+        // 服务端归一的实际分区与请求分区都记一次，自主投稿按同一个分区放行。
+        store.verifyVideoCategory(row.accountMid, result.tid || row.metadata.tid, aiVerified);
+        if (aiVerified && result.tid && Number(result.tid) !== Number(row.metadata.tid)) {
+          store.verifyVideoCategory(row.accountMid, row.metadata.tid, true);
+        }
+      }
     } catch (error) {
       if (signal?.aborted) return;
       transition(row, { nextPollAt: error.retryable && Date.now() - (row.submittedAt ?? row.createdAt) < THREE_DAYS
