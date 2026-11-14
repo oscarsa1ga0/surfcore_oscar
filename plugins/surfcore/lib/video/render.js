@@ -276,8 +276,11 @@ export async function renderRevision(deps) {
       await writeAtomic(sceneWav, async (part) => {
         if (cueWavs.length) {
           const concatInputs = cueWavs.flatMap((f) => ['-i', f]);
-          const concatFilter = cueWavs.map((_, i) => `[${i}:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo[a${i}]`)
-            .concat([cueWavs.map((_, i) => `[a${i}]`).join('') + `concat=n=${cueWavs.length}:v=0:a=1[voiced]`]).join(';');
+          // 句间停顿：按 cue 起始时刻对每句 adelay（静音垫到位置），再 amix 叠加
+          const offsets = scene.cues.map((cue) => Math.max(0, Math.round(cue.startMs)));
+          const delayed = cueWavs.map((_, i) => `[${i}:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo${offsets[i] > 0 ? `,adelay=${offsets[i]}:all=1` : ''}[a${i}]`);
+          const mix = `${cueWavs.map((_, i) => `[a${i}]`).join('')}amix=inputs=${cueWavs.length}:duration=longest:normalize=0,atrim=0:${durSec}[voiced]`;
+          const concatFilter = [...delayed, mix].join(';');
           const tmpVoice = path.join(tmpDir, `voice-${scene.id}.wav`);
           await runFfmpeg(ffmpeg, [...concatInputs, '-filter_complex', concatFilter, '-map', '[voiced]', '-y', tmpVoice], { abortSignal, log });
           await runFfmpeg(ffmpeg, ['-i', tmpVoice, '-af', `aresample=44100,aformat=sample_fmts=s16:channel_layouts=stereo,apad=pad_dur=999,atrim=0:${durSec}`, '-f', 'wav', '-y', part], { abortSignal, log });

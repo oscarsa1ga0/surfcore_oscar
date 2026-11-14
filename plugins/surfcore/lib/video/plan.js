@@ -19,6 +19,8 @@ export const DEFAULTS = {
   maxTotalMs: 90_000,
   maxScenes: 12,
   voiceTailMs: 400,
+  lineGapMs: 800, // 相邻旁白句之间的停顿（听感自然的默认值）
+  maxLineGapMs: 3000,
   defaultFixedMs: 3000,
   maxCaptionChars: 28, // 超过就按句意拆分
 };
@@ -95,6 +97,9 @@ export function validatePlan(input, options = {}) {
     if (mode === 'fixed' && intMs(duration.ms) == null) errors.push(err(`${prefix}.duration.ms`, 'fixed 镜头必须给整数毫秒 ms'));
     if (intMs(duration.minMs) != null && intMs(duration.minMs) < 500) {
       errors.push(err(`${prefix}.duration.minMs`, 'minMs 至少 500'));
+    }
+    if (intMs(duration.gapMs) != null && intMs(duration.gapMs) > limits.maxLineGapMs) {
+      errors.push(err(`${prefix}.duration.gapMs`, `gapMs（句间停顿）最大 ${limits.maxLineGapMs}ms`));
     }
 
     const lines = Array.isArray(scene?.lines) ? scene.lines : [];
@@ -199,6 +204,7 @@ export function computeTimeline(plan, voiceDurationsMs = {}, options = {}) {
   for (const scene of plan.scenes) {
     const mode = scene.duration.mode;
     const lines = Array.isArray(scene.lines) ? scene.lines : [];
+    const gap = intMs(scene.duration.gapMs) ?? limits.lineGapMs;
     let durationMs;
     const cues = [];
     if (mode === 'voice') {
@@ -209,10 +215,11 @@ export function computeTimeline(plan, voiceDurationsMs = {}, options = {}) {
       }
       const min = intMs(scene.duration.minMs) ?? 0;
       const tail = intMs(scene.duration.tailMs) ?? limits.voiceTailMs;
-      durationMs = frameAlign(Math.max(min, spoken.reduce((a, b) => a + b, 0) + tail));
-      // 逐行排 cue（前一行结束紧接下一行；尾留白挂在最后）
+      const gaps = Math.max(0, lines.length - 1) * gap;
+      durationMs = frameAlign(Math.max(min, spoken.reduce((a, b) => a + b, 0) + gaps + tail));
+      // 逐行排 cue：每句之间留句间停顿（gapMs），尾留白挂在最后
       let lineCursor = 0;
-      for (const line of lines) {
+      for (const [index, line] of lines.entries()) {
         const d = Math.max(0, Number(voice[line.id]) || 0);
         const text = str(line.caption).trim() || str(line.speech).trim();
         cues.push({
@@ -222,24 +229,25 @@ export function computeTimeline(plan, voiceDurationsMs = {}, options = {}) {
           text,
           segments: splitCaption(text, limits.maxCaptionChars),
         });
-        lineCursor += Math.max(d, 0);
+        lineCursor += Math.max(d, 0) + (index < lines.length - 1 ? gap : 0);
       }
     } else {
       durationMs = frameAlign(intMs(scene.duration.ms) ?? limits.defaultFixedMs);
-      // fixed 镜头带旁白：cue 均分在镜头内（预留尾留白）
+      // fixed 镜头带旁白：cue 均分在镜头内（预留尾留白，句间也有停顿）
       const tail = Math.min(intMs(scene.duration.tailMs) ?? limits.voiceTailMs, Math.floor(durationMs / 4));
       const usable = durationMs - tail;
       const spoken = lines.map((l) => Number(voice[l.id]) || 0);
-      const need = spoken.reduce((a, b) => a + b, 0);
+      const gaps = Math.max(0, lines.length - 1) * gap;
+      const need = spoken.reduce((a, b) => a + b, 0) + gaps;
       if (need > usable) {
         errors.push(err(
           `scenes[${scene.id}].duration`,
-          `旁白超出镜头时长：需要 ${need}ms，镜头只留了 ${usable}ms（缺 ${need - usable}ms）`,
+          `旁白超出镜头时长：需要 ${need}ms（含句间停顿），镜头只留了 ${usable}ms（缺 ${need - usable}ms）`,
           'VIDEO_SCENE_TOO_SHORT',
         ));
       }
       let lineCursor = 0;
-      for (const line of lines) {
+      for (const [index, line] of lines.entries()) {
         const d = Math.max(0, Number(voice[line.id]) || 0);
         const text = str(line.caption).trim() || str(line.speech).trim();
         cues.push({
@@ -249,7 +257,7 @@ export function computeTimeline(plan, voiceDurationsMs = {}, options = {}) {
           text,
           segments: splitCaption(text, limits.maxCaptionChars),
         });
-        lineCursor += Math.max(d, 0);
+        lineCursor += Math.max(d, 0) + (index < lines.length - 1 ? gap : 0);
       }
     }
     const startMs = cursor;

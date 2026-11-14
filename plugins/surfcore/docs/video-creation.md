@@ -33,7 +33,7 @@ video-project review <id> --revision <n> --decision keep|revise|shelve
   "scenes": [
     { "id": "s01",
       "visual": { "assetId": "a_…", "fit": "contain|cover", "motion": "none|zoom_in|pan" },
-      "duration": { "mode": "voice", "minMs": 4000, "tailMs": 400 },
+      "duration": { "mode": "voice", "minMs": 4000, "tailMs": 400, "gapMs": 800 },
       "lines": [ { "id": "l01", "speech": "…", "caption": "…" } ],
       "transitionOut": { "kind": "cut", "durationMs": 0 } },
     { "id": "s02",
@@ -46,7 +46,7 @@ video-project review <id> --revision <n> --decision keep|revise|shelve
 }
 ```
 
-约束：总长 15–90s（按配置 `video.maxDurationSec`）、最多 12 场景（`video.maxScenes`）；voice 镜头按时长取实测语音+尾留白再按 30fps 对齐；fixed 镜头旁白放不下报 `VIDEO_SCENE_TOO_SHORT`（带缺口毫秒数）；字幕超长按句意拆分、保留时间戳。
+约束：总长 15–90s（按配置 `video.maxDurationSec`）、最多 12 场景（`video.maxScenes`）；voice 镜头按时长取实测语音+句间停顿（`gapMs`，默认 800ms）+尾留白再按 30fps 对齐；fixed 镜头旁白放不下报 `VIDEO_SCENE_TOO_SHORT`（带缺口毫秒数，含句间停顿）；字幕超长按句意拆分、按字数占比切分整句时长（不重叠）。
 
 ## 存储与执行
 

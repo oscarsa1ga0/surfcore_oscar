@@ -176,6 +176,10 @@ const captionList = previewJson2.captions ?? [];
 const captionSorted = captionList.every((c, i) => i === 0 || c.startMs >= captionList[i - 1].startMs);
 const captionNoOverlap = captionList.every((c, i) => i === 0 || c.startMs >= captionList[i - 1].endMs);
 check('字幕时间段有序且不重叠', captionSorted && captionNoOverlap, `${captionList.length} 条`);
+const manifestDurations = JSON.parse(fs.readFileSync(path.join(revDir, byKind.manifest.relativePath), 'utf8')).lineDurations;
+const s01scene = computeTimeline(plan, manifestDurations).scenes.find((s) => s.id === 's01');
+const gapsOk = s01scene.cues.every((c, i) => i === 0 || c.startMs - s01scene.cues[i - 1].endMs >= 800);
+check('voice 镜头句间停顿 ≥800ms', gapsOk, s01scene.cues.map((c) => `${c.startMs}→${c.endMs}`).join(' '));
 const timeline = computeTimeline(plan, byKind.manifest ? JSON.parse(fs.readFileSync(path.join(revDir, byKind.manifest.relativePath), 'utf8')).lineDurations : {});
 check('成片时长 ≈ 时间轴', Math.abs(Number(probeJson.format.duration) * 1000 - timeline.totalMs) <= 500, `${(Number(probeJson.format.duration) * 1000).toFixed(0)}ms vs ${timeline.totalMs}ms`);
 
