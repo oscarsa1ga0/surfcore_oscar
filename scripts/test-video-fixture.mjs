@@ -32,8 +32,7 @@ function check(name, condition, detail = '') {
   } else {
     failed += 1;
     console.error(`  ✗ ${name}${detail ? `（${detail}）` : ''}`);
-  }
-}
+  }}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(fn, timeoutMs, intervalMs = 500) {
@@ -232,7 +231,55 @@ fs.writeFileSync(badPlanFile, JSON.stringify({ schemaVersion: 1, title: 'x', sce
 const saveBad = runCli(['video-project', 'save', project.id, '--expect-revision', '1', '--plan-file', badPlanFile, '--json']);
 check('CLI 拒绝非法计划', saveBad.status !== 0 && JSON.parse(saveBad.stdout).code === 'VIDEO_PLAN_INVALID');
 
-// ── 5. 收尾 ────────────────────────────────────────────────────────
+// ── 5. 管理 API（设置页播放/下载依赖的 Range 流式）────────────────────
+console.log('  管理 API 流式测试 ...');
+const { createVideoApi } = await import('../plugins/surfcore/lib/video/publish-web.js');
+const api = createVideoApi({
+  storeFactory: () => ({ store, root, character }),
+  log: () => {},
+});
+function mockRes() {
+  let resolveDone = () => {};
+  const res = {
+    statusCode: 200, headers: {}, chunks: [], ended: false,
+    done: new Promise((resolve) => { resolveDone = resolve; }),
+    setHeader(k, v) { this.headers[k.toLowerCase()] = v; },
+    write(chunk) { this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); return true; },
+    end(chunk) { if (chunk) this.write(chunk); this.ended = true; resolveDone(); },
+    emit() {}, on() {}, once() {}, destroy() {},
+  };
+  return res;
+}
+async function apiGet(pathname, { method = 'GET', headers = {} } = {}) {
+  const res = mockRes();
+  const url = new URL(`http://127.0.0.1${pathname}`);
+  await api.handle({ method, headers, url }, res, url);
+  await res.done; // 流式响应：等 end 后再读
+  return { res, body: Buffer.concat(res.chunks), json: (() => { try { return JSON.parse(Buffer.concat(res.chunks).toString()); } catch { return null; } })() };
+}
+const base = '/dsh-surfcore/api/bili/video';
+const listRes = await apiGet(`${base}/projects`);
+check('API 项目列表', listRes.res.statusCode === 200 && listRes.json?.items?.length === 2);
+const detailRes = await apiGet(`${base}/projects/${project.id}`);
+check('API 项目详情', detailRes.res.statusCode === 200 && detailRes.json?.project?.id === project.id && detailRes.json?.artifactsByRevision?.['1']?.length >= 7);
+const fullRes = await apiGet(`${base}/projects/${project.id}/revisions/1/artifacts/mp4`);
+const mp4Size = fs.statSync(mp4).size;
+check('API 整片 200', fullRes.res.statusCode === 200 && fullRes.res.headers['content-length'] === String(mp4Size) && fullRes.body.length === mp4Size, `code=${fullRes.res.statusCode} cl=${fullRes.res.headers['content-length']} len=${fullRes.body.length} want=${mp4Size}`);
+const rangeRes = await apiGet(`${base}/projects/${project.id}/revisions/1/artifacts/mp4`, { headers: { range: 'bytes=0-1023' } });
+const fileHead = fs.readFileSync(mp4).subarray(0, 1024);
+check('API Range 206 前 1KB', rangeRes.res.statusCode === 206 && rangeRes.res.headers['content-range'] === `bytes 0-1023/${mp4Size}` && rangeRes.body.length === 1024 && rangeRes.body.equals(fileHead));
+const suffixRes = await apiGet(`${base}/projects/${project.id}/revisions/1/artifacts/mp4`, { headers: { range: 'bytes=-2048' } });
+check('API Range 后缀 2KB', suffixRes.res.statusCode === 206 && suffixRes.body.length === 2048 && suffixRes.body.equals(fs.readFileSync(mp4).subarray(mp4Size - 2048)), `code=${suffixRes.res.statusCode} len=${suffixRes.body.length} cr=${suffixRes.res.headers['content-range']}`);
+const headRes = await apiGet(`${base}/projects/${project.id}/revisions/1/artifacts/mp4`, { method: 'HEAD' });
+check('API HEAD 只回长度', headRes.res.statusCode === 200 && headRes.res.headers['content-length'] === String(mp4Size) && headRes.body.length === 0, `code=${headRes.res.statusCode} len=${headRes.body.length}`);
+const badKind = await apiGet(`${base}/projects/${project.id}/revisions/1/artifacts/../../etc/passwd`);
+check('API 拒绝穿越工件路径', badKind.res.statusCode === 404 && badKind.json?.code === 'VIDEO_NOT_FOUND');
+const badId = await apiGet(`${base}/projects/..%2F..%2Fetc/revisions/1/artifacts/mp4`);
+check('API 拒绝非法项目 id', badId.res.statusCode === 400);
+const approveRes = await apiGet(`${base}/projects/${project.id}/approve`, { method: 'POST' });
+check('API approve 阶段三 501', approveRes.res.statusCode === 501 && approveRes.json?.code === 'VIDEO_PHASE3');
+
+// ── 6. 收尾 ────────────────────────────────────────────────────────
 store.close();
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 console.log(`产物目录：${root}（DSH_HOME=${DSH_HOME}）`);

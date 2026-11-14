@@ -29,12 +29,24 @@ function failJson(res, code, error, hint = '', status = 400) {
 function parseRange(header, size) {
   const match = /^bytes=(\d*)-(\d*)$/.exec(String(header ?? '').trim());
   if (!match) return null;
-  const start = match[1] === '' ? null : Number(match[1]);
-  const end = match[2] === '' ? null : Number(match[2]);
-  if (start == null && end == null) return null;
-  const s = start ?? Math.max(0, size - (end ?? 0));
-  const e = end ?? size - 1;
-  if (!Number.isInteger(s) || !Number.isInteger(e) || s < 0 || e >= size || s > e) return null;
+  const hasStart = match[1] !== '';
+  const hasEnd = match[2] !== '';
+  if (!hasStart && !hasEnd) return null;
+  const start = hasStart ? Number(match[1]) : null;
+  const end = hasEnd ? Number(match[2]) : null;
+  if (start != null && !Number.isInteger(start)) return null;
+  if (end != null && !Number.isInteger(end)) return null;
+  let s;
+  let e;
+  if (start == null) {
+    // 后缀形式 bytes=-N：取最后 N 字节
+    s = Math.max(0, size - end);
+    e = size - 1;
+  } else {
+    s = start;
+    e = end ?? size - 1;
+  }
+  if (s < 0 || e >= size || s > e) return null;
   return { start: s, end: e };
 }
 
@@ -101,7 +113,7 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
         : 'inline';
       res.statusCode = range ? 206 : 200;
       res.setHeader('content-type', mime);
-      res.setHeader('content-length', range ? range.end - range.start + 1 : stat.size);
+      res.setHeader('content-length', String(range ? range.end - range.start + 1 : stat.size));
       res.setHeader('accept-ranges', 'bytes');
       res.setHeader('content-disposition', disposition);
       if (range) res.setHeader('content-range', `bytes ${range.start}-${range.end}/${stat.size}`);
@@ -160,13 +172,17 @@ export function createVideoApi({ storeFactory, log = () => {} }) {
       if (pathname === `${base}/projects` && req.method === 'GET') return projectList(req, res, url);
       const detailMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)$/.exec(pathname);
       if (detailMatch && req.method === 'GET') return projectDetail(req, res, url, detailMatch[1]);
-      const artifactMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/revisions\/(\d+)\/artifacts\/([a-z-]+)$/.exec(pathname);
+      // kind 含数字（mp4），不能只用 [a-z-]
+      const artifactMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/revisions\/(\d+)\/artifacts\/([a-z0-9-]+)$/.exec(pathname);
       if (artifactMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         return artifact(req, res, url, artifactMatch[1], artifactMatch[2], artifactMatch[3]);
       }
-      if (detailMatch && req.method === 'POST' && pathname.endsWith('/retry')) return retry(req, res, detailMatch[1]);
-      if (detailMatch && req.method === 'POST' && pathname.endsWith('/shelve')) return shelve(req, res, detailMatch[1]);
-      if (detailMatch && req.method === 'POST' && pathname.endsWith('/approve')) return approve(req, res, detailMatch[1]);
+      const actionMatch = /^\/dsh-surfcore\/api\/bili\/video\/projects\/([^/]+)\/(retry|shelve|approve)$/.exec(pathname);
+      if (actionMatch && req.method === 'POST') {
+        if (actionMatch[2] === 'retry') return retry(req, res, actionMatch[1]);
+        if (actionMatch[2] === 'shelve') return shelve(req, res, actionMatch[1]);
+        return approve(req, res, actionMatch[1]);
+      }
       return failJson(res, 'VIDEO_NOT_FOUND', `未知视频接口：${pathname}`, '', 404);
     },
   };
