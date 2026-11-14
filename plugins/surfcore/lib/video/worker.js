@@ -89,9 +89,7 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
         return { jobId: task.jobId, ok: false, code, interrupted: true };
       }
       const retryable = RETRYABLE_CODES.has(code);
-      const stage = store.getTask(task.jobId)?.progress
-        ? JSON.parse(JSON.stringify(store.getTask(task.jobId).progress))?.stage ?? ''
-        : '';
+      const stage = store.getTask(task.jobId)?.progress?.stage ?? error?.stage ?? '';
       store.failTask(task.jobId, fence, {
         code,
         error: String(error?.message ?? error),

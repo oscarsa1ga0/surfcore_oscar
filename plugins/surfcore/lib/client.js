@@ -4281,6 +4281,199 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           `共 ${data.total ?? items.length} 条${q ? `（过滤后 ${items.length} 条）` : ""} · 数据文件 ${data.file || "—"}`) : null);
     }
 
+    // ── 视频创作（阶段一：配置 + 项目浏览 / 详情；投稿是阶段三）──────────────
+    // 配置仍写 bili.video.*，和 B站 页共用底部「保存」，这里不另做保存逻辑。
+    // 项目/工件只读浏览 + 手动刷新，不做自动轮询（阶段一从简）。
+    function VideoTab({ cfg, set, busy, setBusy, toast }) {
+      const [list, setList] = useState(null);
+      const [listErr, setListErr] = useState("");
+      const [viewId, setViewId] = useState("");
+      const [detail, setDetail] = useState(null);
+      const [detailErr, setDetailErr] = useState("");
+      const [acting, setActing] = useState("");
+      const [actMsg, setActMsg] = useState("");
+      const [actErr, setActErr] = useState("");
+      const video = cfg?.video && typeof cfg.video === "object" ? cfg.video : {};
+      const setVideo = (path, value) => set(["video", ...path], value);
+
+      const loadList = useCallback(async () => {
+        setBusy("video-list");
+        try { setList(await api("/bili/video/projects")); setListErr(""); }
+        catch (e) { setListErr(e.message); }
+        finally { setBusy(""); }
+      }, [setBusy]);
+      useEffect(() => { loadList(); }, [loadList]);
+
+      const loadDetail = useCallback(async (id) => {
+        setBusy("video-detail");
+        try { setDetail(await api(`/bili/video/projects/${encodeURIComponent(id)}`)); setDetailErr(""); }
+        catch (e) { setDetailErr(e.message); }
+        finally { setBusy(""); }
+      }, [setBusy]);
+
+      const openDetail = (id) => { setViewId(id); setDetail(null); setDetailErr(""); setActMsg(""); setActErr(""); loadDetail(id); };
+      const backToList = () => { setViewId(""); setDetail(null); setDetailErr(""); setActMsg(""); setActErr(""); loadList(); };
+
+      const editStateLabel = (state) => ({ idea: "选题", editing: "制作中", preview: "预览", ready: "可投稿", shelved: "已搁置" }[state] ?? state);
+      const taskStateLabel = (state) => ({ queued: "排队中", running: "渲染中", succeeded: "已完成", retryable: "待重试", blocked: "失败", cancelled: "已取消" }[state] ?? state);
+      const reviewLabel = (decision) => ({ keep: "保留", revise: "要改", shelve: "搁置" }[decision] ?? decision);
+      const taskLine = (task) => {
+        if (!task) return null;
+        const pct = Number(task.progress?.pct);
+        const pctText = Number.isFinite(pct) ? ` · ${Math.round(pct)}%` : "";
+        return h("div", null,
+          h("div", { className: "qbw-hint" },
+            `任务 ${task.kind}：${taskStateLabel(task.state)}${task.stage ? ` · ${task.stage}` : ""}${pctText}`),
+          task.error || task.errorCode
+            ? h("div", { className: "qbw-err" }, `✗ ${task.error || task.errorCode}${task.hint ? `（${task.hint}）` : ""}`)
+            : null);
+      };
+      const artifactUrl = (id, revision, kind) => `${API}/bili/video/projects/${encodeURIComponent(id)}/revisions/${revision}/artifacts/${kind}`;
+
+      const act = async (action, revision) => {
+        setActing(`${action}-${revision}`);
+        setActMsg("");
+        setActErr("");
+        try {
+          const r = await api(`/bili/video/projects/${encodeURIComponent(viewId)}/${action}`, {
+            method: "POST",
+            body: action === "retry" ? { revision, kind: "render" } : { revision },
+          });
+          if (r.ok === false) { setActErr([r.error, r.hint].filter(Boolean).join(" · ")); return; }
+          setActMsg(action === "retry" ? "✓ 已重新提交渲染任务，稍后点「刷新」看进度。" : "✓ 项目已搁置。");
+          await loadDetail(viewId);
+          await loadList();
+        } catch (e) {
+          setActErr([e.message, e.hint].filter(Boolean).join(" · "));
+        } finally {
+          setActing("");
+        }
+      };
+
+      const configCard = h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("h4", null, "视频创作（本地）"),
+        h(Row, { label: "启用视频创作", hint: "总开关：打开后才能新建 / 渲染视频项目（默认关）" },
+          h("input", { className: "qbw-switch", type: "checkbox", checked: video.enabled === true, onChange: (e) => setVideo(["enabled"], e.target.checked) })),
+        h(Row, { label: "唤醒时提示", hint: "B站 醒来时问她要不要开视频项目（默认关）" },
+          h("input", { className: "qbw-switch", type: "checkbox", checked: video.offerOnWake === true, onChange: (e) => setVideo(["offerOnWake"], e.target.checked) })),
+        h(Row, { label: "投稿模式", hint: "draft 只存本地草稿；confirm 投稿前要你确认；auto 自主投稿是阶段三，暂未开放" },
+          h("select", { className: "qbw-select", value: video.publishMode ?? "draft", onChange: (e) => setVideo(["publishMode"], e.target.value) },
+            h("option", { value: "draft" }, "draft · 只存草稿（阶段一）"),
+            h("option", { value: "confirm" }, "confirm · 投稿前确认"),
+            h("option", { value: "auto" }, "auto · 自主投稿（阶段三，暂未开放）"))),
+        h(Row, { label: "单稿最长（秒）", hint: "15~600；默认 90" },
+          h("input", { className: "qbw-input", type: "number", min: 15, max: 600, placeholder: "90", value: video.maxDurationSec ?? "", onChange: (e) => setVideo(["maxDurationSec"], e.target.value === "" ? undefined : Number(e.target.value)) })),
+        h(Row, { label: "单稿最多镜头数", hint: "1~40；默认 12" },
+          h("input", { className: "qbw-input", type: "number", min: 1, max: 40, placeholder: "12", value: video.maxScenes ?? "", onChange: (e) => setVideo(["maxScenes"], e.target.value === "" ? undefined : Number(e.target.value)) })),
+        h(Row, { label: "单稿产出上限（MB）", hint: "10~2000；默认 100" },
+          h("input", { className: "qbw-input", type: "number", min: 10, max: 2000, placeholder: "100", value: video.maxOutputMB ?? "", onChange: (e) => setVideo(["maxOutputMB"], e.target.value === "" ? undefined : Number(e.target.value)) })),
+        video.enabled === true ? null : h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
+          "本地创作关闭中，打开后才能新建 / 渲染视频项目。"),
+        h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
+          "改完点底部「保存」生效；渲染队列会在保存后立即跟随新开关。"));
+
+      const listView = () => {
+        const items = Array.isArray(list?.items) ? list.items : [];
+        return h("div", null,
+          h("div", { className: "qbw-search" },
+            h("span", { className: "qbw-hint", style: { flex: 1 } }, list ? `共 ${list.total ?? items.length} 个项目` : "读取项目…"),
+            h(Btn, { kind: "qbw-btn3", onClick: loadList, disabled: !!busy }, busy === "video-list" ? "刷新中…" : "刷新")),
+          listErr ? h("div", { className: "qbw-err", style: { margin: "8px 0" } }, `✗ ${listErr}`) : null,
+          !list && !listErr ? h("div", { className: "qbw-hint", style: { padding: "20px 0" } }, "读取项目…") : null,
+          list && !items.length ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
+            h("div", { className: "qbw-hint" }, "还没有视频项目。先在 CLI 创建："),
+            h("div", { className: "qbw-out" }, 'node plugins/surfcore/tools/bili.mjs video-project create --title "我的第一条视频"'),
+            h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
+              "项目会出现在这里；渲染完成后可以在详情页播放和下载成品。")) : null,
+          items.map((item) => h("div", { key: item.id, className: "qbw-card", style: { marginTop: "10px" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" } },
+              h("div", { style: { flex: "1 1 auto", minWidth: "240px" } },
+                h("h4", null, item.title || `项目 ${item.id}`),
+                list?.character?.name ? h("div", { className: "qbw-hint" }, `当前角色：${list.character.name}`) : null,
+                h("div", { className: "qbw-hint" }, `v${item.revision} · ${editStateLabel(item.editState)}`),
+                taskLine(item.tasks?.[0])),
+              h("div", { style: { display: "flex", gap: "6px", alignItems: "flex-start" } },
+                h(Btn, { kind: "qbw-btn2", onClick: () => openDetail(item.id), disabled: !!busy }, "查看"))))));
+      };
+
+      const detailView = () => {
+        const backBtn = h(Btn, { kind: "qbw-btn3", onClick: backToList, disabled: !!busy }, "← 返回项目列表");
+        if (!detail && !detailErr) {
+          return h("div", null, backBtn, h("div", { className: "qbw-hint", style: { padding: "16px 0" } }, "读取项目详情…"));
+        }
+        if (!detail) {
+          return h("div", null, backBtn, h("div", { className: "qbw-err", style: { marginTop: "8px" } }, `✗ ${detailErr || "读取失败"}`));
+        }
+        const project = detail.project ?? {};
+        const revisions = (Array.isArray(project.revisions) ? project.revisions : [])
+          .slice()
+          .sort((a, b) => Number(b.revision) - Number(a.revision));
+        return h("div", null,
+          backBtn,
+          h("div", { className: "qbw-card", style: { marginTop: "10px" } },
+            h("h4", null, project.title || `项目 ${viewId}`),
+            h("div", { className: "qbw-hint" },
+              `v${project.revision} · ${editStateLabel(project.editState)}`,
+              detail.character?.name ? ` · 角色：${detail.character.name}` : "",
+              detail.enabled === false ? " · 创作开关：关" : ""),
+            detailErr ? h("div", { className: "qbw-err" }, `✗ ${detailErr}`) : null,
+            actErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, `✗ ${actErr}`) : null,
+            actMsg ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, actMsg) : null),
+          revisions.length === 0 ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
+            h("div", { className: "qbw-hint" }, "还没有版本：先在 CLI 用 video-project save 存一版计划，再 render 渲染。")) : null,
+          revisions.map((rev) => {
+            const revArtifacts = Array.isArray(detail.artifactsByRevision?.[String(rev.revision)])
+              ? detail.artifactsByRevision[String(rev.revision)]
+              : Array.isArray(rev.artifacts) ? rev.artifacts : [];
+            const byKind = new Map(revArtifacts.map((artifact) => [artifact.kind, artifact]));
+            const mp4 = byKind.get("mp4");
+            const cover = byKind.get("cover");
+            const downloadLabel = { mp4: "MP4", srt: "字幕", cover: "封面", "preview-grid": "预览九宫格" };
+            return h("div", { key: rev.revision, className: "qbw-card", style: { marginTop: "10px" } },
+              h("h4", null, `版本 v${rev.revision}`,
+                rev.reviewDecision ? h("span", { className: "qbw-badge " + (rev.reviewDecision === "keep" ? "ok" : rev.reviewDecision === "revise" ? "warn" : "") }, `审片：${reviewLabel(rev.reviewDecision)}`) : null),
+              revArtifacts.length === 0 ? h("div", { className: "qbw-hint" },
+                "这个版本还没有工件：跑 ",
+                h("code", { className: "qbw-code" }, `bili.mjs video-project render ${project.id} --revision ${rev.revision}`),
+                " 提交渲染。") : null,
+              mp4 ? h("div", { style: { margin: "8px 0" } },
+                h("video", {
+                  controls: true,
+                  preload: "metadata",
+                  src: artifactUrl(project.id, rev.revision, "mp4"),
+                  style: { width: "100%", maxWidth: "520px", borderRadius: "8px", display: "block", background: "rgba(0,0,0,.35)" },
+                })) : null,
+              cover ? h("div", { style: { margin: "8px 0" } },
+                h("img", {
+                  src: artifactUrl(project.id, rev.revision, "cover"),
+                  alt: `v${rev.revision} 封面`,
+                  style: { maxWidth: "260px", width: "100%", borderRadius: "8px", display: "block", border: "1px solid var(--qbw-line)" },
+                })) : null,
+              revArtifacts.length ? h("div", { className: "qbw-actions", style: { borderTop: "none", paddingTop: "0", marginTop: "8px" } },
+                ["mp4", "srt", "cover", "preview-grid"].filter((kind) => byKind.has(kind)).map((kind) => {
+                  const artifact = byKind.get(kind);
+                  const size = Number(artifact.sizeBytes) > 0 ? `（${fmtBytes(artifact.sizeBytes)}）` : "";
+                  return h("a", {
+                    key: kind,
+                    className: "qbw-btn qbw-btn3",
+                    href: artifactUrl(project.id, rev.revision, kind),
+                    download: "",
+                    target: "_blank",
+                    rel: "noreferrer",
+                    style: { display: "inline-flex", alignItems: "center", textDecoration: "none" },
+                  }, `下载${downloadLabel[kind] ?? kind}${size}`);
+                })) : null,
+              h("div", { className: "qbw-actions" },
+                h(Btn, { onClick: () => act("retry", rev.revision), disabled: !!busy || acting === `retry-${rev.revision}` },
+                  acting === `retry-${rev.revision}` ? "提交中…" : "重试渲染"),
+                h(Btn, { kind: "qbw-btn2", onClick: () => act("shelve", rev.revision), disabled: !!busy || acting === `shelve-${rev.revision}` },
+                  acting === `shelve-${rev.revision}` ? "搁置中…" : "搁置")));
+          }));
+      };
+
+      return h("div", null, configCard, viewId ? detailView() : listView());
+    }
+
     // ── B站 扫码登录（鱼 / 主人）────────────────────────────────────────────
     // 用宿主启动 Edge headless 打开官方登录页，把页面里的二维码取出来显示给用户；
     // 扫码成功后宿主只保存 cookie（鱼写 credentials.json，主人写 owner-credentials.json），
@@ -8093,6 +8286,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["voice", "语音"],
       ["pet", "桌宠"],
       ["bili", "B站"],
+      ["video", "视频创作"],
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
       ["memory", "记忆"],
@@ -8386,6 +8580,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
+        if (tab === "video") return h(VideoTab, { cfg: bili, set: setBiliPath, busy, setBusy, toast: notify });
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath, setUnified: setUnifiedPath, qq: normalizedQq, unified });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
         if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
