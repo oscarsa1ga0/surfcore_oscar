@@ -44,7 +44,7 @@
     "replyDaily": 50,
     "taDaily": 15,
     "mineDaily": 10,
-    "minePerPerson": 1,
+    "minePerPerson": 5,
     "perUpMin": 10,
     "perVideoMin": 60,
     "perThreadMin": 1440,

@@ -57,6 +57,7 @@ const map = {
   danmaku: ['commands/danmaku.mjs', '直播间弹幕：pre 预检 / send 发送 / history 回读 / live 实时流'],
   'danmaku-video': ['commands/video-danmaku.mjs', '视频页弹幕：--bvid BV... --msg "…" --at 秒 [--mode top|bottom] --dry|--go；--retract <dmid> 撤回'],
   follow: ['commands/follow.mjs', '关注/取关：--list / --mid <mid> --status / --mid <mid> [--unfollow] --dry|--go'],
+  fans: ['commands/fans.mjs', '粉丝（只读）：当前粉丝数/列表；--new 新粉丝；--baseline 记为已见'],
   'like-video': ['commands/like-video.mjs', '视频点赞：--bvid BV1,BV2 [--unlike] [--max 5] --dry|--go；每天 10 个、每次 5 个'],
   coin: ['commands/coin.mjs', '投币：--bvid BV... --reason "…" [--count 1|2] --dry|--go；先查余额，每天最多 5 枚；1 枚需评分≥16，2 枚≥18'],
   auto: ['commands/danmaku-auto.mjs', '直播间自动回复：进程内监听+判断+发送（不再依赖 agent 回合）'],

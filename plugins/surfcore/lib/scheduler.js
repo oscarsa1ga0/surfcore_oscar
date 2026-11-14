@@ -465,6 +465,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '2.6) **再看评论和收件箱**：`comment-digest --hours 24 --only-unread`',
     '     · 先看输出里的「回复」（评论），再看「@」（收件箱）；坐标都在输出里。',
     '     · 要回就按倾听规则回，别逐条盖楼；没有新东西就跳过，继续后面的流程。',
+    '2.7) 再跑一遍 `fans --new`',
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
     '3) `feed` 选题（默认 6 条；不够就按实际）→ 对这几条跑 `debrief --no-frames`',
@@ -558,6 +559,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     ⚠️ 原创视频上传还没实现（接口预留）；视频用 `--bvid` 分享卡片，不要尝试 video-upload。',
     '4.11) 视频弹幕（可选，不是任务）：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
     '     ⚠️ 一条视频别刷；和评论一样过身份闸；本地有 30 秒间隔/日上限；不是每条视频都要发。',
+    '4.12) 新粉丝（只读，不是任务）：`fans --new` 看上次之后的新粉丝；`fans` 看当前粉丝。粉丝数会写进 B站记忆简报；新粉丝不私信、不公开点名、不强行互动。',
     '5) 按「标尺」打分排序，只对第一名考虑分享：',
     `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',

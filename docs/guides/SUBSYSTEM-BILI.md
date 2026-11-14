@@ -406,6 +406,7 @@
 | 命令 | 作用 | 关键参数 | 写盘 | 代码 |
 | --- | --- | --- | --- | --- |
 | `feed` | 选题器：按偏好权重分配名额、排除看过的/最近推过的 | `--n 6 --per 2 --pages 3 --source all\|search\|popular\|rank\|following --follow-days 7 --follow-quota N --follow-pages 3 --recent-days 3 --seed --generic --no-remember --json` | `feed-picks.json` | `tools/commands/feed.mjs:41-47`、`:232-241` |
+| `fans` | 粉丝（只读，不是任务） | `[--json]`；`--new`；`--baseline` | 当前粉丝数/列表、新粉丝；不修改任何关系 | 粉丝水位在 `fans-seen.json`；主人不计入新粉丝 | `tools/commands/fans.mjs` |
 | `follow` | 关注/取关：`--list` / `--mid <mid> --status` / `--mid <mid> [--unfollow] --dry\|--go`；不能取关主人/自己，关注与取关共用间隔 | `quota.json` | `tools/commands/follow.mjs` |
 | `like-video` | 视频点赞 | `--bvid BV1,BV2 [--unlike] [--max 5] --dry\|--go` | 每天 10 个 / 每次 5 个 | `quota.json` | `tools/commands/like-video.mjs` |
 | `coin` | 投币 | `--bvid BV... --reason "…" [--count 1\|2] --dry\|--go` | 先查余额；每天最多 5 枚；1 枚需评分 ≥16，2 枚 ≥18 | `quota.json` | `tools/commands/coin.mjs` |
@@ -606,7 +607,7 @@
 | `replyDaily` | 50 | 0–500 | 回找我的人 / 天 |
 | `taDaily` | 15 | 0–200 | 主动搭话 / 天 |
 | `mineDaily` | 10 | 0–100 | **动态回复 / 类 / 天** |
-| `minePerPerson` | 1 | 0–20 | 动态回复 / 人 / 类 / 天 |
+| `minePerPerson` | 5 | 0–20 | 动态回复 / 人 / 类 / 天 |
 | `perUpMin` | 10 | 0–1440 | 同一 UP 冷却（分钟） |
 | `perVideoMin` | 60 | 0–1440 | 同一视频冷却（分钟） |
 | `perThreadMin` | 1440 | 0–10080 | 同一条评论冷却（分钟，默认 24 小时） |

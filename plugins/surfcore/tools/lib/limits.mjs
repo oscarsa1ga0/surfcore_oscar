@@ -12,7 +12,7 @@ export const LIMIT_RULES = {
   replyDaily:     { def: 50,  min: 0, max: 500,   label: '回找我的人 / 天' },
   taDaily:        { def: 15,  min: 0, max: 200,   label: '主动搭话 / 天' },
   mineDaily:      { def: 10,  min: 0, max: 100,   label: '动态回复 / 类 / 天' },
-  minePerPerson:  { def: 1,   min: 0, max: 20,    label: '动态回复 / 人 / 类 / 天' },
+  minePerPerson:  { def: 5,   min: 0, max: 20,    label: '动态回复 / 人 / 类 / 天' },
   perUpMin:       { def: 10,  min: 0, max: 1440,  label: '同一 UP 冷却（分钟）' },
   perVideoMin:    { def: 60,  min: 0, max: 1440,  label: '同一视频冷却（分钟）' },
   perThreadMin:   { def: 1440, min: 0, max: 10080, label: '同一条评论冷却（分钟）' },

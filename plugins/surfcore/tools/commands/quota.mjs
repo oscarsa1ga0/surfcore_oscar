@@ -181,7 +181,7 @@ if (cmd === 'record') {
     target: opt.target ?? null, note: opt.note ?? null,
     // 2026-10-20：频率闸靠这几个字段（lib/free-gate.mjs）✓
     //   up = 视频 UP 主（同一 UP 冷却）· reply = 楼中楼 · ta = 主动搭话（与"回找我的人"分账）
-    //   mine = 回**自己动态**底下的评论（独立一本账）· toMid = 被回复的人（动态下每人 1 条，可配）
+    //   mine = 回**自己动态**底下的评论（独立一本账）· toMid = 被回复的人（动态下每人 5 条，可配）
     //   parent = 被回复的评论 rpid（同一条 24h 一次）
     ...(opt.up ? { up: String(opt.up) } : {}),
     ...(opt.reply ? { reply: true } : {}),

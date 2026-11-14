@@ -149,6 +149,31 @@ export async function fetchVideoInfo(bv, { home = os.homedir(), timeoutMs = 8000
   }
 }
 
+/**
+ * 她自己账号的关注/粉丝统计（只读）。粉丝列表另走 x/relation/fans。
+ * @returns {Promise<{ok:boolean, following?:number, follower?:number, why?:string}>}
+ */
+export async function fetchFanStats({ home = os.homedir(), timeoutMs = 15000 } = {}) {
+  const account = loadBiliAccount({ home });
+  if (!account.mid) return { ok: false, why: '配置里没有 self.mid' };
+  if (!account.hasCredentials) return { ok: false, why: '缺少 B 站凭据' };
+  try {
+    const r = await fetch(`https://api.bilibili.com/x/relation/stat?vmid=${encodeURIComponent(account.mid)}`, {
+      headers: account.headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j?.code !== 0) return { ok: false, why: `relation/stat code=${j?.code ?? r.status}` };
+    return {
+      ok: true,
+      following: Number(j.data?.following) || 0,
+      follower: Number(j.data?.follower) || 0,
+    };
+  } catch (error) {
+    return { ok: false, why: String(error?.message ?? error).slice(0, 120) };
+  }
+}
+
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }

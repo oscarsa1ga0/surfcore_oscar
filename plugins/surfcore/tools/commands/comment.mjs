@@ -49,7 +49,7 @@ const ONCE_DAYS = 30
 //   两本账分开记：reply 50/天、ta 15/天（以前共用一本，分不清到底是谁在说 ✗）
 const TA = process.argv.includes('--ta')
 // --mine（2026-10-21 管理员定）：回**自己动态**底下的评论 —— 单独两本账
-//   四类动态各 10 条/天 · 每类每人 1 条（默认值；2026-10-22 起可配置）
+//   四类动态各 10 条/天 · 每类每人 5 条（默认值；2026-10-22 起可配置）
 //   一般**不用手动加**：type=11 或 17、且 oid 命中"我发过的动态"会自动识别（含属于哪一类 ✓）
 //   手动兜底：--mine（当一类）或 --mine game（当二类）
 const MINE_RAW = (() => {
@@ -358,7 +358,7 @@ let upMid = ''
 let toMid = ''
 if (GATE) {
   if (GATE_KIND === 'comment' && bvid) upMid = await upOf(bvid)
-  // 自己动态那本账要按"对方 mid"限每人 1 条 → 得先查出被回复的人是谁
+  // 自己动态那本账要按"对方 mid"限每人 5 条 → 得先查出被回复的人是谁
   if (GATE_KIND.startsWith('mine:')) toMid = replyAuthor?.mid ?? ''
   const g = checkFree({ kind: GATE_KIND, upMid, bvid, parent: parent ? String(parent) : '', toMid })
   console.log(`\n[自由发言闸] ${g.text}`)

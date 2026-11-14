@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fetchArticleContent, fetchMyArticles, fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
+import { fetchArticleContent, fetchFanStats, fetchMyArticles, fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
 import { characterPersonaMeta, readCurrentCharacter } from './character-persona.js';
 
 const BV_RE = /\bBV[0-9A-Za-z]{10}\b/;
@@ -736,7 +736,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     return doc.length > 28000 ? `${doc.slice(0, 28000)}\n\n（后略：记忆过长，完整内容见 state/bili-memory.json）` : doc;
   }
 
-  function buildBrief(entries) {
+  function buildBrief(entries, meta = {}) {
     const config = cfg();
     const self = config?.self ?? {};
     const persona = config?.persona ?? {};
@@ -753,6 +753,10 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     const selfSpace = /^\d{3,}$/.test(selfMid) ? `https://space.bilibili.com/${selfMid}` : '';
     lines.push(`我自己的 B 站主页：「${selfName}」${selfSpace ? `（${selfSpace}；截图里可能只显示昵称和头像）` : ''}。别人发来的截图/图片里只要出现这个昵称、我的头像或 B 站个人主页/资料卡，那就是**我自己**——先认出「这是 wo」，再聊内容；不要用「那张主页」这种口吻把我说成别人。`);
     lines.push(`我的口味：${(prefs.like ?? []).slice(0, 8).join('、') || 'AI 工具、鲸鱼娘、可爱+荒诞的短整活'}；不喜欢 ${(prefs.dislike ?? []).slice(0, 6).join('、') || '带货、擦边、标题党'}。`);
+    const fans = meta.fans;
+    if (fans?.ok) {
+      lines.push(`我的 B站：关注 ${Number(fans.following) || 0} 个 · 粉丝 ${Number(fans.follower) || 0} 个。`);
+    }
     lines.push('');
     const sorted = entries
       .filter((e) => ['video', 'favorite', 'diary', 'dynamic', 'article', 'follow', 'unfollow', 'like', 'coin'].includes(e.type))
@@ -960,8 +964,9 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
           if (e.bvid && titles[e.bvid]?.pic) e.pic = titles[e.bvid].pic;
           if (isBlocked(`${e.title} ${e.text} ${e.quote}`)) e.shareable = false;
         }
+        const fans = await fetchFanStats({ home });
         const doc = buildDoc(cards);
-        const brief = buildBrief(cards);
+        const brief = buildBrief(cards, { fans });
         const index = buildIndex(cards);
         atomicWriteText(paths.doc, doc + '\n');
         atomicWriteText(paths.brief, brief + '\n');
