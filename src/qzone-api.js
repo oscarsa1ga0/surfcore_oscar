@@ -186,18 +186,35 @@ export async function likeQzone({ tid, targetUin = '', unlike = false, feedRef }
 /**
  * 评论 / 回复楼中楼。
  * 顶层评论：{tid, targetUin, content}；
- * 回复：额外传 commentId + commentUin + comment（详情 comments 里的完整父评论对象），
- *       replyUser 是父评论作者（{uin,nick} 形状，能拿就带上）。
+ * 回复：额外传 commentId + commentUin（必须成对）。
+ *   注意 NapCat 4.18 的 comment_qzone 只认 comment_id/comment_uin/reply_uin/reply_name，
+ *   传 comment（父评论对象）或 reply_user 会被直接 400「当前QQ空间调用不支持 X 参数」，
+ *   所以这里只下发 SnowLuma 参数格式；想在正文里额外 @ 某人时再给 replyUser {uin,nick}。
  */
-export async function commentQzone({ tid, targetUin = '', content, commentId = '', commentUin = '', comment, replyUser } = {}) {
+export async function commentQzone({ tid, targetUin = '', content, commentId = '', commentUin = '', replyUser } = {}) {
   if (!q(tid)) return { ok: false, code: 400, message: 'tid 不能为空', action: 'comment_qzone' };
   if (!q(content)) return { ok: false, code: 400, message: '评论内容不能为空', action: 'comment_qzone' };
   const params = { tid: String(tid), content: String(content) };
   if (q(targetUin)) params.target_uin = String(targetUin);
-  if (q(commentId)) params.comment_id = String(commentId);
-  if (q(commentUin)) params.comment_uin = String(commentUin);
-  if (comment && typeof comment === 'object') params.comment = comment;
-  if (replyUser && typeof replyUser === 'object') params.reply_user = replyUser;
+  if (q(commentId)) {
+    if (!q(commentUin)) {
+      return { ok: false, code: 400, message: '回复楼中楼时 commentId 和 commentUin 必须同时提供', action: 'comment_qzone' };
+    }
+    params.comment_id = String(commentId);
+    params.comment_uin = String(commentUin);
+  }
+  if (replyUser && typeof replyUser === 'object') {
+    const uin = q(replyUser.uin ?? replyUser.user?.uin);
+    const nick = q(replyUser.nick ?? replyUser.name ?? replyUser.user?.nick);
+    if (!params.comment_id) {
+      return { ok: false, code: 400, message: 'replyUser 只能用于楼中楼回复（需要 commentId）', action: 'comment_qzone' };
+    }
+    if (!uin || !nick) {
+      return { ok: false, code: 400, message: 'replyUser 需要 {uin,nick}，缺了就不要传', action: 'comment_qzone' };
+    }
+    params.reply_uin = String(uin);
+    params.reply_name = String(nick);
+  }
   const r = await qzoneCall('comment_qzone', params);
   if (!r.ok) return r;
   return { ok: true, commentId: q(r.data?.comment_id) ?? '', raw: r.data };

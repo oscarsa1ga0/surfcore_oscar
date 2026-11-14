@@ -9482,9 +9482,10 @@ async function main() {
           if (ownPost && targetUin && targetUin !== String(selfUserId || '')) targetUin = '';
           let commentId = String(body.commentId ?? '').trim();
           let commentUin = String(body.commentUin ?? '').trim();
-          let comment = body.comment && typeof body.comment === 'object' ? body.comment : undefined;
-          // 回复楼中楼时，父评论对象是 NapCat 的硬要求；模型只给 commentId 时自动从详情补齐。
-          if (commentId && (!comment || !comment.id || !comment.user)) {
+          // 楼中楼只需要 commentId + commentUin（NapCat 4.18 的硬要求）；
+          // 父评论对象 comment / reply_user 属于旧格式，传过去会被 400 拒绝，所以不再使用。
+          // 模型只给 commentId 时，从详情里补父评论作者的 QQ。
+          if (commentId && !commentUin) {
             const d = await getQzoneMsgDetail({ tid, targetUin: ownPost ? '' : targetUin });
             if (!d.ok) {
               sendJson({ ok: false, error: `读取父评论失败：${d.message}` }, 502);
@@ -9495,12 +9496,11 @@ async function main() {
               sendJson({ ok: false, error: `没找到要回复的评论 ${commentId}（可能在第二页或已被删除）` }, 400);
               return;
             }
-            comment = { id: String(hit.id), user: { uin: String(hit.uin), nick: String(hit.nick || '') } };
-            commentUin = commentUin || String(hit.uin);
+            commentUin = String(hit.uin);
           }
           const r = await commentQzone({
             tid, targetUin, content: gate.text,
-            commentId, commentUin, comment, replyUser: body.replyUser
+            commentId, commentUin, replyUser: body.replyUser
           });
           if (!r.ok) { qzoneLogErr('comment_qzone', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
           recordQzoneComment(qzoneStateNow(), { tid, commentId: r.commentId, content: gate.text, replyTo: String(body.commentId ?? '') });

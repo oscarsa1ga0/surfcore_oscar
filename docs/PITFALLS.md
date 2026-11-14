@@ -4059,3 +4059,10 @@ Mac 版 SurfCore 连接 LLBot 提供的 OneBot 11。两个端点可能使用不�
 
 - 桥接的在线探活曾每分钟调 `get_stranger_info(user_id=自己, no_cache=true)`。实测每次登录会话约 35 次之后 QQ 开始让 `NodeIKernelProfileService/fetchUserDetailInfo` 超时（日志每分钟一条 Timeout），NapCat 补入站消息昵称也卡住：接口仍报 online，消息却进不来，约 40 分钟复发一次。
 - 现在资料只在连接、昵称变化或疑似掉线时查（成功缓存 30 分钟、失败 2 分钟）；在线探活改读本地好友列表，名单为空且强制资料也失败才判会话异常，两次确认至少隔 10 分钟。见 [NapCat 假在线案例](cases/2026-11-12-napcat-qq-session.md)。
+
+## #136（2026-11-14）QQ 空间「回复评论」被当成一级评论
+
+- 现象：鱼姬回复主人评论后，空间里出现的是并列的一级评论，主人评论的 `replies` 为空。
+- 根因两层：① 那次调用没带 `commentId`，空间只能按一级评论处理；② 桥接原本会把父评论对象 `comment` 一起发给 NapCat，而 NapCat 4.18.42 在 `tid` 模式下只认 `comment_id/comment_uin/reply_uin/reply_name`，多传 `comment` 直接 400「当前QQ空间调用不支持 comment 参数」——所以就算带了 id 也回不出去。
+- 处置：`src/qzone-api.js` 只下发 SnowLuma 参数并把 `replyUser` 映射成 `reply_uin/reply_name`；`src/bridge.js` 只补 `commentUin`；工具说明同步。已用临时「仅自己可见」说说验证 `replies` 真的嵌套，验证后删除。
+- 预防：验证空间评论要看详情的 `replies`，别只看接口 ok。见 [案例](cases/2026-11-14-qzone-nested-reply.md)。

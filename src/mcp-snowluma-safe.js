@@ -1661,7 +1661,7 @@ server.tool(
 
 server.tool(
   'qq_qzone_comment',
-  '评论一条说说，或回复某条评论。回复楼中楼：commentId 必填，comment（完整父评论对象）可省略——桥接会用详情自动补；targetUin 必须是说说作者（自己的说说可省略/会被自动纠正），不要填评论人的 QQ，否则 QQ空间会返回 -10052。内容走敏感信息闸；发完返回 commentId。',
+  '评论一条说说，或回复某条评论。回复楼中楼：commentId 必填，commentUin（父评论作者 QQ）可省略——桥接会用详情自动补；targetUin 必须是说说作者（自己的说说可省略/会被自动纠正），不要填评论人的 QQ，否则 QQ空间会返回 -10052。想额外 @ 某人时才传 replyUser {uin,nick}。内容走敏感信息闸；发完返回 commentId。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1669,9 +1669,9 @@ server.tool(
     content: z.string().describe('评论内容（≤500 字）'),
     targetUin: z.union([z.string(), z.number()]).optional().describe('说说作者 QQ 号（不是评论人；自己的说说可省略）'),
     commentId: z.union([z.string(), z.number()]).optional().describe('回复某条评论时：父评论 id（必填）'),
-    commentUin: z.union([z.string(), z.number()]).optional().describe('回复某条评论时：父评论作者 QQ 号'),
-    comment: z.record(z.any()).optional().describe('回复某条评论时：详情 comments 里那条完整父评论对象'),
-    replyUser: z.record(z.any()).optional().describe('回复某条评论时：父评论作者 {uin,nick}')
+    commentUin: z.union([z.string(), z.number()]).optional().describe('回复某条评论时：父评论作者 QQ 号（可省略，桥接会自动补）'),
+    comment: z.record(z.any()).optional().describe('已废弃：NapCat 4.18 不接受父评论对象，传了也会被忽略；回复只需 commentId(+commentUin)'),
+    replyUser: z.record(z.any()).optional().describe('想额外 @ 某人时：{uin,nick}（普通回复不要传）')
   },
   async ({ key, token, tid, content, targetUin, commentId, commentUin, comment, replyUser }) => {
     try {
