@@ -228,12 +228,13 @@ export async function renderRevision(deps) {
     const frames = Math.round((scene.durationMs / 1000) * FPS);
     const durSec = (scene.durationMs / 1000).toFixed(3);
 
-    // 内容寻址的分镜签名：素材 hash + 构图/动效 + 全部字幕贴图 hash
-    const captionHashes = scene.cues.map((cue) => timeline.captions
-      .filter((c) => c.startMs >= scene.startMs && c.startMs < scene.endMs)
-      .map((c) => sha256File(c.file)).join(',')).join(',');
+    // 内容寻址的分镜签名：素材 hash + 构图/动效 + 字幕贴图 hash + 字幕时间窗
+    //（时间窗变了必须重编码，否则缓存复用的片段还带旧 overlay 时间）
+    const sceneCaptions = timeline.captions.filter((c) => c.startMs >= scene.startMs && c.startMs < scene.endMs);
+    const captionHashes = sceneCaptions.map((c) => sha256File(c.file)).join(',');
+    const captionTiming = sceneCaptions.map((c) => [c.startMs - scene.startMs, c.endMs - scene.startMs]);
     const signature = sha256Of(JSON.stringify([
-      sha256File(assetFile), scene.fit, scene.motion, scene.durationMs, captionHashes,
+      sha256File(assetFile), scene.fit, scene.motion, scene.durationMs, captionHashes, captionTiming,
       scene.titleCard ? sha256File(titleCards[scene.id]) : null, GENERATOR_VERSION,
     ])).slice(0, 24);
     const segFile = path.join(segDir, `seg-${scene.id}-${signature}.mp4`);

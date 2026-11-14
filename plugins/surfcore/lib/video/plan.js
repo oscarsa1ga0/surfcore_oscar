@@ -276,11 +276,21 @@ export function computeTimeline(plan, voiceDurationsMs = {}, options = {}) {
   const captions = [];
   for (const scene of scenes) {
     for (const cue of scene.cues) {
-      for (const [index, segment] of cue.segments.entries()) {
-        const weight = segment.length / Math.max(1, cue.text.length);
-        const start = cue.startMs + (index === 0 ? 0 : Math.round((cue.endMs - cue.startMs) * (1 - weight)));
-        captions.push({ startMs: scene.startMs + start, endMs: scene.startMs + cue.endMs, text: segment });
+      // 拆分段按字数占比切分整句时长，首尾相接、互不重叠
+      const weights = cue.segments.map((segment) => segment.length / Math.max(1, cue.text.length));
+      const starts = [];
+      let acc = 0;
+      for (const weight of weights) {
+        starts.push(acc);
+        acc += weight;
       }
+      cue.segments.forEach((segment, index) => {
+        const cueStart = cue.startMs + Math.round((cue.endMs - cue.startMs) * starts[index]);
+        const cueEnd = cue.startMs + (index + 1 < cue.segments.length
+          ? Math.round((cue.endMs - cue.startMs) * starts[index + 1])
+          : cue.endMs - cue.startMs);
+        captions.push({ startMs: scene.startMs + cueStart, endMs: scene.startMs + cueEnd, text: segment });
+      });
     }
   }
 

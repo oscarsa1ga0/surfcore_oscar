@@ -171,6 +171,11 @@ const qa = JSON.parse(fs.readFileSync(path.join(revDir, 'qa.json'), 'utf8'));
 check('质检全绿', qa.ok === true, qa.checks.filter((c) => !c.pass).map((c) => c.name).join(',') || '全部通过');
 const srtText = fs.readFileSync(path.join(revDir, byKind.srt.relativePath), 'utf8');
 check('字幕含中文且时长合理', /鱼姬|剪视频|旁白/.test(srtText) && (srtText.match(/-->/g) ?? []).length >= 3, `${(srtText.match(/-->/g) ?? []).length} 条`);
+const previewJson2 = JSON.parse(fs.readFileSync(path.join(revDir, byKind.preview.relativePath), 'utf8'));
+const captionList = previewJson2.captions ?? [];
+const captionSorted = captionList.every((c, i) => i === 0 || c.startMs >= captionList[i - 1].startMs);
+const captionNoOverlap = captionList.every((c, i) => i === 0 || c.startMs >= captionList[i - 1].endMs);
+check('字幕时间段有序且不重叠', captionSorted && captionNoOverlap, `${captionList.length} 条`);
 const timeline = computeTimeline(plan, byKind.manifest ? JSON.parse(fs.readFileSync(path.join(revDir, byKind.manifest.relativePath), 'utf8')).lineDurations : {});
 check('成片时长 ≈ 时间轴', Math.abs(Number(probeJson.format.duration) * 1000 - timeline.totalMs) <= 500, `${(Number(probeJson.format.duration) * 1000).toFixed(0)}ms vs ${timeline.totalMs}ms`);
 
