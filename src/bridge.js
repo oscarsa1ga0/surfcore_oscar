@@ -4616,8 +4616,77 @@ async function main() {
     if (qs?.discussing?.tid) {
       parts.push(`当前正在讨论的空间说说 tid=${qs.discussing.tid}（作者 ${qs.discussing.authorUin || '未知'}）。`);
     }
+    // 互动轮询攒下的提醒：注入一次，标记已投递（2026-11-15 主人要）。
+    const qst = qzoneStateNow();
+    const notices = (Array.isArray(qst.notices) ? qst.notices : []).filter((n) => n && !n.deliveredAt);
+    if (notices.length) {
+      const lines = notices.slice(0, 3).map((n) => {
+        const delta = Number(n.delta) > 0 ? Number(n.delta) : 1;
+        const who = Array.isArray(n.names) && n.names.length ? `（${n.names.slice(0, 3).join('、')}）` : '';
+        return `《${String(n.content || '你最近那条说说').slice(0, 20)}》下多了 ${delta} 条评论${who}`;
+      });
+      parts.push(`【空间互动】${lines.join('；')}。想看细节就用 qq_qzone_post_detail 打开对应的说说。`);
+      for (const n of notices) n.deliveredAt = Date.now();
+      qzonePersistNow();
+    }
     parts.push(QZONE_UNTRUSTED_HINT);
     return `【QQ 空间】${parts.join(' ')}\n\n`;
+  }
+
+  // ── 空间互动轮询（2026-11-15 主人要）────────────────────────────────────
+  // 低频查她自己最近 3 条说说的评论数；涨了就把提醒挂到下一次唤醒提示里。
+  // 只读、不评论；第一次只建基线，第二次之后才可能报「多了 N 条」。
+  let qzonePollTimer = null;
+  let qzonePollLastAt = 0;
+  async function scanQzoneInteractions({ force = false } = {}) {
+    const qc = qzoneConfigNow();
+    if (!qc.enabled || qc.permissions.read !== true) return { ok: false, skipped: 'disabled' };
+    const st = qzoneStateNow();
+    const targets = (Array.isArray(st.published) ? st.published : [])
+      .filter((p) => p && String(p.tid || ''))
+      .slice(0, 3);
+    if (!targets.length) return { ok: true, checked: 0, notices: 0 };
+    const now = Date.now();
+    st.interactions = st.interactions && typeof st.interactions === 'object' ? st.interactions : {};
+    st.notices = Array.isArray(st.notices) ? st.notices : [];
+    let added = 0;
+    for (const p of targets) {
+      const tid = String(p.tid);
+      const prev = st.interactions[tid];
+      const prevNum = prev && Number.isFinite(Number(prev.commentNum)) ? Number(prev.commentNum) : null;
+      const r = await getQzoneMsgDetail({ tid, targetUin: '' });
+      if (!r.ok) { qzoneLogErr('get_qzone_msg_detail', { message: r.message, code: r.code }); continue; }
+      const cur = Number(r.commentNum) || 0;
+      if (prevNum !== null && cur > prevNum) {
+        const delta = cur - prevNum;
+        const names = (r.comments || []).slice(-delta).map((c) => String(c.nick || c.uin || '')).filter(Boolean);
+        st.notices.push({ kind: 'comment', tid, content: String(p.content || '').slice(0, 40), delta, names: names.slice(0, 5), at: now, deliveredAt: 0 });
+        added += 1;
+      }
+      st.interactions[tid] = { commentNum: cur, at: now };
+    }
+    st.notices = st.notices.filter((n) => n && now - Number(n.at || 0) < 3 * 86400000).slice(-10);
+    qzonePersistNow();
+    if (added) log(`[qzone] 互动轮询：${added} 条说说有新评论`);
+    return { ok: true, checked: targets.length, notices: added };
+  }
+  function startQzoneInteractionPoll() {
+    if (qzonePollTimer) return;
+    const tick = async () => {
+      try {
+        const qc = qzoneConfigNow();
+        if (!qc.enabled || qc.interactionPoll?.enabled !== true) return;
+        const gap = Math.max(2, Number(qc.interactionPoll.minutes) || 10) * 60000;
+        if (Date.now() - qzonePollLastAt < gap) return;
+        qzonePollLastAt = Date.now();
+        await scanQzoneInteractions();
+      } catch (error) {
+        log(`[qzone] 互动轮询失败：${String(error?.message ?? error).slice(0, 120)}`);
+      }
+    };
+    qzonePollTimer = setInterval(() => { void tick(); }, 60000);
+    qzonePollTimer.unref?.();
+    setTimeout(() => { void tick(); }, 25000).unref?.();
   }
 
   function startConsoleServer() {
@@ -9627,6 +9696,16 @@ async function main() {
           return;
         }
 
+        if (req.method === 'POST' && url.pathname === '/api/qzone/scan-interactions') {
+          try {
+            const r = await scanQzoneInteractions({ force: true });
+            sendJson({ ok: true, ...r, pending: (qzoneStateNow().notices || []).filter((n) => !n.deliveredAt).slice(-5) });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+
         if (req.method === 'GET' && url.pathname === '/api/qzone/status') {
           const state = qzoneStateNow();
           const probe = await probeQzoneGateway();
@@ -14259,6 +14338,8 @@ async function main() {
   if (cfg.social?.enabled !== false) {
     startSocialLoop();
   }
+  // 空间互动轮询：自己判断 qzone 开关，不影响其它循环。
+  startQzoneInteractionPoll();
 
   // 当前角色扮演提示：读 state/current-role.json + roles/<角色>.md，
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。

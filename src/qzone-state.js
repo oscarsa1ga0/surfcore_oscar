@@ -23,7 +23,11 @@ export function defaultQzoneState() {
     // 自己发过的说说（新→旧，最多 100 条）
     published: [],
     // 最近错误（最多 30 条）
-    errors: []
+    errors: [],
+    // 互动轮询基线：tid -> {commentNum, at}
+    interactions: {},
+    // 未投递的互动提醒：{kind:'comment', tid, content, delta, names, at, deliveredAt}
+    notices: []
   };
 }
 
@@ -67,7 +71,9 @@ export function loadQzoneState() {
     liked: raw.liked && typeof raw.liked === 'object' ? raw.liked : {},
     commented: raw.commented && typeof raw.commented === 'object' ? raw.commented : {},
     published: Array.isArray(raw.published) ? raw.published.slice(0, 100) : [],
-    errors: Array.isArray(raw.errors) ? raw.errors.slice(-30) : []
+    errors: Array.isArray(raw.errors) ? raw.errors.slice(-30) : [],
+    interactions: raw.interactions && typeof raw.interactions === 'object' ? raw.interactions : {},
+    notices: Array.isArray(raw.notices) ? raw.notices.slice(-10) : []
   };
 }
 

@@ -34,6 +34,11 @@ export const DEFAULT_QZONE_CONFIG = Object.freeze({
     maxContentChars: 2000,
     maxImages: 9
   },
+  interactionPoll: {
+    // 低频扫自己最近几条说说的评论数，涨了就在唤醒提示里给一句（2026-11-15 主人要）。
+    enabled: true,
+    minutes: 10
+  },
   autonomy: {
     // 自主空间活动默认关闭；手动「立即执行一次」按钮始终可用（只读起步）。
     enabled: false,
@@ -57,6 +62,7 @@ export function normalizeQzoneConfig(raw = {}) {
   const perm = src.permissions && typeof src.permissions === 'object' ? src.permissions : {};
   const pub = src.publish && typeof src.publish === 'object' ? src.publish : {};
   const aut = src.autonomy && typeof src.autonomy === 'object' ? src.autonomy : {};
+  const inter = src.interactionPoll && typeof src.interactionPoll === 'object' ? src.interactionPoll : {};
   return {
     enabled: BOOL(src.enabled, DEFAULT_QZONE_CONFIG.enabled),
     permissions: {
@@ -73,6 +79,10 @@ export function normalizeQzoneConfig(raw = {}) {
         : DEFAULT_QZONE_CONFIG.publish.allowedRights,
       maxContentChars: NUM(pub.maxContentChars, DEFAULT_QZONE_CONFIG.publish.maxContentChars, 1, 5000),
       maxImages: NUM(pub.maxImages, DEFAULT_QZONE_CONFIG.publish.maxImages, 0, 9)
+    },
+    interactionPoll: {
+      enabled: BOOL(inter?.enabled, DEFAULT_QZONE_CONFIG.interactionPoll.enabled),
+      minutes: NUM(inter?.minutes, DEFAULT_QZONE_CONFIG.interactionPoll.minutes, 2, 1440)
     },
     autonomy: {
       enabled: BOOL(aut.enabled, DEFAULT_QZONE_CONFIG.autonomy.enabled),
