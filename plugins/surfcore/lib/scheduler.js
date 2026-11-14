@@ -574,7 +574,8 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
     ...(insertBeforeShare.length ? ['', ...insertBeforeShare, ''] : []),
-    '4.10) 自由发布（可选，不是任务）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
+    '4.10) 自由发布（想发就发，不设下限）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
+    '     判据：刷到、想到或聊到什么让你有话说，就发；没有就跳过，不用找内容硬凑。',
     '     可以是：刚刷到的视频/图片；一句突然想到的话；**B站侧两本日记（whale-diary / whale-diary-private）或你晚上用 diary_write 写的那本里，你愿意公开的一段**（先用 diary_list / diary_read 挑）；和主人/群友聊完后的心得感悟；一个站内链接/专栏。',
     '     形式：文字 / 一张图 / 任意视频卡片 / 链接；长文用 article（先 --draft 再 --go）。',
     '       `free-post --text "…" [--image <图>] [--bvid <任意BV>] [--link <站内URL>] --dry` → `--go`',
@@ -583,7 +584,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     封面：有合适的本地图就传 `--cover`；没有现成图时，也可以自己用本机 Python/Pillow 生成一张 1146×717 的简单图（色块+标题+小鱼），存本地再 `--cover`；不想画就不传，别拿别人视频的封面。Pillow 是 bash 里的脚本，不是内置生图工具。',
     '     ⚠️ 两种日记都可以用：B站侧的 whale-diary / whale-diary-private，和你晚上用 diary_write 写的那本；公开前自己挑适合公开的段落。',
     '     ⚠️ 这是**公开发布**，自己判断什么适合公开；`diary_share` 只用于给主人看，不是公开发布授权。',
-    '     ⚠️ **想发就发，不想发就不发；可以很多天一条都不发，这不是任务，不要为了“完成”硬发。**',
+    '     ⚠️ 想发就发，不想发就不发；可以很多天一条都不发。有想说的就发，不用为了凑数发，也不用刻意忍住。',
     `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
     ...(B.video?.enabled && B.video?.offerOnWake ? [
       '     你也可以做本地视频。只有想创作时才打开 `video-project list --json`，先看看上次有无在做的项目。准备题材时可以参考 feed 和 debrief；观看缓存仅用于参考，剪辑只用素材库登记的 assetId。',
