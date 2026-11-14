@@ -9,6 +9,7 @@
 // 共同规则：公开发给所有人（正文不许 @ 人）· 配图自动挑。
 //
 //   node bili.mjs daily --text "…" [--kind best|game|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
+import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -323,6 +324,7 @@ if (DRY) {
   process.exit(0)
 }
 
+const publication = acquireLegacyPublicationSlot(readPublicationMid(CFG.self?.mid), STATE, GAP_MIN)
 let out = ''
 if (avDyn) {
   const r = await createForward(avDyn.id, TEXT)
@@ -351,6 +353,7 @@ if (!out) {
   }
 }
 
+recordLegacyPublication(publication)
 // ── 记账 ──────────────────────────────────────────────────────
 const dynId = (out.match(/dyn_id[=: ]+(\d+)/i) ?? out.match(/dynId[=: ]+(\d+)/i) ?? [])[1] ?? ''
 const at = new Date().toISOString()

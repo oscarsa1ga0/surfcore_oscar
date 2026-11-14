@@ -10,6 +10,7 @@
  * 发之前检查 daily-dynamic.json：和任意一条四类动态 / 上一次分享至少隔 dynamics.gapMin 分钟。
  * 发之后写 daily-dynamic.json 的 share 记录 + 占一条分享额度（quota --share）。
  */
+import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -123,6 +124,7 @@ if (dry) {
   console.log(`\n[dry] 未发布。${avDyn ? '真发会转发视频卡片。' : '真发会发文字 + 链接。'}`)
   process.exit(0)
 }
+const publication = acquireLegacyPublicationSlot(readPublicationMid(cfg.self?.mid), stateFile, gapMin)
 let dynId = ''
 try {
   if (avDyn) {
@@ -160,6 +162,7 @@ try {
   process.exit(5)
 }
 
+recordLegacyPublication(publication)
 // ── 记账 + 写 daily-dynamic.json（四类动态的间隔会读它）───────────────────
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })

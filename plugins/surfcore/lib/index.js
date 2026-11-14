@@ -109,6 +109,11 @@ import { fileStamp, isStale } from '../../../src/config-stamps.js';
 import { createContextTelemetry } from '../../../src/context-telemetry.js';
 import { createBillingService } from './billing.js';
 import { createPersonaClassifier } from './persona-classify.js';
+import { createVideoPublisher } from './video/publish-worker.js';
+import { createVideoWorker } from './video/worker.js';
+import { createVideoApi, setVideoConfigReader } from './video/publish-web.js';
+import { ensureVideoDirs, requireVideoRoot } from './video/paths.js';
+import { openVideoStore } from './video/project-store.js';
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -233,6 +238,28 @@ export function apply(ctx) {
   let memoryCardTimer = null;
   let vectorMemoryTimer = null;
   let characterTimer = null;
+  // 视频创作：渲染、投稿和管理 API 随插件生命周期管理。
+  let videoWorker = null;
+  let videoStore = null;
+  let videoRoot = null;
+  let videoWorkerEpoch = null;
+  let closingVideoWorker = null;
+  let videoStatus = { running: false, enabled: false, storeError: null };
+  const videoApi = createVideoApi({
+    getPublishConfig: () => readBiliConfig().config,
+    storeFactory: () => {
+      const { root, character } = requireVideoRoot();
+      if (videoStore && videoRoot === root) return { store: videoStore, root, character };
+      stopVideoWorker('switch-role');
+      closeVideoStore();
+      ensureVideoDirs(root);
+      videoStore = openVideoStore(root);
+      videoRoot = root;
+      return { store: videoStore, root, character };
+    },
+    log: (message) => pluginLog(message),
+  });
+  setVideoConfigReader(() => readBiliConfig().config?.video ?? {});
 
   // ── 每日 token 额度 / 用量采集（2026-10-23 用户要求）────────────────────
   // 插件是唯一能同时看到 QQ、B站、黑话学习会话的地方：用 session/event 实时累计，
@@ -398,6 +425,14 @@ export function apply(ctx) {
       sessionId,
       automatic,
       tokenBudget,
+      getVideoSummary: () => {
+        const video = readBiliConfig().config?.video;
+        if (!video?.enabled || !video.offerOnWake || !videoStore || videoRoot !== requireVideoRoot().root) return [];
+        return videoStore.listProjects({ limit: 5 }).items.map((project) => {
+          const posting = videoStore.listPublishes(project.id)[0];
+          return `     视频项目 ${project.id} · v${project.revision} · ${project.editState}${posting ? ` · 投稿 ${posting.state}` : ''}`;
+        });
+      },
       chat: petChat,
       log: (message) => pluginLog(message),
     });
@@ -514,6 +549,98 @@ export function apply(ctx) {
   }
   startSchedulerNow();
   startDiarySchedulerNow();
+
+  // ── 视频创作执行器（阶段一）：配置开启且有当前角色时随插件启停 ──────────
+  function videoLimits() {
+    const v = readBiliConfig().config?.video ?? {};
+    return {
+      maxTotalMs: (Number(v.maxDurationSec) > 0 ? Number(v.maxDurationSec) : 90) * 1000,
+      maxScenes: Number(v.maxScenes) > 0 ? Number(v.maxScenes) : 12,
+      maxOutputBytes: (Number(v.maxOutputMB) > 0 ? Number(v.maxOutputMB) : 100) * 1024 * 1024,
+      videoDirMaxBytes: v.videoDirMaxMB * 1024 * 1024,
+      dailyTtsChars: v.dailyTtsChars,
+      dailyRenderSeconds: v.dailyRenderSeconds,
+      renderTimeoutMs: Number(v.renderTimeoutMs) > 0 ? Number(v.renderTimeoutMs) : 600_000,
+    };
+  }
+
+  function stopVideoWorker(reason = '') {
+    const wasRunning = Boolean(videoWorker);
+    try {
+      if (videoWorker) closingVideoWorker = videoWorker;
+      videoWorker?.stop();
+    } catch (error) {
+      pluginLog('[video] 执行器停止失败：', String(error?.message ?? error));
+    }
+    videoWorker = null;
+    videoWorkerEpoch = null;
+    if (wasRunning) pluginLog(`[video] 执行器已停止${reason ? `（${reason}）` : ''}`);
+    return { ok: true, wasRunning };
+  }
+
+  function closeVideoStore() {
+    const closingStore = videoStore;
+    const closingWorker = closingVideoWorker;
+    closingVideoWorker = null;
+    videoStore = null;
+    videoRoot = null;
+    if (closingWorker) void closingWorker.drain().finally(() => closingStore?.close());
+    else closingStore?.close();
+  }
+
+  function ensureVideoWorker(reason = '') {
+    const cfg = readBiliConfig().config?.video ?? {};
+    try {
+      if (cfg.enabled !== true) {
+        stopVideoWorker('disabled');
+        closeVideoStore();
+        videoStatus = { running: false, enabled: false, storeError: null, reason: 'disabled' };
+        return videoStatus;
+      }
+      const { root, character } = requireVideoRoot();
+      if (videoRoot !== root) {
+        stopVideoWorker('reopen');
+        closeVideoStore();
+        ensureVideoDirs(root);
+        videoStore = openVideoStore(root);
+        videoRoot = root;
+      }
+      if (videoWorker && videoWorkerEpoch !== character.epoch) stopVideoWorker('role-epoch');
+      if (!videoWorker) {
+        const bind = (candidate) => candidate.id === character.id && candidate.epoch === character.epoch;
+        const publisher = createVideoPublisher({
+          store: videoStore, root: videoRoot, getConfig: () => readBiliConfig().config,
+          isCurrent: () => { try { return bind(requireVideoRoot().character); } catch { return false; } },
+        });
+        videoWorker = createVideoWorker({
+          publisher,
+          store: videoStore,
+          root: videoRoot,
+          getLimits: videoLimits,
+          maxConcurrent: Math.max(1, Number(cfg.concurrentRenders) || 1),
+          leaseMs: Number(cfg.renderTimeoutMs) > 0 ? Number(cfg.renderTimeoutMs) + 120_000 : 720_000,
+          renderTimeoutMs: Number(cfg.renderTimeoutMs) > 0 ? Number(cfg.renderTimeoutMs) : 600_000,
+          log: (message) => pluginLog(message),
+        });
+        videoWorkerEpoch = character.epoch;
+        videoWorker.start();
+        pluginLog(`[video] 执行器已启动（角色 ${character.id}${reason ? `，${reason}` : ''}）`);
+      }
+      videoStatus = { running: true, enabled: true, characterId: character.id, storeError: null, worker: videoWorker.status() };
+    } catch (error) {
+      stopVideoWorker('start-failed');
+      videoStatus = {
+        running: false,
+        enabled: readBiliConfig().config?.video?.enabled === true,
+        storeError: String(error?.message ?? error),
+        hint: String(error?.hint ?? ''),
+        reason: 'start-failed',
+      };
+      pluginLog('[video] 执行器未启动：', videoStatus.storeError);
+    }
+    return videoStatus;
+  }
+  ensureVideoWorker('activate');
 
   // 管理员称呼的存量修复：v0.7.2 及以前只把 ownerQQ 投影到 QQ config.json，
   // displayName/biliName/gentle 留在 unified，桥接独立进程读不到 → 叫“管理员”。
@@ -650,6 +777,9 @@ export function apply(ctx) {
       }
       // 到这里两个平台都停了：给旧角色拍切换前存档，然后原子换指针。
       if (current) beforeSwitchSnapshot(current.id);
+      // 视频项目按角色隔离：先停执行器并关掉旧角色的库，切完再开新角色的。
+      stopVideoWorker('character-switch');
+      closeVideoStore();
       const switched = switchToCharacter(id);
       writeCharacterRolePointer();
       const archived = archiveBridgeRuntimeState();
@@ -661,6 +791,7 @@ export function apply(ctx) {
       }
       if (!skipPlatform) startSchedulerNow();
       startDiarySchedulerNow();
+      ensureVideoWorker('character-switch');
       pluginLog(`角色已切换：${current?.name ?? '（无）'} → ${target.name}（epoch ${switched.current?.epoch}）`);
       return {
         ok: true,
@@ -688,6 +819,7 @@ export function apply(ctx) {
     startSchedulerNow();
     stopDiarySchedulerNow('character-migrated');
     startDiarySchedulerNow();
+    ensureVideoWorker('character-migrated');
   }
 
 
@@ -879,6 +1011,7 @@ export function apply(ctx) {
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,
+      video: videoStatus,
       launch: await launchStatus(),
       snowluma: {
         provider: usesExternalOneBot(snow) ? 'onebot' : 'snowluma',
@@ -1007,6 +1140,8 @@ export function apply(ctx) {
       result.biliBackup = saved.backup;
       if (Array.isArray(saved.warnings) && saved.warnings.length) result.warnings.push(...saved.warnings);
       result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
+      // 视频创作开关/预算改动 → 执行器立刻跟随（幂等，代价是一次配置读 + 探活）。
+      result.video = ensureVideoWorker('config-saved');
     }
     // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
     const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
@@ -3732,6 +3867,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   async function handleBili(req, res, url) {
     const pathname = url.pathname;
+    if (pathname.startsWith(`${API_PREFIX}/bili/video`)) {
+      await videoApi.handle(req, res, url);
+      return;
+    }
     if (req.method === 'POST' && pathname === `${API_PREFIX}/bili/wake-now`) {
       if (manualBiliWake) {
         json(res, 409, { ok: false, code: 'BILI_WAKE_BUSY', error: '正在提交上一轮手动唤醒', hint: '到 B站生物钟工作区查看进度' });
@@ -4580,6 +4719,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   ctx.effect(() => () => {
     try { scheduler?.stop?.(); } catch {}
     try { diaryScheduler?.stop?.(); } catch {}
+    stopVideoWorker('dispose');
+    closeVideoStore();
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);

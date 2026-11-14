@@ -13,6 +13,7 @@
 //   · 记 quota（type=free，只审计，不设上限）
 //   · 追加 bili-posts.jsonl（记忆同步：记忆卡/B站 brief 会读到）
 //   · 通过 notify.mjs 报备主人（失败不影响已发出的动态）
+import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -105,6 +106,7 @@ if (dry) {
   process.exit(0)
 }
 
+const publication = acquireLegacyPublicationSlot(readPublicationMid(cfg.self?.mid), stateFile, gapMin)
 let dynId = ''
 try {
   if (bvid && avDyn) {
@@ -141,6 +143,7 @@ if (!dynId) {
   process.exit(6)
 }
 
+recordLegacyPublication(publication)
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })
 const url = `https://t.bilibili.com/${dynId}`

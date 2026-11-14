@@ -5,6 +5,7 @@ node_modules/
 # Runtime state and local config (never publish)
 state/
 config.json
+state
 *.log
 *.bak
 *.bak-*
@@ -80,3 +81,4 @@ dist/*.zip
 # embedding runtime local pid/log
 plugins/surfcore/runtime/service.pid
 plugins/surfcore/runtime/service.log
+pnpm-lock.yaml

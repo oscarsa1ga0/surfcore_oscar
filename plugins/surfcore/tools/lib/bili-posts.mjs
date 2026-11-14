@@ -22,7 +22,7 @@ export function readBiliPosts(file) {
   return out.slice(-300)
 }
 
-export function appendBiliPost(file, record = {}) {
+export function appendBiliPost(file, record = {}, { strict = false, once = false } = {}) {
   const item = {
     id: String(record.id ?? `post:${Date.now()}`),
     type: String(record.type ?? 'dynamic'),
@@ -39,7 +39,17 @@ export function appendBiliPost(file, record = {}) {
   }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (once) {
+      let text = ''
+      try { text = fs.readFileSync(file, 'utf8') }
+      catch (error) { if (error.code !== 'ENOENT') throw error }
+      for (const line of text.split('\n')) {
+        let value
+        try { value = JSON.parse(line) } catch { continue }
+        if (value?.id === item.id) return value
+      }
+    }
     fs.appendFileSync(file, `${JSON.stringify(item)}\n`, { encoding: 'utf8', mode: 0o600 })
-  } catch {}
+  } catch (error) { if (strict) throw error }
   return item
 }

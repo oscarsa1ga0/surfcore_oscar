@@ -1549,7 +1549,8 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
     const sourceId = String(entry.id ?? '').trim();
     if (!sourceId || seen.has(sourceId)) continue;
     seen.add(sourceId);
-    const type = String(entry.type ?? 'video');
+    const ownVideo = (entry.own === true && entry.ownKind === 'video') || (entry.type === 'video' && entry.source === 'video-project');
+    const type = ownVideo ? 'video' : String(entry.type ?? 'video');
     const title = redactForMemory(entry.title ?? entry.text ?? '', { scope: 'bili', maxChars: 100 });
     const reason = redactForMemory(entry.reason ?? entry.quote ?? '', { scope: 'bili', maxChars: 220 });
     const anecdote = redactForMemory(entry.anecdote ?? '', { scope: 'bili', maxChars: 260 });
@@ -1572,7 +1573,7 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
     if (!title && !body) continue;
     const displayTitle = /^《.*》$/.test(title) ? title : `《${title}》`;
     const text = type === 'video'
-      ? `在 B 站看了${short(displayTitle, 60)}${body ? `：${short(body, 260)}` : ''}`
+      ? `在 B 站${ownVideo ? '发布了视频' : '看了'}${short(displayTitle, 60)}${body ? `：${short(body, 260)}` : ''}`
       : body;
     const source = type === 'article' ? 'bili-article'
       : type === 'dynamic' ? 'bili-dynamic'
@@ -1583,7 +1584,7 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
     const recordTitle = type === 'article'
       ? `B站专栏：${short(title || body, 30)}`
       : type === 'dynamic' ? `B站动态：${short(body || title, 30)}`
-        : type === 'video' ? `看过《${short(title, 40)}》`
+        : type === 'video' ? `${ownVideo ? '我发的视频' : '看过'}《${short(title, 40)}》`
           : type === 'follow' ? `B站关注：${short(title, 30)}`
             : type === 'unfollow' ? `B站取关：${short(title, 30)}`
               : type === 'like' ? `B站点赞：${short(title, 30)}`

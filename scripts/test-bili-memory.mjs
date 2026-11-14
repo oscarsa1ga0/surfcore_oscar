@@ -13,9 +13,16 @@ import { buildSharePrompt } from '../src/bili-share-scheduler.js';
 import { formatDynamicMessage } from '../src/bili-dynamics.js';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
-const STATE = path.join(ROOT, 'state');
+// 2026-11 起记忆输出在角色目录（activePlatformStateDir），旧版写仓库 state/。
+// 测试用临时 stateDir 隔离输出；账本输入优先读当前角色的 biliDir，缺角色时回退仓库 state。
+const { currentCharacter } = await import('../plugins/surfcore/tools/lib/state-paths.mjs');
+const characterBili = currentCharacter()?.biliDir ?? null;
+const STATE = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-memory-test-'));
+if (fs.existsSync(path.join(ROOT, 'state', 'bili-dynamics-cache.json'))) {
+  fs.copyFileSync(path.join(ROOT, 'state', 'bili-dynamics-cache.json'), path.join(STATE, 'bili-dynamics-cache.json'));
+}
 
-const memory = createBiliMemory({ stateDir: STATE, log: () => {} });
+const memory = createBiliMemory({ stateDir: STATE, biliDir: characterBili, log: () => {} });
 const stats = await memory.refresh({ force: true });
 assert.equal(stats.ok, true, `记忆生成失败：${stats.error ?? ''}`);
 
@@ -48,7 +55,9 @@ for (const needle of forbidden) {
   assert.ok(!combined.includes(needle), `疑似私信内容泄漏：${needle}`);
 }
 assert.ok(!/mid\s*\d{5,}/i.test(brief), '简报不应包含陌生人 mid');
-assert.ok(!/私信[^。]{0,40}(说|发|回)/.test(doc), '长记忆里出现了私信转述');
+// 章节标题会写「不涉及私信」；只在正文行上检查转述，避免标题自触发。
+const docBody = doc.split('\n').filter((line) => !line.trimStart().startsWith('##')).join('\n');
+assert.ok(!/私信[^。]{0,40}(说|发|回)/.test(docBody), '长记忆里出现了私信转述');
 
 // 分享池：数量、类型、政治/娱乐圈过滤。
 const shareable = index.entries.filter((e) => e.shareable);
@@ -77,8 +86,16 @@ assert.equal(new Set(picks).size, 8, `一天 8 个时间点重复太多：${new 
 // 检索：问到具体视频要能捞到；闲聊不要硬塞。
 const r1 = memory.recallBlock('你还记得B站那个杀戮尖塔大肥鱼mod吗');
 assert.ok(r1.includes('杀戮尖塔') || r1.includes('大肥鱼'), '检索没有命中杀戮尖塔视频');
-const r2 = memory.recallBlock('点兔那个视频你还记得吗');
-assert.ok(r2.includes('点兔'), '检索没有命中点兔视频');
+// 用当前记忆里真实存在的视频标题做检索断言（不同机器的数据不同，不写死作者数据）。
+const sampleVideo = index.entries
+  .filter((e) => e.type === 'video' && e.title && e.title.length >= 4 && !isBlockedContent(e.title))
+  .sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')))[0];
+if (sampleVideo) {
+  const r2 = memory.recallBlock(`B站那个视频《${sampleVideo.title}》你还记得吗`);
+  assert.ok(r2.includes(sampleVideo.title.slice(0, Math.min(6, sampleVideo.title.length))), `检索没有命中视频：${sampleVideo.title}`);
+} else {
+  console.warn('（跳过检索断言：当前记忆里没有视频条目）');
+}
 const r3 = memory.recallBlock('今天吃什么');
 assert.equal(r3, '', '普通闲聊不应触发 B 站记忆检索');
 
