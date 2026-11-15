@@ -6,7 +6,8 @@
 //   node bili.mjs score <BV> --score 16 [--reason "为什么给这个分"] [--title "视频标题"]
 //   node bili.mjs score --today     看今天评过哪些（从高到低）
 //   node bili.mjs score --best      只看最高分那条
-import { recordScore, todayScores, bestToday } from '../lib/scores.mjs'
+import { recordScore, today, todayScores, bestToday } from '../lib/scores.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -41,6 +42,10 @@ if (!/^BV[0-9A-Za-z]{10}$/.test(bv)) { console.error('用法: score <BV号> --sc
 if (!Number.isFinite(score) || score < 0 || score > 20) { console.error('✗ --score 必须是 0~20 的数字（每项 0-4，满 20）'); process.exit(2) }
 
 const list = recordScore({ bv, score, reason: String(opt.reason ?? ''), title: String(opt.title ?? '') })
+if (score >= 16) {
+  const saved = list.find((item) => item.bv === bv)
+  if (saved) recordBiliEmotion('enjoyed', `score:${bv}:${today()}`)
+}
 const best = [...list].sort((a, b) => Number(b.score) - Number(a.score))[0]
 console.log(`✓ 记下了：${bv} → ${score}/20`)
 console.log(`  今天最高分：${best.bv}（${best.score}/20）${best.bv === bv ? '  ← 就是这条' : ''}`)

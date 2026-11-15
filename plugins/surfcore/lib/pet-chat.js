@@ -21,6 +21,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { sliceHead, wellFormed } from '../../../src/safe-text.js';
 import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
+import { classifyEmotionText } from '../../../src/emotion.js';
+import { dialogueEmotionScope } from '../../../src/emotion-events.js';
 import { resolvePersonaFile } from './persona.js';
 import { memoryCardPromptBlock } from './memory-card.js';
 import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js';
@@ -154,8 +156,9 @@ function tokenHash(text) {
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  * @param {object} [opts.tokenBudget]  每日额度服务（可选，冒烟测试可不传）
  */
-export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, tokenBudget = null } = {}) {
+export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, tokenBudget = null, emotion = null } = {}) {
   const root = path.join(stateDir, 'pet');
+  const emotionScope = dialogueEmotionScope('pet', 'desktop', 'owner');
   const chatDir = path.join(root, 'chat');
   const voiceDir = path.join(root, 'voice');
   const tokenFile = path.join(root, 'host-token');
@@ -700,7 +703,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   }
 
   // ── 提示词 ──────────────────────────────────────────────────────────────
-  function buildChatSystemPrompt({ role, owner, memory, purpose, modality }) {
+  function buildChatSystemPrompt({ role, owner, memory, purpose, modality, character }) {
     const s = settings();
     const lines = [];
     lines.push(`你是「${role.name}」，此刻待在${owner}自己的电脑桌面上——一只透明的桌宠，不是 QQ 群里的群友，也不是 B站 的账号。`);
@@ -708,7 +711,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     lines.push('');
     if (role.persona) {
       lines.push('【人格卡（你就是这个人）】');
-      lines.push(sliceHead(role.persona, 4200));
+      const persona = sliceHead(role.persona, 4200);
+      lines.push(emotion?.context(persona, emotionScope, character) ?? persona);
       lines.push('');
     }
     if (memory) {
@@ -719,7 +723,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const bits = [];
     if (purpose.pending?.length) bits.push(`心里还惦记着：${purpose.pending.join('；')}`);
     if (purpose.goals?.length) bits.push(`最近在想的：${purpose.goals.join('；')}`);
-    if (purpose.emotion) bits.push(`最近的心情：${purpose.emotion}`);
+    if (!emotion && purpose.emotion) bits.push(`最近的心情：${purpose.emotion}`);
     if (bits.length) {
       lines.push('【你自己最近的状态（背景，不用主动解释）】');
       lines.push(...bits);
@@ -771,7 +775,10 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     const history = readHistory();
     const role = roleInfo();
     const owner = ownerInfo();
-    const system = buildChatSystemPrompt({ role, owner, memory: memoryBlock(), purpose: purposeBackground(), modality: mode });
+    const character = readCurrentCharacter();
+    const kind = classifyEmotionText(say);
+    if (kind) emotion?.record({ ...emotionScope, kind, key: crypto.randomUUID(), inbound: true, owner: true }, character);
+    const system = buildChatSystemPrompt({ role, owner, memory: memoryBlock(), purpose: purposeBackground(), modality: mode, character });
     const user = [
       history.messages.length ? '【最近聊天】' : '',
       history.messages.length ? formatHistory(history, s.chat.historyTurns, say, owner.name) : say,
@@ -832,6 +839,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
 
   /** 主动搭话：文字/语音两条路都一样——先入历史，再发事件；语音合成失败只降级成文字。 */
   async function proactive({ text, modality = 'text', purpose = null } = {}) {
+    const character = readCurrentCharacter();
     const s = settings();
     const raw = String(text ?? '').trim();
     if (!raw) return { ok: false, error: '没有内容' };
@@ -867,6 +875,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       messageId: message.id,
       purpose: purpose ? { kind: purpose.kind || '', need: purpose.need || '', text: sliceHead(purpose.text || '', 120) } : null,
     });
+    emotion?.record({ ...emotionScope, kind: 'proactive', key: message.id }, character);
     return {
       ok: true,
       message: publicMessage(message),

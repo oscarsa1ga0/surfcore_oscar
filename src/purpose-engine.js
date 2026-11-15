@@ -1,3 +1,4 @@
+import { emotionPurposeWeight } from './emotion.js';
 /**
  * 目的机制（purpose outreach）—— 纯逻辑层。
  *
@@ -1865,6 +1866,7 @@ export function selectPurpose({
   now = Date.now(),
   lastMasterAt = 0,
   random = Math.random,
+  emotion = null,
 } = {}) {
   const recent = (Array.isArray(history) ? history : []).slice(-10);
   const query = normalizeDrives(drives);
@@ -1932,7 +1934,7 @@ export function selectPurpose({
       // 目标假设：置信度/价值/风险都参与排序；风险高的不因为「想说」就排前面。
       c.weight *= 0.55 + (c.confidence ?? 0.3) * 0.7 + (c.value ?? 0.4) * 0.35 - (c.risk ?? 0.1) * 0.25;
     }
-    c.weight *= 0.65 + 0.55 * (query[c.need] ?? 0);
+    c.weight *= (0.65 + 0.55 * (query[c.need] ?? 0)) * emotionPurposeWeight(c, emotion);
     if (c.emotion === 'lonely') c.weight *= 1.2;
     if (c.emotion === 'envious') c.weight *= 1.1;
   }

@@ -12,11 +12,13 @@
 // 用法:
 //   node bili.mjs comment-digest [--hours 24] [--pages 2] [--only-unread] [--max-resolve 20] [--raw]
 //     --raw          不核实正文，直接用收件箱字段（快，但可能不准）
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
+import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { makeHeaders, pullFeed, resolveLatestReply } from '../lib/msgfeed.mjs'
 
+const emotionRole = currentCharacter()
 const args = process.argv.slice(2)
 const get = (k, d) => {
   const i = args.indexOf('--' + k)
@@ -72,6 +74,10 @@ console.log('')
 for (const x of all) {
   const tag = x.kind === 'reply' ? '回复' : '@ '
   const real = await realText(x)
+  const eventId = x.sourceId || x.id
+  if (!RAW && real.text && eventId && eventId !== 'undefined') {
+    recordBiliEmotion('response', `inbox:${eventId}`, emotionRole)
+  }
   const text = (real.text || '(读不到正文)').slice(0, 80)
   console.log(`· ${hhmm(real.ctime || x.t)} [${tag}] ${x.who}`)
   console.log(`    「${text}」`)

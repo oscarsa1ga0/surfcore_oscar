@@ -9,8 +9,9 @@
 // 共同规则：公开发给所有人（正文不许 @ 人）· 配图自动挑。
 //
 //   node bili.mjs daily --text "…" [--kind best|game|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -40,6 +41,7 @@ import { pinOf, clearPin } from '../lib/pins.mjs'
   }
 }
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
@@ -356,6 +358,7 @@ if (!out) {
 recordLegacyPublication(publication)
 // ── 记账 ──────────────────────────────────────────────────────
 const dynId = (out.match(/dyn_id[=: ]+(\d+)/i) ?? out.match(/dynId[=: ]+(\d+)/i) ?? [])[1] ?? ''
+if (dynId) recordBiliEmotion('progress', `dynamic:${dynId}`, emotionRole)
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })
 st[KIND] = {

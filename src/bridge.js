@@ -17,6 +17,8 @@ import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport,
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { classifyEmotionText, composeCharacterContext } from './emotion.js';
+import { dialogueEmotionScope, enqueueEmotionEvent, readCurrentEmotion } from './emotion-events.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import {
@@ -3350,6 +3352,17 @@ async function main() {
     allowRemote: cfg.dsh.allowRemote === true
   });
   const roleDispatchEnabled = isLoopbackBaseUrl(cfg.dsh.baseUrl) && usesLocalDispatch(ROOT, DSH_HOME, process.env);
+  function qqEmotionScope(key, speaker = '') {
+    const privateMatch = /^private:(\d+)$/.exec(key);
+    return dialogueEmotionScope(privateMatch ? 'qq-private' : 'qq-group', key, privateMatch?.[1] ?? speaker);
+  }
+
+  function recordQqEmotion(event) {
+    enqueueEmotionEvent(event, ACTIVE_CHARACTER, (error) => {
+      logThrottled('emotion:write', 60_000, `[emotion] 无法记录 QQ 事件：${error?.code || error?.name || 'unknown'}`);
+    });
+  }
+
   const withQqDispatch = createQqRoleDispatch({
     api,
     getBaseUrl: () => api.baseUrl,
@@ -4660,6 +4673,7 @@ async function main() {
       if (prevNum !== null && cur > prevNum) {
         const delta = cur - prevNum;
         const names = (r.comments || []).slice(-delta).map((c) => String(c.nick || c.uin || '')).filter(Boolean);
+        recordQqEmotion({ source: 'qzone', kind: 'response', key: `comments:${tid}:${cur}:${r.comments?.at(-1)?.id ?? ''}` });
         st.notices.push({ kind: 'comment', tid, content: String(p.content || '').slice(0, 40), delta, names: names.slice(0, 5), at: now, deliveredAt: 0 });
         added += 1;
       }
@@ -9620,6 +9634,7 @@ async function main() {
           if (body.dry === true) { sendJson({ ok: true, key, dry: true, plan }); return; }
           const r = await sendQzoneMsg({ content: gate.text, images, ugcRight: right, targetUins });
           if (!r.ok) { qzoneLogErr('send_qzone_msg', { message: r.message, code: r.code }); sendJson({ ok: false, error: r.message, code: r.code }, 502); return; }
+          if (r.tid) recordQqEmotion({ source: 'qzone', kind: 'progress', key: `publish:${r.tid}` });
           recordQzonePublish(qzoneStateNow(), { tid: r.tid, content: gate.text, time: r.time, ugcRight: right, images });
           qzonePersistNow();
           qzonePushInteraction(st, { kind: 'publish', tid: r.tid, authorUin: '' });
@@ -13626,6 +13641,7 @@ async function main() {
       drives,
       now,
       lastMasterAt: Number(st.lastIncomingAt) || 0,
+      emotion: readCurrentEmotion(ACTIVE_CHARACTER, qqEmotionScope(key)),
     });
     if (!preview) purposeState.lastCandidateCount = selection.candidates.length;
     if (!selection.purpose) {
@@ -13844,6 +13860,9 @@ async function main() {
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
   function notePurposeOutbound(key, messages) {
     if (!purposeRun || purposeRun.key !== key) return;
+    if (!purposeRun.sentTexts.length && messages?.some((text) => String(text ?? '').trim())) {
+      recordQqEmotion({ ...qqEmotionScope(key), kind: 'proactive', key: `purpose:${purposeRun.runId}` });
+    }
     for (const message of Array.isArray(messages) ? messages : []) {
       const text = String(message ?? '').trim();
       if (text) purposeRun.sentTexts.push(text.slice(0, 200));
@@ -14177,6 +14196,12 @@ async function main() {
         });
       } catch {}
     }
+    const speakers = [...new Set((wakeSnapshot?.messages ?? []).filter((item) =>
+      !item.history && !item.isSelf).map((item) => String(item.userId || '')))];
+    const audience = qqEmotionScope(key, speakers.length === 1 ? speakers[0] : '');
+    if (!roleDispatchEnabled) {
+      promptText = composeCharacterContext(promptText, readCurrentEmotion(ACTIVE_CHARACTER, audience));
+    }
     let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
     if (Array.isArray(opts.media) && opts.media.length > 0) {
       const imageParts = await resolveMediaList(opts.media);
@@ -14187,7 +14212,7 @@ async function main() {
     if (opts.farewell) social.exitingSessions.add(sessionId);
     let accepted;
     try {
-      accepted = await submit({ sessionId, mode: 'queue', content });
+      accepted = await submit({ sessionId, mode: 'queue', content, ...(roleDispatchEnabled ? { emotion: audience } : {}) });
     } catch (error) {
       if (opts.farewell) social.exitingSessions.delete(sessionId);
       throw error;
@@ -17382,6 +17407,25 @@ async function main() {
         return;
       }
       // 其余 / 开头内容照常发给 DSH（DSH 的斜杠命令原样执行，如 /model）
+    }
+
+    // Real inbound only: command, approval, unauthorized and catch-up paths bypass this point.
+    const affectSender = String(event.user_id ?? '');
+    if (!plainContent.startsWith('/') && !senderIsFish && affectSender && affectSender !== String(event.self_id ?? selfUserId)) {
+      const address = atInfo(event.message, [event.self_id, selfUserId]);
+      const directed = kind === 'private' || quoteTargetIsSelf
+        || (!address.atOther && !textContent.startsWith('[引用') && isDirectAddress(plainContent, event, kind))
+        || address.atSelf;
+      const at = Date.now();
+      const emotionKind = classifyEmotionText(plainContent, { directed, media: mediaList.length > 0 });
+      const affectKey = messageRef || (event.time ? `${affectSender}:${event.time}:${crypto.createHash('sha256').update(plainContent).digest('hex')}` : '');
+      if (emotionKind && affectKey) {
+        const scope = qqEmotionScope(key, directed ? affectSender : '');
+        recordQqEmotion({
+          ...scope, kind: emotionKind, owner: isOwner, inbound: directed, at,
+          key: directed ? `${event.self_id || selfUserId}:${key}:${affectKey}` : `${key}:ambient:${Math.floor(at / 60_000)}`,
+        });
+      }
     }
 
     // 二代仿真模式（reserved2）：唤醒调度

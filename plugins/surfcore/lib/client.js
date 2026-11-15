@@ -8475,11 +8475,104 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         err ? h("div", { className: "qbw-err", style: { marginTop: "8px" } }, err) : null);
     }
 
+    function EmotionTab() {
+      const [state, setState] = useState(null);
+      const [error, setError] = useState("");
+      const [busy, setBusy] = useState(false);
+      const [workspaceDraft, setWorkspaceDraft] = useState(null);
+      const [refresh, setRefresh] = useState(0);
+      const character = state?.character;
+
+      useEffect(() => {
+        if (busy) return;
+        const abort = new AbortController();
+        const read = async () => {
+          try {
+            const data = await api("/emotion", { signal: abort.signal });
+            if (!abort.signal.aborted) {
+              setState(data);
+              setError("");
+            }
+          } catch (err) {
+            if (!abort.signal.aborted) setError([err.message, err.hint].filter(Boolean).join("。"));
+          }
+        };
+        void read();
+        const timer = setInterval(read, 8_000);
+        return () => { abort.abort(); clearInterval(timer); };
+      }, [refresh, busy]);
+
+      useEffect(() => { setWorkspaceDraft(null); }, [character?.id, character?.epoch]);
+
+      async function save(settings) {
+        if (!character || busy) return;
+        setBusy(true);
+        try {
+          const data = await api("/emotion", {
+            method: "POST", body: { characterId: character.id, epoch: character.epoch, settings },
+          });
+          setState(data);
+          setError("");
+          setWorkspaceDraft(null);
+        } catch (err) {
+          setError([err.message, err.hint].filter(Boolean).join("。"));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      const settings = state?.settings;
+      const format = (value) => Math.round(Number(value) || 0);
+      const value = (label, score) => h("label", {
+        key: label,
+        style: { display: "grid", gridTemplateColumns: "4em minmax(6em, 1fr) 3em", alignItems: "center", gap: "0.75em" },
+      }, label, h("meter", { min: 0, max: 100, value: Number(score) || 0, "aria-label": label, style: { width: "100%" } }), h("span", null, format(score)));
+      const workspaceValue = workspaceDraft ?? settings?.nativeWorkspaces?.join("\n") ?? "";
+
+      return h("div", { style: { display: "grid", gap: "12px" } },
+        error ? h("div", { className: "qbw-err", role: "alert" }, error) : null,
+        h(Section, { collapsible: false, title: character ? `${character.name}的情绪` : "情绪" },
+          h(Btn, { kind: "qbw-btn2", disabled: busy, onClick: () => setRefresh((n) => n + 1) }, "刷新"),
+          !state ? h("p", null, error ? "暂时无法显示情绪。" : "正在读取情绪。") : !character ? h("p", null, "请先在「角色」页选一个角色。") : h("div", null,
+            h("p", null, settings.enabled ? `当前心情 · ${state.mood}` : "情绪功能已关闭"),
+            Object.entries(state.dimensions).map(([key, label]) => value(label, state.drives[key])),
+            value("期待", state.expectation),
+            h("p", null, state.conflicts?.length ? "尚未平复的互动" : "互动档位 · 日常"),
+            (state.conflicts ?? []).map((item, index) => h("p", { key: index },
+              `${state.sources[item.source]} · ${state.stages[item.stage]}${item.knot ? "（还有心结）" : ""} · 责怪压力 ${format(item.blame)}`)))),
+        character ? h(Section, { collapsible: false, title: "情绪设置" },
+          h("label", null, h("input", {
+            type: "checkbox", checked: settings.enabled, disabled: busy,
+            onChange: (e) => void save({ enabled: e.target.checked }),
+          }), " 启用情绪"),
+          h("p", null, "允许影响心情的经历来源"),
+          Object.entries(state.sources).map(([key, label]) => h("label", { key, style: { display: "block" } }, h("input", {
+            type: "checkbox", checked: settings.sources[key], disabled: busy || !settings.enabled,
+            onChange: (e) => void save({ sources: { [key]: e.target.checked } }),
+          }), ` ${label}`)),
+          h("label", { style: { display: "block", marginTop: "1em" } }, "使用这张角色卡的其他 DSH 工作区",
+            h("textarea", {
+              rows: 3, value: workspaceValue, style: { display: "block", width: "100%", marginTop: "0.4em" },
+              placeholder: "每行一个工作区的绝对路径", onChange: (e) => setWorkspaceDraft(e.target.value),
+            })),
+          h(Btn, { kind: "qbw-btn2", disabled: busy || workspaceDraft === null, onClick: () => {
+            void save({ nativeWorkspaces: workspaceValue.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
+          } }, "保存工作区")) : null,
+        character ? h(Section, { collapsible: false, title: "最近的情绪变化" },
+          state.recent.length ? h("ul", null, state.recent.map((item, index) => h("li", { key: `${item.at}:${index}` },
+            h("time", { dateTime: new Date(item.at).toISOString() }, new Date(item.at).toLocaleString()),
+            ` · ${state.sources[item.source]} · ${item.reason}`,
+            Object.entries(item.changed).map(([key, delta]) =>
+              ` · ${state.dimensions[key] || "责怪压力"} ${delta > 0 ? "+" : ""}${delta}`).join(""))))
+            : h("p", null, "有新的经历后会显示在这里。")) : null);
+    }
+
     // ── 主组件 ──────────────────────────────────────────────────────────────
     const TABS = [
       ["overview", "概览"],
       ["characters", "角色"],
       ["purpose", "目的"],
+      ["emotion", "情绪"],
       ["qq", "QQ"],
       ["voice", "语音"],
       ["pet", "桌宠"],
@@ -8775,6 +8868,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const renderTab = () => {
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
         if (tab === "characters") return h(CharactersTab, { overview, busy, setBusy, toast: notify, reload, goTab: setTab, unified, setUnified: setUnifiedPath });
+        if (tab === "emotion") return h(EmotionTab);
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });

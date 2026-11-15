@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-15 | [鱼姬跨平台情绪](2026-11-15-emotion.md) | 角色共享九维心境、独立情绪页、模型请求前刷新 | 待合入 |
 | 2026-11-15 | [B站唤醒被去重](2026-11-15-bili-wake-dedupe.md) | requestId 同 slot 重排后撞车被 DSH 去重；动态提醒 inSlot 作用域 | macOS 分支 |
 | 2026-11-15 | [动图抽帧拼图](2026-11-15-gif-storyboard.md) | GIF/动态 WebP 抽 ≤9 帧拼成 3×3，让视觉模型看懂动图 | macOS 分支 |
 | 2026-11-15 | [B站多 P 视频 --page](2026-11-15-debrief-multipage.md) | debrief/bili-watch 支持指定第 N P，并列出分 P | macOS 分支 |

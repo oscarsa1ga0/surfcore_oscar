@@ -12,7 +12,8 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { biliState } from './state-paths.mjs'
+import { biliState, currentCharacter } from './state-paths.mjs'
+import { recordBiliEmotion } from './emotion.mjs'
 
 export const WATCH_HISTORY_FILE = () => biliState('watch-history.jsonl')
 export const WATCH_HISTORY_ROTATED = () => biliState('watch-history.1.jsonl')
@@ -84,7 +85,7 @@ export function normalizeWatchEntry(entry = {}) {
 }
 
 /** 追加一条观看记录；失败不抛（不能因为历史文件坏了就让看视频本身失败）。 */
-export function appendWatch(entry = {}, { file = WATCH_HISTORY_FILE() } = {}) {
+export function appendWatch(entry = {}, { file = WATCH_HISTORY_FILE(), role = currentCharacter() } = {}) {
   try {
     const item = normalizeWatchEntry(entry)
     if (!item.bvid && !item.title) return { ok: false, reason: '缺少 bvid/title' }
@@ -109,6 +110,9 @@ export function appendWatch(entry = {}, { file = WATCH_HISTORY_FILE() } = {}) {
       }
     } catch {}
     fs.appendFileSync(file, `${JSON.stringify(item)}\n`)
+    if (role && file === path.join(role.biliDir, 'watch-history.jsonl') && item.bvid && item.mode !== 'meta' && item.mode !== 'memory') {
+      recordBiliEmotion('watch', `watch:${item.bvid}:${Math.floor(itemTime / DEDUPE_MS)}`, role)
+    }
     return { ok: true, item, file }
   } catch (error) {
     return { ok: false, reason: String(error?.message ?? error) }

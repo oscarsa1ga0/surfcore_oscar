@@ -11,7 +11,7 @@
 //     热评           → "看完的人怎么看"（长文本、质量高）
 //     画面抽帧       → "长什么样"（界面/动作/梗；由模型看图补语义）
 //   最后一步（读图 + 合成结论）**必须由模型完成**，本脚本只负责把素材备齐、对齐、标好采样率与噪声。
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -22,6 +22,7 @@ import { config } from '../lib/config.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
 import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => /^BV[0-9A-Za-z]+$/i.test(a))
 if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames]'); process.exit(2) }
@@ -323,7 +324,7 @@ if (!opt['no-history']) {
     source: 'debrief',
     sheet: watchRecord.sheet,
     subs: watchRecord.subs,
-  })
+  }, { role: emotionRole, file: emotionRole ? path.join(emotionRole.biliDir, 'watch-history.jsonl') : undefined })
   if (rec.ok) console.log(`\n[观看历史] 已记一笔：${bvid}（${opt['no-frames'] ? '浅看' : '深看'}）`)
 }
 

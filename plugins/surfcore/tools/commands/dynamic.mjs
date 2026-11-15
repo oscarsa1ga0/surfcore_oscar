@@ -4,7 +4,8 @@
 //   node bili-dynamic.mjs list
 //   node bili-dynamic.mjs post --text "..." --dry | --go
 //   node bili-dynamic.mjs rm --id <dyn_id> --dry | --go
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
+import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -13,6 +14,7 @@ import { gate } from '../lib/quota-gate.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const mode = argv[0]
 const args = new Map()
@@ -120,6 +122,7 @@ if (!gate({ type: 'dynamic', target: 'dynamic', auto: process.argv.includes('--a
   console.log(`\n[go] HTTP ${r.status}  code=${out.code} message=${out.message ?? ''}`)
   if (out.code === 0) {
     const id = out.data?.dyn_id_str ?? out.data?.dyn_id
+    if (id) recordBiliEmotion('progress', `dynamic:${id}`, emotionRole)
     console.log(`  ✅ 已发布  dyn_id=${id}`)
     console.log(`  https://t.bilibili.com/${id}`)
   } else {

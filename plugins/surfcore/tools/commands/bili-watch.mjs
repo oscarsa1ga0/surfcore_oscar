@@ -7,7 +7,7 @@
 //       node bili-watch.mjs BV... --page 2           → 多 P 视频看第 2 P（默认第 1 P）
 //
 // 依赖：ffmpeg（查找顺序见 lib/ffmpeg.mjs：$FFMPEG → PATH → bin/ → ~/.dsh/surfcore/bili/bin → 本机剪映）
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -17,6 +17,7 @@ import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
 let FFMPEG
 try { FFMPEG = requireFfmpeg() } catch (e) { console.error(String(e.message)); process.exit(2) }
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 // --page N：多 P 视频看第 N P（默认第 1 P）。先把值和旗标一起摘掉，避免 "2" 被当成格子参数。
 const rest = argv.slice()
@@ -191,6 +192,6 @@ if (!process.env.SURFCORE_WATCH_PARENT && !process.argv.includes('--no-history')
     source: process.env.SURFCORE_WATCH_SOURCE || 'watch',
     sheet,
     subs: fs.existsSync(subs) ? subs : '',
-  })
+  }, { role: emotionRole, file: emotionRole ? path.join(emotionRole.biliDir, 'watch-history.jsonl') : undefined })
   if (rec.ok) console.log(`[观看历史] 已记一笔：${bvid}（抽帧）`)
 }

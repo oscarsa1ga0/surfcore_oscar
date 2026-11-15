@@ -1,3 +1,5 @@
+import * as emotion from '../src/emotion.js';
+import { dialogueEmotionScope } from '../src/emotion-events.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
@@ -254,6 +256,10 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
   const context = vm.createContext({
+    ...emotion,
+    dialogueEmotionScope,
+    enqueueEmotionEvent: () => false,
+    readCurrentEmotion: () => null,
     fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
     fetch: fakeFetch,
     isProbablySafeImageFileRef, uploadOneBotStickerImage,
