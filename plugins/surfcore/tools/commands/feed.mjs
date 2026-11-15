@@ -20,7 +20,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { accountBili, biliState } from '../lib/state-paths.mjs'
+import { accountBili, biliState, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliBrowse } from '../lib/emotion.mjs'
 import { config } from '../lib/config.mjs'
 import { readWatchHistory } from '../lib/watch-history.mjs'
 import {
@@ -28,6 +29,7 @@ import {
   pickFollowingNew, preferenceHits, prunePickedMap, safeNumber, searchPlan, selectDiverse,
 } from '../lib/feed-core.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
@@ -292,6 +294,7 @@ if (REMEMBER && picked.length) {
     fs.mkdirSync(path.dirname(feedPicks), { recursive: true })
     fs.writeFileSync(feedPicks, `${JSON.stringify({ version: 1, updatedAt: at, picks: next }, null, 2)}\n`)
   } catch { /* 备忘写不进去不影响本次选题 */ }
+  recordBiliBrowse(picked, emotionRole)
 }
 
 // ── ⑦ 输出 ────────────────────────────────────────────────────────────────

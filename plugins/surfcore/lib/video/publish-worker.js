@@ -51,9 +51,10 @@ export function createVideoPublisher({
 }) {
   function transition(row, patch, meta) {
     const updated = store.updatePublish(row.attemptId, patch, { expected: row.state, meta });
-    if (updated?.state !== row.state && ['published', 'rejected'].includes(updated?.state)) {
+    const emotion = { submitted: 'submitted', published: 'progress', rejected: 'setback' }[updated?.state];
+    if (updated?.state !== row.state && emotion) {
       recordEmotion({
-        source: 'video', kind: updated.state === 'published' ? 'progress' : 'setback',
+        source: 'video', kind: emotion,
         key: `publish:${row.attemptId}:${updated.state}`,
       });
     }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 import {
   applyEmotionEvent, BASELINE, classifyEmotionText, composeCharacterContext, createEmotionState,
@@ -222,4 +224,104 @@ test('已积累情绪的旧角色保留原状态', async () => {
   assert.equal(after.initialization.source, 'existing');
   assert.equal(after.recent.length, before.recent.length);
   assert.ok(after.drives.joy > BASELINE.joy);
+});
+
+test('B 站真实 CLI 入口把推荐、观看、评分和成功互动累计到同一心境', async () => {
+  const role = switchRole('bili-emotion', 9);
+  const service = createEmotionService();
+  await service.initialize(selection(role), assessmentResponse);
+  const surface = path.join(tmp, 'surfcore');
+  const biliHome = path.join(surface, 'bili');
+  fs.mkdirSync(biliHome, { recursive: true });
+  fs.writeFileSync(path.join(biliHome, 'credentials.json'), JSON.stringify({
+    sessdata: 'fixture-only', bili_jct: 'fixture-only', buvid3: 'fixture-only',
+  }));
+  const config = path.join(surface, 'bili.config.json');
+  fs.writeFileSync(config, JSON.stringify({ interact: { enabled: true }, owner: { mid: '1456788' }, preferences: { like: ['fixture'] } }));
+  const mock = path.join(tmp, 'bili-emotion-fetch.mjs');
+  fs.writeFileSync(mock, `
+    globalThis.fetch = async (input, options = {}) => {
+      const url = new URL(input);
+      const success = (data) => Response.json({ code: 0, data });
+      if (url.pathname === '/x/web-interface/nav') {
+        return success({ isLogin: true, mid: 1456123, uname: 'emotion fixture' });
+      }
+      if (url.pathname === '/x/relation') return success({ attribute: 6 });
+      if (url.pathname === '/room/v1/Room/get_info') return success({ room_id: 88888, live_status: 1 });
+      if (url.pathname === '/web_im/v1/web_im/send_msg' && options.method === 'POST') {
+        return success({ msg_key_str: '88300001' });
+      }
+      if (url.pathname === '/msg/send' && options.method === 'POST') return success({ dmid_str: '88300002' });
+      if (url.pathname === '/x/web-interface/popular') {
+        return success({ list: [{ bvid: 'BV1Lpnr6wE59', title: 'fixture selected', owner: { mid: 22267, name: 'up' },
+          stat: { view: 850, danmaku: 13, favorite: 5 }, pubdate: Math.floor(Date.now() / 1000), duration: 140 }] });
+      }
+      if (url.pathname === '/x/web-interface/view') {
+        return success({ bvid: 'BV1Lpnr6wE59', aid: 55555, title: 'fixture video', owner: { mid: 22267, name: 'up' },
+          duration: 140, pages: [{ cid: 9 }], pubdate: 1700000000 });
+      }
+      if (url.pathname === '/x/tag/archive/tags') return success([]);
+      if (url.pathname === '/x/player/wbi/v2') return success({ subtitle: { subtitles: [] } });
+      if (url.hostname === 'comment.bilibili.com') return new Response('<i/>');
+      if (url.hostname === 'api.github.com') return Response.json({ message: 'fixture' });
+      if (/^\\/x\\/v2\\/reply\\/(?:wbi\\/)?add$/.test(url.pathname) && options.method === 'POST') {
+        return process.env.BILI_EMOTION_REJECT ? Response.json({ code: -403, message: 'fixture rejection' })
+          : success({ rpid_str: '99300001' });
+      }
+      throw new Error('unmocked route: ' + url.pathname);
+    };
+  `);
+  function run(args, env = {}) {
+    const cli = path.resolve(import.meta.dirname, '../plugins/surfcore/tools/bili.mjs');
+    return spawnSync(process.execPath, [cli, ...args], {
+      env: { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(mock).href}`, SURFCORE_BILI_CONFIG: config, ...env },
+      encoding: 'utf8', timeout: 10000,
+    });
+  }
+  function successful(args) {
+    const result = run(args);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return result.stdout;
+  }
+
+  const feed = ['feed', '--source', 'popular', '--n', '1', '--json'];
+  assert.equal(JSON.parse(successful([...feed, '--no-remember'])).items.length, 1);
+  assert.equal(service.status().recent.length, 0);
+  assert.equal(JSON.parse(successful(feed)).items.length, 1);
+  assert.deepEqual(service.status().recent.map((item) => item.reason), ['浏览了 B 站推荐']);
+  assert.ok(service.snapshot(publicBili).drives.curiosity > selfAssessment.curiosity);
+
+  const video = 'BV1Lpnr6wE59';
+  successful(['video', video]);
+  assert.equal(service.status().recent[0].reason, '简单看了视频');
+  const { appendWatch } = await import('../plugins/surfcore/tools/lib/watch-history.mjs');
+  assert.equal(appendWatch({ bvid: video, title: 'fixture', mode: 'full', frames: true }).ok, true);
+  assert.equal(service.status().recent[0].reason, '了解了新的内容');
+
+  successful(['score', video, '--score', '12']);
+  assert.equal(service.status().recent[0].reason, '给视频评分');
+  successful(['score', 'BV1Lpnr6wE58', '--score', '17']);
+  assert.equal(service.status().recent[0].reason, '喜欢刚看过的内容');
+
+  const comment = ['comment', '--oid', '55555', '--bvid', video, '--message', '这是合成评论'];
+  successful([...comment, '--dry']);
+  assert.notEqual(run([...comment, '--go'], { BILI_EMOTION_REJECT: '1' }).status, 0);
+  assert.equal(service.status().recent.filter((item) => item.reason === '发出了 B 站评论').length, 0);
+  assert.match(successful([...comment, '--go']), /99300001/);
+  assert.match(successful([...comment, '--go']), /99300001/);
+  const status = service.status();
+  assert.equal(status.recent[0].reason, '发出了 B 站评论');
+  assert.equal(status.recent.filter((item) => item.reason === '发出了 B 站评论').length, 1);
+  assert.ok(status.drives.social > selfAssessment.social);
+
+  const dm = ['dm', '--msg', '这是一条合成私信'];
+  const danmaku = ['danmaku', 'send', '--room', '88888', '--msg', '这是一条合成弹幕'];
+  successful([...dm, '--dry']);
+  successful([...danmaku, '--dry']);
+  assert.equal(service.status().recent.filter((item) => /发出了.*(?:私信|弹幕)/.test(item.reason)).length, 0);
+  successful([...dm, '--go']);
+  assert.equal(service.status().recent[0].reason, '发出了 B 站私信');
+  successful([...danmaku, '--go']);
+  assert.equal(service.status().recent[0].reason, '发出了弹幕');
+  assert.doesNotMatch(fs.readFileSync(emotionPaths(role).state, 'utf8'), /这是合成评论|这是一条合成私信|这是一条合成弹幕|99300001|88300001|88300002/);
 });

@@ -6,7 +6,8 @@
 //                            [--reply-mid <uid> --reply-name <昵称>] [--reply-dmid <弹幕id>]
 //   node danmaku.mjs history --room 999999004
 //   node danmaku.mjs live    --room 999999004 --seconds 60 [--grep 关键词]
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -16,6 +17,7 @@ import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const mode = argv[0]
 const args = new Map()
@@ -157,7 +159,11 @@ if (mode === 'send') {
   console.log(`  HTTP ${out.status}  code=${b.code} ${b.message ?? b.msg ?? ''}`)
   console.log(`  ${hints[b.code] ?? ''}`)
   if (b.code !== 0) console.log(`  原始: ${JSON.stringify(b).slice(0, 300)}`)
-  if (b.code === 0) recordQuota({ type: 'danmaku', target: `room:${args.get('room') ?? ''}`, note: msg.slice(0, 30), auto: process.argv.includes('--auto') })
+  if (b.code === 0) {
+    const id = b.data?.dmid_str ?? b.data?.dmid ?? rnd
+    recordBiliEmotion('danmakuSent', `live-sent:${realId}:${id}`, emotionRole)
+    recordQuota({ type: 'danmaku', target: `room:${args.get('room') ?? ''}`, note: msg.slice(0, 30), auto: process.argv.includes('--auto') })
+  }
   process.exit(0)
 }
 

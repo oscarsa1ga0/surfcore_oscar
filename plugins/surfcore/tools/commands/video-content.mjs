@@ -1,10 +1,12 @@
 // Reconstruct what a video is about without watching it.
 //   metadata + cover + subtitles (if any) + tags + the repo it links to
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, currentCharacter } from '../lib/state-paths.mjs'
+import { appendWatch } from '../lib/watch-history.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
+const emotionRole = currentCharacter()
 const BVID = process.argv[2]
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 // [2026-10-14] 字幕必须带登录 cookie 且走 WBI 签名，否则拿到的 subtitle_url 缺 auth_key → CDN 403
@@ -37,6 +39,10 @@ console.log(`  UP ${d.owner.name} | ${d.tname} | ${d.duration}s | 发布 ${new D
 console.log(`  aid=${d.aid} cid=${cid}`)
 console.log(`  简介原文:\n${(d.desc ?? '').split('\n').map((l) => '    ' + l).join('\n')}`)
 console.log(`  封面: ${d.pic}`)
+appendWatch({
+  bvid: d.bvid || BVID, aid: d.aid, title: d.title, up: d.owner?.name, upMid: d.owner?.mid,
+  duration: d.duration, tname: d.tname, mode: 'meta', source: 'video',
+}, { role: emotionRole, file: emotionRole ? path.join(emotionRole.biliDir, 'watch-history.jsonl') : undefined })
 
 const tag = await get(`https://api.bilibili.com/x/tag/archive/tags?bvid=${BVID}`)
 if (tag?.code === 0) console.log('  标签: ' + tag.data.map((t) => t.tag_name).join(' / '))

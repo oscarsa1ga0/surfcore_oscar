@@ -7,13 +7,15 @@
 //
 // 它只做**召回 + 粗排**（近 N 天、主题词命中、播放/收藏），**不拍板** ——
 //   质量要她自己 debrief 看，daily 那边还有一道硬闸（播放/赞播比/天数）✓
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliBrowse } from '../lib/emotion.mjs'
 import { readWatchHistory } from '../lib/watch-history.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { GAMES, currentGame, queriesFor } from '../lib/games.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
@@ -179,6 +181,7 @@ if (opt['no-remember'] !== true) {
     fs.mkdirSync(path.dirname(picksFile), { recursive: true })
     fs.writeFileSync(picksFile, `${JSON.stringify({ version: 1, updatedAt: nowIso, picks: next }, null, 2)}\n`)
   } catch { /* 备忘写不进去不影响候选输出 */ }
+  recordBiliBrowse(cands.slice(0, N), emotionRole)
 }
 console.log(`\n先 debrief 看 2~3 条（别只看播放）→ 挑一条真的做得好 → 再发：`)
 console.log(FOR === 'game' ? '  daily --kind game --bvid <BV> --text "…" --dry' : `  daily --kind ${FOR} --bvid <BV> --text "…" --dry`)

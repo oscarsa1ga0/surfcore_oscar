@@ -319,13 +319,13 @@ if (!opt['no-history']) {
     upMid: d.owner?.mid ?? '',
     duration: dur,
     tname: d.tname ?? '',
-    mode: opt['no-frames'] ? 'meta' : 'full',
+    mode: watchRecord.frames ? 'full' : 'meta',
     frames: watchRecord.frames,
     source: 'debrief',
     sheet: watchRecord.sheet,
     subs: watchRecord.subs,
   }, { role: emotionRole, file: emotionRole ? path.join(emotionRole.biliDir, 'watch-history.jsonl') : undefined })
-  if (rec.ok) console.log(`\n[观看历史] 已记一笔：${bvid}（${opt['no-frames'] ? '浅看' : '深看'}）`)
+  if (rec.ok) console.log(`\n[观看历史] 已记一笔：${bvid}（${watchRecord.frames ? '深看' : '浅看'}）`)
 }
 
 try { console.log(formatShotsStats(pruneShots())) } catch {}

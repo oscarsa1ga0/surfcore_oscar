@@ -147,7 +147,11 @@ check('savePlan 版本冲突被拒', casConflict?.code === 'VIDEO_REVISION_CONFL
 
 // ── 2. 渲染（worker + fixture 合成器）───────────────────────────────
 console.log('  开始渲染 v1 ...');
-const worker = createVideoWorker({ store, root, synth: fixtureSynth, log: (m) => console.log(`  [worker] ${m}`), maxConcurrent: 1, tickMs: 200 });
+const renderEmotions = [];
+const worker = createVideoWorker({
+  store, root, synth: fixtureSynth, log: (m) => console.log(`  [worker] ${m}`), maxConcurrent: 1, tickMs: 200,
+  recordEmotion: (event) => renderEmotions.push(event),
+});
 worker.start();
 const enqueued1 = store.enqueueTask({ projectId: project.id, revision: 1, kind: 'render' });
 const enqueued2 = store.enqueueTask({ projectId: project.id, revision: 1, kind: 'render' });
@@ -156,6 +160,8 @@ check('重复 render 幂等（同一 jobId）', enqueued1.jobId === enqueued2.jo
 await waitFor(() => store.getTask(enqueued1.jobId)?.state === 'succeeded', 240_000, 1000);
 const task1 = store.getTask(enqueued1.jobId);
 check('渲染任务成功', task1.state === 'succeeded', `attempts=${task1.attempts} stage=${task1.progress?.stage}`);
+check('渲染完成只记录一次情绪事件', renderEmotions.length === 1 && renderEmotions[0].source === 'video'
+  && renderEmotions[0].kind === 'progress' && renderEmotions[0].key === `render:${task1.jobId}:done`);
 const artifacts = store.listArtifacts(project.id, 1);
 const byKind = Object.fromEntries(artifacts.map((a) => [a.kind, a]));
 for (const kind of ['mp4', 'srt', 'cover', 'preview-grid', 'preview', 'manifest', 'qa']) {

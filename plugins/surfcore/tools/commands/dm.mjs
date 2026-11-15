@@ -11,7 +11,8 @@
 //   node dm.mjs --msg "…" --dry
 //   node dm.mjs --msg "…" --go
 //   node dm.mjs --status            （看今天额度 + 互关状态）
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -22,6 +23,7 @@ import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
@@ -106,6 +108,10 @@ async function send(toMid, text) {
     body: body.toString(),
   })
   const j = await r.json().catch(() => ({}))
+  if (r.ok && j.code === 0) {
+    const id = j.data?.msg_key_str ?? j.data?.msg_key ?? body.get('msg[dev_id]')
+    recordBiliEmotion('dmSent', `dm-sent:${toMid}:${id}`, emotionRole)
+  }
   return { http: r.status, code: j.code, message: j.message, data: j.data }
 }
 

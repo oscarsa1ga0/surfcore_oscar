@@ -6,7 +6,8 @@
 //      requests that would be sent. Uploads nothing.
 // go : uploads via x/dynamic/feed/draw/upload_bfs, then posts create/dyn with
 //      scene=2 and one pics entry. Prints the dyn_id and link.
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -14,6 +15,7 @@ import crypto from 'node:crypto'
 import { gate } from '../lib/quota-gate.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 
+const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
 const args = new Map()
 for (let i = 0; i < argv.length; i += 1) {
@@ -161,6 +163,7 @@ const out = await r.json()
 console.log(`     HTTP ${r.status}  code=${out.code} ${out.message ?? ''}`)
 if (out.code === 0) {
   const id = out.data?.dyn_id_str ?? out.data?.dyn_id
+  if (id) recordBiliEmotion('progress', `dynamic:${id}`, emotionRole)
   console.log(`\n✅ 已发布（未删除，等你确认）  dyn_id=${id}`)
   console.log(`   https://t.bilibili.com/${id}`)
   console.log(`   复核: node bili-dynamic.mjs check --id ${id}`)

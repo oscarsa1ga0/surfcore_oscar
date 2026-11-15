@@ -110,8 +110,10 @@ export function appendWatch(entry = {}, { file = WATCH_HISTORY_FILE(), role = cu
       }
     } catch {}
     fs.appendFileSync(file, `${JSON.stringify(item)}\n`)
-    if (role && file === path.join(role.biliDir, 'watch-history.jsonl') && item.bvid && item.mode !== 'meta' && item.mode !== 'memory') {
-      recordBiliEmotion('watch', `watch:${item.bvid}:${Math.floor(itemTime / DEDUPE_MS)}`, role)
+    if (role && file === path.join(role.biliDir, 'watch-history.jsonl') && item.bvid
+        && item.mode !== 'memory' && !item.dateOnly && !item.unknownDate) {
+      const kind = item.mode === 'meta' ? 'skim' : 'watch'
+      recordBiliEmotion(kind, `${kind}:${item.bvid}:${Math.floor(itemTime / DEDUPE_MS)}`, role, itemTime)
     }
     return { ok: true, item, file }
   } catch (error) {

@@ -14,12 +14,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { accountBili, biliState } from '../lib/state-paths.mjs'
+import { accountBili, biliState, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 
+const emotionRole = currentCharacter()
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const REF = 'https://www.bilibili.com/'
 const STATE = biliState('danmaku-state.json')
@@ -183,6 +185,7 @@ if (out.code !== 0) {
   process.exit(6)
 }
 const dmid = String(out.data?.dmid_str ?? out.data?.dmid ?? '')
+if (dmid) recordBiliEmotion('danmakuSent', `video-danmaku:${dmid}`, emotionRole)
 console.log(`  ✅ 已发送  dmid=${dmid}  progress=${progressMs}ms`)
 console.log(`  撤回（2 分钟内）：node bili.mjs danmaku-video --bvid ${bvid} --retract ${dmid}`)
 

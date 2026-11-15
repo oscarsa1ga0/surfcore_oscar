@@ -13,7 +13,8 @@
 // 鱼群保护（--auto 且非 --share 时默认生效）：
 //   · 鱼太多 → 拒绝发新楼层，自动改成回复一条合适的鱼（--no-fish-gather 可关）；
 //   · 发完后顺手给识别到的鱼点赞（受每日上限约束，见 lib/fish-guard.mjs）。
-import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -37,6 +38,7 @@ import { findByParent as findAttack, setStatus as setAttackStatus } from '../lib
 // ── 限额闸（B 档「限额自主」的代码强制部分，2026-10-14 主人选 B 档）────────────────
 // 语义：闸门**只管自主发言**（带 --auto，即"她自己决定说的"）；主人当场授权的发言不拦 ✓
 // 这一层存在的理由：主人明确要求"限频写进代码，不是写进你的自觉里"。
+const emotionRole = currentCharacter()
 const AUTO = process.argv.includes('--auto')
 // --once-per-person（2026-10-17 加）：同一个人 30 天内最多只回一条（只对"回复某人"生效）。
 // 2026-10-18 接线：不传旗标时按配置决定（config.listen.oncePerPerson ✓ 设置页那个开关）
@@ -408,6 +410,7 @@ console.log(`  HTTP ${res.status}`)
 console.log(`  code=${out.code} message=${out.message ?? ''}`)
 if (out.code === 0) {
   const rpid = out.data?.rpid_str ?? out.data?.rpid
+  if (rpid) recordBiliEmotion('commentSent', `comment:${rpid}`, emotionRole)
   console.log(`  ✅ 已发布，评论 rpid=${rpid}`)
   // 鱼群保护：这条如果是“聚拢”到某条鱼楼的回复，记一笔，避免下次又回同一条。
   if (fishPlan?.ok && fishPlan.gatherTarget && parent

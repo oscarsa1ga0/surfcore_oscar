@@ -123,6 +123,7 @@ test('UPOS part resumes after restart, lost final response only reconciles, then
   let publiclyVisible = false;
   let declaration = false;
   let notices = 0;
+  const emotions = [];
   const json = (data) => Response.json(data);
   const memberOK = (data) => json({ code: 0, data });
   const archive = () => ({ aid: 70001, bvid, state: -1, tid: 21, copyright: 1,
@@ -169,7 +170,8 @@ test('UPOS part resumes after restart, lost final response only reconciles, then
     throw new Error(`unexpected ${u.pathname}`);
   };
   const publisher = () => createVideoPublisher({ store, root, getConfig: () => cfg, getLogin: () => login,
-    makeAdapter: (args) => createBiliVideoAdapter({ ...args, fetchImpl }), notify: async () => { notices++; } });
+    makeAdapter: (args) => createBiliVideoAdapter({ ...args, fetchImpl }),
+    notify: async () => { notices++; }, recordEmotion: (event) => emotions.push(event) });
   try {
     const request = await requestPublication(ctx, 'go');
     const { attemptId } = request.publish;
@@ -193,6 +195,7 @@ test('UPOS part resumes after restart, lost final response only reconciles, then
     refreshPublication(ctx, attemptId);
     await publisher().tick();
     assert.equal(current().state, 'submission_unknown');
+    assert.deepEqual(emotions, []);
     assert.equal(submitted, 1);
     assert.equal(fs.existsSync(ledger), false);
 
@@ -200,6 +203,7 @@ test('UPOS part resumes after restart, lost final response only reconciles, then
     refreshPublication(ctx, attemptId);
     await publisher().tick();
     assert.equal(current().state, 'reviewing');
+    assert.deepEqual(emotions.map((event) => event.kind), ['submitted']);
     assert.equal(submitted, 1);
     assert.equal(fs.existsSync(ledger), false);
 
@@ -218,6 +222,8 @@ test('UPOS part resumes after restart, lost final response only reconciles, then
     await publisher().tick();
     assert.equal(store.hasVerifiedVideoCategory(account, 21), true);
     assert.equal(notices, 1);
+    assert.deepEqual(emotions.map((event) => event.kind), ['submitted', 'progress']);
+    assert.ok(emotions.every((event) => event.source === 'video'));
     assert.equal(fs.readFileSync(ledger, 'utf8').trim().split('\n').length, 1);
     const { ingestBiliEntries, createEmptyCard } = await import('../src/memory-card.js');
     const { recordsFromBiliEntries } = await import('../src/vector-memory.js');
