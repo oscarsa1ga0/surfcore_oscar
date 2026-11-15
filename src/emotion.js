@@ -52,6 +52,17 @@ const EFFECTS = {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 export const EVENT_RETENTION_MS = 7 * 24 * HOUR;
+const INITIALIZATION_WINDOW_MS = MINUTE;
+
+export function emotionInitialized(state) {
+  return state.initialization?.source === 'self' || Boolean(state.recent.length || Object.keys(state.seen).length);
+}
+
+export function emotionCanRecord(state, at, now) {
+  const started = state.initializationStartedAt;
+  return emotionInitialized(state)
+    || (Number.isFinite(started) && at >= started && now - started < INITIALIZATION_WINDOW_MS);
+}
 const clamp = (n) => Math.max(0, Math.min(100, n));
 const number = (n, fallback = 0) => Number.isFinite(n) ? n : fallback;
 export const isEmotionKind = (kind) => Object.hasOwn(EFFECTS, kind);

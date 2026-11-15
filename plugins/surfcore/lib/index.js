@@ -71,6 +71,7 @@ import { startDiaryScheduler } from './diary-scheduler.js';
 import { createRoleDispatch, dispatchError, QQ_DISPATCH_ROUTE, roleRef, validQqDispatchRequest } from './role-dispatch.js';
 import { diaryStatus as readDiaryStatus, listEntries as listDiaryEntries } from '../../../src/diary-store.js';
 import { createEmotionService } from './emotion.js';
+import { assessEmotion } from './emotion-assessment.js';
 import { classifyEmotionText } from '../../../src/emotion.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
@@ -4688,6 +4689,24 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname.startsWith(`${API_PREFIX}/role-dispatch`)) { await handleRoleDispatch(req, res, pathname); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
+    if (pathname === `${API_PREFIX}/emotion/initialize`) {
+      if (req.method !== 'POST') {
+        json(res, 405, { ok: false, code: 'EMOTION_METHOD', error: '自评接口只支持 POST', hint: '在情绪页点「请她自评」' });
+        return;
+      }
+      let input = null;
+      try { input = JSON.parse(await readBody(req, 1024) || '{}'); } catch {}
+      if (typeof input?.characterId !== 'string' || !Number.isSafeInteger(input.epoch)) {
+        json(res, 400, { ok: false, code: 'EMOTION_REQUEST', error: '自评请求缺少当前角色', hint: '刷新情绪页后再试' });
+        return;
+      }
+      const result = await emotion.initialize(input, (role) => assessEmotion(role, { chat: petChat, tokenBudget }));
+      const status = result.ok ? 200 : result.code === 'EMOTION_SELF_BUDGET' ? 429
+        : result.code === 'EMOTION_SELF_MODEL' || result.code === 'EMOTION_STORE' ? 503
+          : result.code === 'EMOTION_SELF_FORMAT' ? 422 : 409;
+      json(res, status, result);
+      return;
+    }
     if (pathname === `${API_PREFIX}/emotion`) {
       const body = req.method === 'GET' ? emotion.status()
         : req.method === 'POST' ? emotion.configure(JSON.parse(await readBody(req) || '{}'))

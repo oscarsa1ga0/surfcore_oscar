@@ -686,16 +686,16 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     throw lastFailure || new Error('模型调用失败');
   }
 
-  function recordUsage(usage, model) {
+  function recordUsage(usage, model, { sessionId = 'pet-chat', label = '桌宠对话' } = {}) {
     if (!usage || !tokenBudget?.recordExternalUsage) return;
     try {
       tokenBudget.recordExternalUsage({
         category: 'other',
-        sessionId: 'pet-chat',
+        sessionId,
         model,
         usage,
         at: Date.now(),
-        label: '桌宠对话',
+        label,
       });
     } catch (error) {
       pluginLog('[pet-chat] 记录 token 用量失败：', String(error?.message ?? error).slice(0, 120));

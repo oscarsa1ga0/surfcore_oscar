@@ -8478,7 +8478,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     function EmotionTab() {
       const [state, setState] = useState(null);
       const [error, setError] = useState("");
-      const [busy, setBusy] = useState(false);
+      const [busy, setBusy] = useState("");
+      const [actionError, setActionError] = useState("");
       const [workspaceDraft, setWorkspaceDraft] = useState(null);
       const [refresh, setRefresh] = useState(0);
       const character = state?.character;
@@ -8502,26 +8503,32 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         return () => { abort.abort(); clearInterval(timer); };
       }, [refresh, busy]);
 
-      useEffect(() => { setWorkspaceDraft(null); }, [character?.id, character?.epoch]);
+      useEffect(() => {
+        setWorkspaceDraft(null);
+        setActionError("");
+      }, [character?.id, character?.epoch]);
 
-      async function save(settings) {
+      async function update(settings, initialize = false) {
         if (!character || busy) return;
-        setBusy(true);
+        setBusy(initialize ? "initialize" : "save");
+        setActionError("");
         try {
-          const data = await api("/emotion", {
-            method: "POST", body: { characterId: character.id, epoch: character.epoch, settings },
+          const data = await api(initialize ? "/emotion/initialize" : "/emotion", {
+            method: "POST", body: { characterId: character.id, epoch: character.epoch, ...(initialize ? {} : { settings }) },
           });
           setState(data);
           setError("");
           setWorkspaceDraft(null);
         } catch (err) {
-          setError([err.message, err.hint].filter(Boolean).join("。"));
+          setActionError([err.message, err.hint].filter(Boolean).join("。"));
         } finally {
-          setBusy(false);
+          setBusy("");
         }
       }
 
       const settings = state?.settings;
+      const initialization = state?.initialization;
+      const ready = initialization?.status === "ready";
       const format = (value) => Math.round(Number(value) || 0);
       const value = (label, score) => h("label", {
         key: label,
@@ -8530,11 +8537,18 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const workspaceValue = workspaceDraft ?? settings?.nativeWorkspaces?.join("\n") ?? "";
 
       return h("div", { style: { display: "grid", gap: "12px" } },
-        error ? h("div", { className: "qbw-err", role: "alert" }, error) : null,
+        (actionError || error) ? h("div", { className: "qbw-err", role: "alert" }, actionError || error) : null,
         h(Section, { collapsible: false, title: character ? `${character.name}的情绪` : "情绪" },
           h(Btn, { kind: "qbw-btn2", disabled: busy, onClick: () => setRefresh((n) => n + 1) }, "刷新"),
-          !state ? h("p", null, error ? "暂时无法显示情绪。" : "正在读取情绪。") : !character ? h("p", null, "请先在「角色」页选一个角色。") : h("div", null,
+          !state ? h("p", null, error ? "暂时无法显示情绪。" : "正在读取情绪。") : !character ? h("p", null, "请先在「角色」页选一个角色。") : !ready ? h("div", null,
+            h("p", null, "由角色参考自己的人格卡和近期记忆，填写此刻的九维心境。"),
+            h(Btn, {
+              disabled: !!busy || !settings.enabled || initialization?.status === "filling",
+              onClick: () => void update(undefined, true),
+            }, busy === "initialize" || initialization?.status === "filling" ? "正在自评…" : "请她自评")) : h("div", null,
             h("p", null, settings.enabled ? `当前心情 · ${state.mood}` : "情绪功能已关闭"),
+            initialization.source === "self" ? h("p", { className: "qbw-hint" },
+              `初始心境由角色自评 · ${new Date(initialization.at).toLocaleString()}`) : null,
             Object.entries(state.dimensions).map(([key, label]) => value(label, state.drives[key])),
             value("期待", state.expectation),
             h("p", null, state.conflicts?.length ? "尚未平复的互动" : "互动档位 · 日常"),
@@ -8543,12 +8557,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         character ? h(Section, { collapsible: false, title: "情绪设置" },
           h("label", null, h("input", {
             type: "checkbox", checked: settings.enabled, disabled: busy,
-            onChange: (e) => void save({ enabled: e.target.checked }),
+            onChange: (e) => void update({ enabled: e.target.checked }),
           }), " 启用情绪"),
           h("p", null, "允许影响心情的经历来源"),
           Object.entries(state.sources).map(([key, label]) => h("label", { key, style: { display: "block" } }, h("input", {
             type: "checkbox", checked: settings.sources[key], disabled: busy || !settings.enabled,
-            onChange: (e) => void save({ sources: { [key]: e.target.checked } }),
+            onChange: (e) => void update({ sources: { [key]: e.target.checked } }),
           }), ` ${label}`)),
           h("label", { style: { display: "block", marginTop: "1em" } }, "使用这张角色卡的其他 DSH 工作区",
             h("textarea", {
@@ -8556,7 +8570,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               placeholder: "每行一个工作区的绝对路径", onChange: (e) => setWorkspaceDraft(e.target.value),
             })),
           h(Btn, { kind: "qbw-btn2", disabled: busy || workspaceDraft === null, onClick: () => {
-            void save({ nativeWorkspaces: workspaceValue.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
+            void update({ nativeWorkspaces: workspaceValue.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) });
           } }, "保存工作区")) : null,
         character ? h(Section, { collapsible: false, title: "最近的情绪变化" },
           state.recent.length ? h("ul", null, state.recent.map((item, index) => h("li", { key: `${item.at}:${index}` },

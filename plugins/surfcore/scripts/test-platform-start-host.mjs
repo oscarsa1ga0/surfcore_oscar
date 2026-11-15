@@ -42,6 +42,8 @@ const { characterPaths, readCurrentCharacter } = await import('../../../src/char
 const { dialogueEmotionScope, enqueueEmotionEvent } = await import('../../../src/emotion-events.js');
 const hostEvents = new Map();
 let emotionProvider;
+const assessments = [];
+const initialValues = { attachment: 52, curiosity: 67, reflection: 43, duty: 51, social: 47, fatigue: 24, intimacy: 38, stress: 16, joy: 63 };
 
 const routes = [];
 const effects = [];
@@ -56,6 +58,14 @@ const ctx = {
     if (name === 'connection') return { requestRejection: () => false };
     if (name === 'systemPrompt') return { context(provider) { emotionProvider = provider; return () => {}; } };
     if (name === 'workingDirectory') return { get: (session) => session.directory };
+    if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fixture', model: 'self-assessment' }) };
+    if (name === 'llm') return {
+      async *stream(request) {
+        assessments.push(request);
+        yield { type: 'text-delta', text: JSON.stringify(initialValues) };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    };
     return null;
   },
   effect(fn) { effects.push(fn); return () => {}; },
@@ -258,11 +268,23 @@ try {
   const roleDir = characterPaths('test-emotion');
   fs.mkdirSync(roleDir.dir, { recursive: true });
   fs.writeFileSync(roleDir.manifest, '{}');
+  fs.writeFileSync(roleDir.persona, '# 测试角色\n\n角色自评测试专属人格描述。');
   fs.writeFileSync(path.join(stateDir, 'characters', 'current.json'), JSON.stringify({ id: roleDir.id, name: '测试角色', epoch: 2 }));
   const role = readCurrentCharacter();
   const emotionPage = await invoke(api, 'GET', emotionUrl);
   assert.equal(emotionPage.data.character.id, role.id);
   assert.equal(Object.keys(emotionPage.data.dimensions).length, 9);
+  assert.equal(emotionPage.data.initialization.status, 'pending');
+  const selection = { characterId: role.id, epoch: role.epoch };
+  const initialized = await invoke(api, 'POST', `${emotionUrl}/initialize`, selection);
+  assert.equal(initialized.status, 200);
+  assert.equal(initialized.data.initialization.source, 'self');
+  assert.equal(Math.round(initialized.data.drives.joy), initialValues.joy);
+  assert.equal(assessments.length, 1);
+  assert.match(assessments[0].system, /角色自评测试专属人格描述/);
+  assert.doesNotMatch(assessments[0].system, /当下心境/);
+  assert.equal((await invoke(api, 'POST', `${emotionUrl}/initialize`, selection)).status, 200);
+  assert.equal(assessments.length, 1);
   assert.equal(emotionProvider.text({ agent: { session: { id: 'unrelated' } } }), '');
   const native = { session: { id: 'native-test', directory: role.dir } };
   assert.match(emotionProvider.text({ agent: native }), /【当下心境】/);

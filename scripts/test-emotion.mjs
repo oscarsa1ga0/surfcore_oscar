@@ -12,7 +12,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-emotion-'));
 after(() => fs.rmSync(tmp, { force: true, recursive: true }));
 process.env.DSH_HOME = tmp;
 const { characterPaths, readCurrentCharacter } = await import('../src/character-persona.js');
-const { dialogueEmotionScope, enqueueEmotionEvent, emotionPaths } = await import('../src/emotion-events.js');
+const { dialogueEmotionScope, enqueueEmotionEvent, emotionPaths, readCurrentEmotion } = await import('../src/emotion-events.js');
 const { createEmotionService } = await import('../plugins/surfcore/lib/emotion.js');
 const { createDiaryToolDefinitions } = await import('../plugins/surfcore/lib/diary-tools.js');
 const at = Date.now();
@@ -98,13 +98,20 @@ test('期待只跟随成功的主动互动和目标会话，目的权重有界',
   assert.ok(emotionPurposeWeight({ need: 'connect' }, waiting) < 1);
 });
 
-test('事件由宿主单写，跨重启去重并且拒绝旧角色事件', () => {
+const selfAssessment = { ...BASELINE, joy: 72, stress: 22 };
+const assessmentResponse = async () => ({ text: JSON.stringify(selfAssessment) });
+const selection = (role) => ({ characterId: role.id, epoch: role.epoch });
+
+test('事件由宿主单写，跨重启去重并且拒绝旧角色事件', async () => {
   const first = switchRole('first', 1);
   const service = createEmotionService();
-  assert.deepEqual(service.status().drives, BASELINE);
+  assert.equal(service.status().initialization.status, 'pending');
+  assert.equal(service.status().drives, undefined);
+  assert.equal(enqueueEmotionEvent({ ...owner, kind: 'praise', key: 'before-use', inbound: true }, first), false);
+  assert.equal((await service.initialize(selection(first), assessmentResponse)).initialization.source, 'self');
   assert.equal(enqueueEmotionEvent({ ...owner, kind: 'praise', key: 'qq-1', inbound: true }, first), true);
   const changed = service.snapshot(publicBili);
-  assert.ok(changed.drives.joy > BASELINE.joy);
+  assert.ok(changed.drives.joy > selfAssessment.joy);
   assert.equal(fs.readdirSync(emotionPaths(first).inbox).length, 0);
   assert.equal(enqueueEmotionEvent({ ...owner, kind: 'praise', key: 'qq-1', inbound: true }, first), true);
   const restarted = createEmotionService();
@@ -115,7 +122,8 @@ test('事件由宿主单写，跨重启去重并且拒绝旧角色事件', () =>
   const second = switchRole('second', 2);
   assert.equal(enqueueEmotionEvent({ ...owner, kind: 'blameHard', key: 'late' }, first), false);
   assert.equal(restarted.snapshot(owner, first), null);
-  assert.deepEqual(restarted.status().drives, BASELINE);
+  assert.equal(restarted.status().initialization.status, 'pending');
+  await restarted.initialize(selection(second), assessmentResponse);
   assert.equal(restarted.configure({ characterId: first.id, epoch: first.epoch }).code, 'EMOTION_ROLE_CHANGED');
   assert.equal(restarted.configure({ characterId: second.id, epoch: second.epoch, settings: { sources: { bili: false } } }).ok, true);
   assert.equal(restarted.record({ ...publicBili, kind: 'enjoyed', key: 'video' }), false);
@@ -126,6 +134,7 @@ test('事件由宿主单写，跨重启去重并且拒绝旧角色事件', () =>
 test('日记只记录写作引出的变化，原文不进入状态或上下文', async () => {
   const role = switchRole('diary-author', 3);
   const service = createEmotionService();
+  await service.initialize(selection(role), assessmentResponse);
   const tools = createDiaryToolDefinitions({ recordEmotion: service.record });
   const content = '今天重新想了想，对那件事已经释怀。日记测试独有原文。';
   const write = tools.find((tool) => tool.name === 'diary_write');
@@ -151,4 +160,66 @@ test('情绪状态损坏可见，提示词继续使用角色卡', () => {
   assert.ok(status.hint);
   assert.equal(service.context('现有角色卡', owner), '现有角色卡');
   assert.equal(fs.readFileSync(state, 'utf8'), '{not json}');
+});
+
+
+test('角色自评只执行一次，同时发生的互动在自评值上累计', async () => {
+  const role = switchRole('self-init', 5);
+  const stamp = Date.now();
+  const service = createEmotionService({ now: () => stamp });
+  assert.equal(service.snapshot(owner), null);
+  assert.equal(readCurrentEmotion(role, owner), null);
+  assert.equal(service.context('原始角色卡', owner), '原始角色卡');
+
+  let answer;
+  const request = service.initialize(selection(role), () => new Promise((resolve) => { answer = resolve; }));
+  assert.equal(service.status().initialization.status, 'filling');
+  assert.equal((await service.initialize(selection(role), assessmentResponse)).code, 'EMOTION_INITIALIZING');
+  assert.equal(service.record({ ...owner, kind: 'praise', key: 'during-assessment', inbound: true }), true);
+  assert.equal(service.snapshot(owner), null);
+  answer({ text: JSON.stringify(selfAssessment) });
+  const initialized = await request;
+  assert.equal(initialized.initialization.source, 'self');
+  assert.equal(initialized.initialization.at, stamp);
+  assert.ok(initialized.drives.joy > selfAssessment.joy);
+  assert.equal(initialized.recent.length, 1);
+  assert.ok(readCurrentEmotion(role, owner));
+  const replayed = await service.initialize(selection(role), () => assert.fail('同一个角色只自评一次'));
+  assert.equal(replayed.drives.joy, initialized.drives.joy);
+});
+
+test('格式有误可重试，切换角色后丢弃迟到的自评结果', async () => {
+  const role = switchRole('invalid-assessment', 6);
+  const service = createEmotionService();
+  const failed = await service.initialize(selection(role), async () => ({ text: '{"joy": 999}' }));
+  assert.equal(failed.code, 'EMOTION_SELF_FORMAT');
+  assert.ok(failed.hint);
+  assert.equal(service.status().initialization.status, 'pending');
+  assert.equal(service.snapshot(owner), null);
+
+  let answer;
+  const request = service.initialize(selection(role), () => new Promise((resolve) => { answer = resolve; }));
+  const another = switchRole('other-role', 7);
+  answer(await assessmentResponse());
+  assert.equal((await request).code, 'EMOTION_ROLE_CHANGED');
+  assert.equal(service.status().character.id, another.id);
+  assert.equal(service.status().initialization.status, 'pending');
+  const initialized = await service.initialize(selection(another), async () => ({ text: '```json\n' + JSON.stringify(selfAssessment) + '\n```' }));
+  assert.equal(initialized.initialization.status, 'ready');
+});
+
+test('已积累情绪的旧角色保留原状态', async () => {
+  const role = switchRole('existing-emotion', 8);
+  const state = createEmotionState();
+  event(state, 'praise', owner, 'legacy-praise', state.at);
+  const { state: file } = emotionPaths(role);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(state));
+  const service = createEmotionService();
+  const before = service.status();
+  assert.equal(before.initialization.source, 'existing');
+  const after = await service.initialize(selection(role), () => assert.fail('已有情绪不能重复初始化'));
+  assert.equal(after.initialization.source, 'existing');
+  assert.equal(after.recent.length, before.recent.length);
+  assert.ok(after.drives.joy > BASELINE.joy);
 });

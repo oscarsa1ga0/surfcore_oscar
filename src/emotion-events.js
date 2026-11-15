@@ -4,7 +4,8 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { characterPaths, readCurrentCharacter } from './character-persona.js';
 import {
-  createEmotionState, EMOTION_SOURCES, emotionSnapshot, EVENT_RETENTION_MS, isEmotionKind, normalizeEmotionSettings,
+  createEmotionState, emotionCanRecord, emotionInitialized, EMOTION_SOURCES, emotionSnapshot,
+  EVENT_RETENTION_MS, isEmotionKind, normalizeEmotionSettings,
 } from './emotion.js';
 
 const digest = (text) => createHash('sha256').update(String(text)).digest('hex');
@@ -42,7 +43,7 @@ export function readCurrentEmotion(role, scope = {}) {
   try {
     const state = readEmotionState(role);
     const config = normalizeEmotionSettings(state.settings);
-    return config.enabled ? emotionSnapshot(state, scope) : null;
+    return config.enabled && emotionInitialized(state) ? emotionSnapshot(state, scope) : null;
   } catch { return null; }
 }
 
@@ -64,24 +65,30 @@ export function makeEmotionEvent(event, role = readCurrentCharacter(), now = Dat
   };
 }
 
+export function spoolEmotionEvent(role, record) {
+  const { inbox } = emotionPaths(role);
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  const tmp = path.join(inbox, `.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
+    fs.renameSync(tmp, path.join(inbox, `${record.id}.json`));
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
 /** Uses the role captured when the experience began, even when a background job finishes late. */
 export function enqueueEmotionEvent(event, role = readCurrentCharacter(), onError = () => {}) {
   try {
-    const record = makeEmotionEvent(event, role);
+    const now = Date.now();
+    const record = makeEmotionEvent(event, role, now);
     if (!record) return false;
     const current = readCurrentCharacter();
     if (current?.id !== role.id || current.epoch !== role.epoch) return false;
-    const { inbox } = emotionPaths(role);
-    const config = normalizeEmotionSettings(readEmotionState(role).settings);
-    if (!config.enabled || !config.sources[record.source]) return false;
-    fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
-    const tmp = path.join(inbox, `.${randomUUID()}.tmp`);
-    try {
-      fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
-      fs.renameSync(tmp, path.join(inbox, `${record.id}.json`));
-    } finally {
-      try { fs.unlinkSync(tmp); } catch {}
-    }
+    const state = readEmotionState(role, now);
+    const config = normalizeEmotionSettings(state.settings);
+    if (!config.enabled || !config.sources[record.source] || !emotionCanRecord(state, record.at, now)) return false;
+    spoolEmotionEvent(role, record);
     return true;
   } catch (error) {
     onError(error);
