@@ -1,5 +1,5 @@
 /**
- * 自主生物钟（2026-10-18 加，主人要求）——
+ * 自主生物钟
  *
  * 为什么要有它：以前"醒来"要靠**有人在对话框里挂 clock** ✗ —— 那不是"她活在过日子"，
  * 是"你戳一下她动一下" ✗。主人明确要求：**计划要她自己执行，改配置要立刻生效** ✓。
@@ -134,13 +134,8 @@ function alignmentBlockForBili() {
 }
 
 /**
- * 跨平台自我锚点（2026-10-23 用户要求）：B站 这边的她也要认得出**自己的 QQ 资料卡**。
+ * 跨平台自我锚点：B站 这边的她也要认得出**自己的 QQ 资料卡**。
  *
- * 以前 B站 侧只知道自己叫「小咪」、B站账号是谁，完全不知道 QQ 上的自己长什么样；
- * 于是别人把她的 QQ 主页截图甩过来，她只会当陌生人。锚点来源：
- *   · QQ 昵称 / QQ 号 ← 桥接登录时落的 `state/self-identity.json`（B站 进程拿不到网关）；
- *   · B站 昵称 / UID / 人格名 ← `bili.config.json` 的 self / persona。
- * 隐私：QQ 号在这里**打码**（328****288），够认人，又不至于被她写进公开评论。
  */
 function selfIdentityBlockForBili() {
   const qqSelf = readQqSelfIdentity(QQ_STATE_DIR)
@@ -448,7 +443,7 @@ function diaryPushLines() {
        "   （2026-10-18 主人定：推**日记内容**，不只是流水账 ✓ 它读设置页「消息推送」的配置）"]
 }
 
-function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeShare = [], videoSummary = [] } = {}) {
+function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], videoSummary = [] } = {}) {
   const L = limitsNow()
   const B = config()
   const K = kindsNow(B)
@@ -482,6 +477,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     })(),
     ...silenceLines(),
     '按 AGENTS.md 的「看的那晚」流程走一遍（不要等我说话，直接做）：',
+    '⚠️ 生成这轮的 flow/plan 时，把流程里所有要做/要判断的事都写进 flow，别只列主步骤。至少包括：deps、两本日记、私信、评论/收件箱、fans、feed、深读≥2、主动评论≥1、点赞判断、投币判断、收藏判断、关注判断、动态、弹幕判断、自由发布判断、写日记、notify。',
     ...(SILENT
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止关注/取关、视频点赞/投币、评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 follow / like-video / coin / comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
       : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
@@ -503,15 +499,14 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
     '        写一段日记或扫一眼消息就按“轻醒”收工，保住这一趟的质量 ✓',
     '4) **至少挑 2 条深读**（完整 `debrief`，含抽帧）；其余候选你自己判断，想细读就细读，不想就跳过',
-    '4.1) 关注（想追更就关注）：`follow --mid <mid> --status` → `--dry` → `--go`；取关加 `--unfollow`。',
+    '4.1) 判断是否有要关注/取关的UP（想追更就关注）：`follow --mid <mid> --status` → `--dry` → `--go`；取关加 `--unfollow`。',
     '     ⚠️ 不能关注/取关自己，**不能取关主人**；关注/取关共用最小间隔和日上限；发完 notify 报备。',
     '     ⚠️ 刚关注的 UP 的新视频会进入「关注动态优先」，别为了填 feed 乱关注。',
-    '4.2) 点赞/投币（看完顺手做，不设下限）：',
+    '4.2) 判断是否有要点赞/投币的视频（看完顺手做，不设下限）：',
     '     · 看到中途有「想接着看完」的冲动就点赞；看完还在回味、说得出哪里好再投币。没感觉就不动，不用为了凑数。',
     `     · 今天视频点赞 ${actionCountToday('like-video')}/${capText(B.likeVideo?.dailyMax ?? 10)} · 投币 ${actionCountToday('coin')}/${capText(B.coin?.dailyMax ?? 5)} · 关注 ${actionCountToday('follow')}/${capText(B.follow?.dailyMax ?? 3)} · 收藏 ${favoritesToday()}/3；有感觉就动，不设最低数。`,
     '     · 视频点赞：`like-video --bvid BV1,BV2 --dry` → `--go`（每天最多 10 个 · 每次最多 5 个）',
-    '     · 投币：`coin --bvid <BV> --reason "为什么特别好" --dry` → `--go`（先看硬币余额；每天最多 5 枚；单视频 1 枚需评分 ≥16，2 枚需 ≥18；没评分先 score）',
-    '     ⚠️ 投币只对**特别好的**视频；理由说不清就别投。',
+    '     · 投币：`coin --bvid <BV> --reason "为什么特别好" --dry` → `--go`（先看硬币余额；每天最多 5 枚；单视频 1 枚需评分 ≥16，2 枚需 ≥18；投币理由说不清就别投；没评分先 score）',
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
     // 2026-11-13（主人定）：收藏夹是可选工具，不是任务；建夹/改名/放哪儿都由她自己决定。
     '4.5) **收藏是留给你自己的**：深读的那几条里，只有你确实想留着才收。',
@@ -529,6 +524,11 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     （设置页「鱼群保护 · 运行状态」能看到今天赞了几条、上次失败在哪个 code）',
     // 2026-10-23（主人定）：**每次醒来至少发一条主动评论**，鱼群泛滥时强制聚拢。
     //   以前 4.7 是"有话说就说"；现在改成硬规则，避免她看到鱼多就整轮不说话。
+    // 2026-11-15（主人定）：对外发任何东西之前，先跑 §四.10 全条目检查器，红了改到绿再发。
+    '4.65) ⭐⭐ **发之前先自查措辞（每次对外发布都要做，不是想起来才做）**：',
+    '     在 `--go` 之前跑一遍：`node "/Users/wangyiyi/.dsh/surfcore/state/bili-agents/style-check.mjs" "<要发的文字>"`',
+    '     它按人设卡 §四.10「少一点 AI 味」逐条检查：我认、破折号——、不是…而是…、直角引号/花引号、开头先肯定、先复述对方再肯定、首先其次、总结腔、模板腔、作为一个 AI。',
+    '     ⚠️ 红了就改到绿再发；不要靠记性，靠这一步 ✗',
     '4.7) ⭐ **每次醒来至少发一条主动评论（2026-10-23 主人定的硬规则）**：',
     '     看完想吐槽/想夸/想接梗/想补充 → 直接发一条普通评论（不 @ 我，是你自己在说话）：',
     '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
@@ -573,9 +573,9 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     `attack add --oid … --root … --parent … --who "对方昵称" --text "他的原话" [--suggest "你想回的"]`',
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
-    ...(insertBeforeShare.length ? ['', ...insertBeforeShare, ''] : []),
-    '4.10) 自由发布（想发就发，不设下限）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
-    '     判据：刷到、想到或聊到什么让你有话说，就发；没有就跳过，不用找内容硬凑。',
+    ...(dynLines.length ? ['', ...dynLines, ''] : []),
+    '4.10) 判断是否自由发布（想发就发，不设下限）：**内容不限，不一定是 B 站视频，也不一定非得是逛的时候**。',
+    '     判据：刷到、想到或聊到什么让你有话说，就发；没有就跳过。',
     '     可以是：刚刷到的视频/图片；一句突然想到的话；**B站侧两本日记（whale-diary / whale-diary-private）或你晚上用 diary_write 写的那本里，你愿意公开的一段**（先用 diary_list / diary_read 挑）；和主人/群友聊完后的心得感悟；一个站内链接/专栏。',
     '     形式：文字 / 一张图 / 任意视频卡片 / 链接；长文用 article（先 --draft 再 --go）。',
     '       `free-post --text "…" [--image <图>] [--bvid <任意BV>] [--link <站内URL>] --dry` → `--go`',
@@ -584,7 +584,6 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     '     封面：有合适的本地图就传 `--cover`；没有现成图时，也可以自己用本机 Python/Pillow 生成一张 1146×717 的简单图（色块+标题+小鱼），存本地再 `--cover`；不想画就不传，别拿别人视频的封面。Pillow 是 bash 里的脚本，不是内置生图工具。',
     '     ⚠️ 两种日记都可以用：B站侧的 whale-diary / whale-diary-private，和你晚上用 diary_write 写的那本；公开前自己挑适合公开的段落。',
     '     ⚠️ 这是**公开发布**，自己判断什么适合公开；`diary_share` 只用于给主人看，不是公开发布授权。',
-    '     ⚠️ 想发就发，不想发就不发；可以很多天一条都不发。有想说的就发，不用为了凑数发，也不用刻意忍住。',
     `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
     ...(B.video?.enabled && B.video?.offerOnWake ? [
       '     你也可以做本地视频。只有想创作时才打开 `video-project list --json`，先看看上次有无在做的项目。准备题材时可以参考 feed 和 debrief；观看缓存仅用于参考，剪辑只用素材库登记的 assetId。',
@@ -595,7 +594,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, insertBeforeSha
     ...(B.video?.enabled ? [
       `     当前原创视频投稿模式：${B.video.publishMode ?? 'draft'}。只在你想发布自己审片通过的版本时，用 video-upload <项目> --revision N --dry 核对。--draft 存本地，--go 按权限送审。status 查进度；遇到回执不明只刷新对账，别重投。`,
     ] : []),
-    '4.11) 视频弹幕（可选，不是任务）：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
+    '4.11) 判断是否发视频弹幕：看完一条视频有想吐槽/补充的，可以 `danmaku-video --bvid <BV> --msg "…" --at <秒> --dry` → `--go`',
     '     ⚠️ 一条视频别刷；和评论一样过身份闸；本地有 30 秒间隔/日上限；不是每条视频都要发。',
     '4.12) 新粉丝（只读，不是任务）：`fans --new` 看上次之后的新粉丝；`fans` 看当前粉丝。粉丝数会写进 B站记忆简报；新粉丝不私信、不公开点名、不强行互动。',
     '5) 按「标尺」打分排序，只对第一名考虑分享：',
@@ -1631,7 +1630,7 @@ export function startScheduler(ctx, opts) {
               ? `今天「${k.n} 类 · ${k.label}」那条还没发（本该 ${String(k.slot).padStart(2, '0')}:00）。`
               : `今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了，现在补上。`,
             '',
-            '先按上面的完整流程逛（私信 / 评论 / 收件箱 / feed / debrief / 点赞；收藏可选，想收才收）；逛到这里再发这条，不要提前发，也不要漏：',
+            '先按上面的完整流程逛；逛到这里再发这条，不要提前发，也不要漏：',
             ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
             ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
             kind === 'best'
@@ -1651,7 +1650,7 @@ export function startScheduler(ctx, opts) {
             '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
             '⚠️ 发完再继续第 4.10/4.11/5/7.5/7.8/8/9 步；如果 daily 因间隔被拒，先记下原因，别硬重试。',
           ]
-          const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, insertBeforeShare: dynLines })
+          const text = wakePrompt(st, TOOL_CMD, { skipDailyDynamics: true, dynLines: dynLines })
           await submit({
             sessionId,
             mode: 'queue',

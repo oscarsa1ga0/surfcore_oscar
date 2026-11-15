@@ -10,7 +10,7 @@ import path from 'node:path';
 import { requireVideoRoot, ensureVideoDirs } from '../../lib/video/paths.js';
 import { openVideoStore } from '../../lib/video/project-store.js';
 import { validatePlan } from '../../lib/video/plan.js';
-import { registerGeneratedCard, registerImageAsset, validatePlanAssets } from '../../lib/video/assets.js';
+import { registerAuthorizedAsset, registerGeneratedCard, registerImageAsset, validatePlanAssets } from '../../lib/video/assets.js';
 import { revisePlan, compareVersions } from '../../lib/video/review.js';
 import { readBiliConfig } from '../../lib/store.js';
 
@@ -21,6 +21,7 @@ const USAGE = `用法: node video-project.mjs <命令> [参数]
   assets <id> [list]                              已登记素材
   assets <id> register-card [--kind gradient|color|geometry] [--color 2b3a55] [--color2 182038] [--accent ffffff] [--text ...]
   assets <id> register-image <文件> [--kind avatar|image] [--name ...]   登记头像/插画
+  assets <id> register-clip <文件> [--name ...] [--note 原创说明]   登记视频片段（可做动态画面）
   render <id> --revision <n> [--wait] [--timeout <ms>]   提交渲染任务（--wait 等完成）
   status <id> [--job <jobId>] [--refresh]         项目/任务/工件状态
   preview <id> --revision <n>                     预览产物（九宫格/镜头帧/字幕/旁白路径）
@@ -113,7 +114,7 @@ async function main() {
   };
 
   const writes = ['create', 'save', 'revise', 'render', 'review'].includes(cmd)
-    || (cmd === 'assets' && ['register-card', 'register-image'].includes(args[1]));
+    || (cmd === 'assets' && ['register-card', 'register-image', 'register-clip'].includes(args[1]));
   if (writes && videoCfg.enabled !== true) {
     return fail({ ok: false, code: 'VIDEO_DISABLED', error: '视频创作已关闭', hint: '在设置 → SurfCore → 视频创作启用并保存' });
   }
@@ -221,6 +222,20 @@ async function main() {
         });
         if (asJson) return ok({ ok: true, character, ...result });
         console.log(`已登记素材 ${result.asset.id}（${result.duplicate ? '内容已存在，复用' : '新导入'}）${result.asset.kind} ${result.asset.name}`);
+        return process.exit(0);
+      }
+      if (sub === 'register-clip') {
+        const file = args[2];
+        if (!file) return fail({ ok: false, code: 'VIDEO_USAGE', error: '用法: assets <id> register-clip <文件> [--name ...] [--note 原创说明]' });
+        const note = argValue(args, '--note') ?? '角色自己用代码生成的画面（确定性随机，可复现）';
+        const result = registerAuthorizedAsset(store, root, file, {
+          kind: 'clip',
+          name: argValue(args, '--name') ?? '',
+          authorization: { mode: 'original', note, publishAllowed: true },
+          checkBudget: () => {},
+        });
+        if (asJson) return ok({ ok: true, character, asset: result });
+        console.log(`已登记视频素材 ${result.id}（${result.kind}）${result.name} · ${result.authorization?.media?.durationMs ?? '?'}ms`);
         return process.exit(0);
       }
       return fail({ ok: false, code: 'VIDEO_USAGE', error: `未知素材子命令：${sub}` });

@@ -78,6 +78,7 @@ video-project review <id> --revision <n> --decision keep|revise|shelve [--reason
 ## 存储与执行
 
 - 数据：`<DSH_HOME>/surfcore/characters/<id>/bili/video/projects.sqlite`（项目/版本/工件/素材/任务/投稿）；媒体在 `assets/<sha256>/` 与 `projects/<pid>/revisions/<n>/`。
+- **创作过程记忆**：B站记忆刷新时从 SQLite 抽取最近项目的标题/状态/版本/镜头数/构思/审片意见，写成 `video/creation-memory.json`，并作为【视频创作过程（简略）】进入 `bili-memory-brief.md`，随 B站记忆注入 QQ。完整分镜、素材和版本仍只在 SQLite。
 - 版本 CAS：编辑产生新版本，旧版可预览；任务幂等 + 租约 + fencing，重启 `recoverOnStart()` 接管 running 任务。
 - 执行器：`lib/video/worker.js`，由 `lib/index.js` 随插件生命周期启停（配置开关、角色切换、dispose 三处挂钩）；全机并发默认 1。
 - 渲染链：`voice.js`（音色解析与桥接同源，独立 WAV 缓存，RIFF/时长校验）→ `py/caption-render.py`（Pillow 中文字幕贴图/标题卡/封面字）→ `render.js`（按镜头 FFmpeg 分段、字幕 overlay、合成 H.264+AAC yuv420p faststart、ffprobe 质检）→ 质检通过后原子落盘。

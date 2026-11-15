@@ -13,10 +13,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fetchArticleContent, fetchFanStats, fetchMyArticles, fetchMyDynamics, fetchVideoInfo, resolveBiliPaths, sleep } from './bili-api.js';
 import { characterPersonaMeta, readCurrentCharacter } from './character-persona.js';
 
 const BV_RE = /\bBV[0-9A-Za-z]{10}\b/;
+const require = createRequire(import.meta.url);
 
 // 政治 / 娱乐圈：分享与记忆里一律避开（用户明确要求）。
 const BLOCKED_RE = /政治|时政|新闻联播|两会|人大|政协|习近平|总书记|主席|总统|首相|政府|国务院|外交部|国防|军事|战争|俄乌|乌克兰|俄罗斯|巴以|以色列|巴勒斯坦|加沙|特朗普|拜登|普京|泽连斯基|选举|大选|民主党|共和党|台湾|台独|南海|香港|新疆|西藏|六四|文革|法轮|股市|A股|美股|基金|楼市|房价|经济|资本|制裁|联合国|外交|明星|娱乐圈|综艺|八卦|绯闻|恋情|分手|离婚|结婚|塌房|饭圈|粉丝|偶像|爱豆|演唱会|追星|演员|歌手|选秀|热巴|杨幂|肖战|王一博|易烊千玺/;
@@ -739,6 +741,58 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     return doc.length > 28000 ? `${doc.slice(0, 28000)}\n\n（后略：记忆过长，完整内容见 state/bili-memory.json）` : doc;
   }
 
+  /**
+   * 视频创作过程记忆：从 sqlite 抽“标题/状态/构思/审片意见”的简略版，
+   * 写单文件 video/creation-memory.json，供 B站 brief 注入 QQ。
+   * 完整分镜/素材/版本仍在 projects.sqlite，不搬全文。
+   */
+  function readVideoCreationMemory() {
+    const file = path.join(stateDir, 'video', 'projects.sqlite');
+    const outFile = path.join(stateDir, 'video', 'creation-memory.json');
+    if (!fs.existsSync(file)) return { ok: false, projects: [] };
+    let db = null;
+    try {
+      const { DatabaseSync } = require('node:sqlite');
+      db = new DatabaseSync(file);
+      const rows = db.prepare(`
+        SELECT p.id, p.title, p.editState, p.revision, p.updatedAt,
+               r.plan, r.reviewDecision,
+               (SELECT reason FROM video_review_notes n
+                 WHERE n.projectId = p.id AND n.revision = p.revision) AS reviewReason
+        FROM projects p
+        LEFT JOIN revisions r ON r.projectId = p.id AND r.revision = p.revision
+        ORDER BY p.updatedAt DESC LIMIT 5
+      `).all();
+      const projects = rows.map((row) => {
+        let plan = {};
+        try { plan = JSON.parse(row.plan || '{}'); } catch {}
+        const scenes = Array.isArray(plan.scenes) ? plan.scenes : [];
+        const lines = scenes.flatMap((scene) => Array.isArray(scene?.lines) ? scene.lines : [])
+          .map((line) => String(line?.speech || line?.caption || '').trim())
+          .filter(Boolean);
+        const description = String(plan?.submission?.description || '').trim();
+        return {
+          id: String(row.id),
+          title: short(plan.title || row.title || '未命名视频', 80),
+          state: String(row.editState || 'idea'),
+          revision: Number(row.revision) || 0,
+          scenes: scenes.length,
+          synopsis: short(description || lines.slice(0, 3).join('；'), 180),
+          reviewDecision: String(row.reviewDecision || ''),
+          reviewReason: short(row.reviewReason || '', 120),
+          updatedAt: Number(row.updatedAt) ? new Date(Number(row.updatedAt)).toISOString() : '',
+        };
+      });
+      atomicWriteText(outFile, `${JSON.stringify({ generatedAt: new Date().toISOString(), projects }, null, 2)}\n`);
+      return { ok: true, projects };
+    } catch (error) {
+      log(`[B站记忆] 视频创作记忆读取失败：${String(error?.message ?? error).slice(0, 160)}`);
+      return { ok: false, projects: [] };
+    } finally {
+      try { db?.close?.(); } catch {}
+    }
+  }
+
   function buildBrief(entries, meta = {}) {
     const config = cfg();
     const self = config?.self ?? {};
@@ -759,6 +813,16 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     const fans = meta.fans;
     if (fans?.ok) {
       lines.push(`我的 B站：关注 ${Number(fans.following) || 0} 个 · 粉丝 ${Number(fans.follower) || 0} 个。`);
+    }
+    const creations = Array.isArray(meta.creations) ? meta.creations : [];
+    if (creations.length) {
+      lines.push('');
+      lines.push('【视频创作过程（简略；完整分镜/素材仍在 projects.sqlite）】');
+      for (const p of creations.slice(0, 4)) {
+        lines.push(`- ${p.title}｜${p.state}｜v${p.revision}｜${p.scenes} 个镜头`);
+        if (p.synopsis) lines.push(`  构思：${p.synopsis}`);
+        if (p.reviewDecision) lines.push(`  最近审片：${p.reviewDecision}${p.reviewReason ? ` · ${p.reviewReason}` : ''}`);
+      }
     }
     lines.push('');
     const sorted = entries
@@ -976,8 +1040,9 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
           if (isBlocked(`${e.title} ${e.text} ${e.quote}`)) e.shareable = false;
         }
         const fans = await fetchFanStats({ home });
+        const creationMemory = readVideoCreationMemory();
         const doc = buildDoc(cards);
-        const brief = buildBrief(cards, { fans });
+        const brief = buildBrief(cards, { fans, creations: creationMemory.projects });
         const index = buildIndex(cards);
         atomicWriteText(paths.doc, doc + '\n');
         atomicWriteText(paths.brief, brief + '\n');

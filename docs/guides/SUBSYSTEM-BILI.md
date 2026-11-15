@@ -540,6 +540,7 @@
 | `bili-memory.md` | 长记忆（我是谁 / 时间线 ≤140 条 / 我的公开反思 ≤30 条；≤28000 字截断） | 人、排查（`:485-542`） |
 | `bili-memory-brief.md` | **每次提示词注入**的短记忆（≤2700 字）：身份锚点 + 口味 + 最近 10 条 | 桥接注入、记忆卡、设置页（`:544-590`、`lib/memory.js:38`） |
 | `bili-memory.json` | 检索索引（≤260 条）+ **分享素材池** | `recallBlock` / `pickShareCard`（`:592-614`、`:727-808`） |
+| `bili/video/creation-memory.json` | B站记忆刷新时从视频项目 SQLite 生成的简略创作过程摘要（标题/状态/镜头数/构思/审片），随 brief 注入 QQ |
 | `bili-video-titles.json` | BV → 标题/UP/封面/时长/统计（每轮最多补 40 条，失败记 `failedAt` 6 小时内不重试） | 分享池与记忆（`:193-255`） |
 | `bili-share-history.json` | 分享过哪些 id + 每个 slot 上次时间（30 天清理） | 分享去重（`:780-829`） |
 
