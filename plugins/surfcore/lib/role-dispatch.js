@@ -1,3 +1,4 @@
+import { validEmotionScope } from '../../../src/emotion-events.js';
 /** One DSH model turn at a time for SurfCore's current role. Only this host submits. */
 const PRIORITY = { manual: 0, interaction: 1, scheduled: 2 };
 const SOURCES = new Set(['qq', 'bili', 'diary']);
@@ -41,6 +42,8 @@ export function validQqDispatchRequest(request) {
   const prompt = request.prompt;
   return request.action === 'submit' && typeof prompt?.sessionId === 'string'
     && /^[A-Za-z0-9._-]{1,200}$/.test(prompt.sessionId)
+    && (prompt.emotion === undefined || (validEmotionScope(prompt.emotion)
+      && ['qq-private', 'qq-group'].includes(prompt.emotion.source)))
     && Array.isArray(prompt.content) && prompt.content.length > 0
     && prompt.content.every((part) => part?.type === 'text' && typeof part.text === 'string'
       || part?.type === 'image' && typeof part.data === 'string'
@@ -48,7 +51,7 @@ export function validQqDispatchRequest(request) {
 }
 
 export function createRoleDispatch({
-  controller, getRole, load, save, startupSessions = async () => [], inFlight = new Set(),
+  controller, getRole, load, save, preparePrompt = (_job, args) => args, startupSessions = async () => [], inFlight = new Set(),
   now = Date.now, pollMs = 1500, log = () => {},
 }) {
   const jobs = new Map();
@@ -180,7 +183,8 @@ export function createRoleDispatch({
     Object.assign(job, record, { stage: 'submitting' });
     inFlight.add(job.id);
     try {
-      const result = await controller.prompt({ ...args, requestId: job.id, mode: 'queue' }, signal ?? new AbortController().signal);
+      const prepared = preparePrompt(job, args);
+      const result = await controller.prompt({ ...prepared, requestId: job.id, mode: 'queue' }, signal ?? new AbortController().signal);
       job.stage = receipt(result) ? 'running' : 'checking';
       if (job.stage === 'running' && lastError?.source === job.source) lastError = null;
       return result;
@@ -240,8 +244,8 @@ export function createRoleDispatch({
         kick();
         return { state: 'released' };
       }
-      const { sessionId, content } = request.prompt;
-      const value = await submit(job, { sessionId, content });
+      const { sessionId, content, emotion } = request.prompt;
+      const value = await submit(job, { sessionId, content, ...(emotion ? { emotion } : {}) });
       const result = value?.result ? value : { result: receipt(value)
         ? { ok: true, value }
         : { ok: false, error: { code: 'ROLE_DISPATCH_REJECTED', message: 'DSH 拒绝接收 QQ 回合' } } };

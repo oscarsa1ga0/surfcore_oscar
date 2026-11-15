@@ -47,10 +47,17 @@ async function writeMemory(root, row) {
 export function createVideoPublisher({
   store, root, getConfig, isCurrent = () => true,
   getLogin = readFishLogin, makeAdapter = createBiliVideoAdapter,
-  notify = notifyOwner, memory = writeMemory,
+  notify = notifyOwner, memory = writeMemory, recordEmotion = () => {},
 }) {
   function transition(row, patch, meta) {
-    return store.updatePublish(row.attemptId, patch, { expected: row.state, meta });
+    const updated = store.updatePublish(row.attemptId, patch, { expected: row.state, meta });
+    if (updated?.state !== row.state && ['published', 'rejected'].includes(updated?.state)) {
+      recordEmotion({
+        source: 'video', kind: updated.state === 'published' ? 'progress' : 'setback',
+        key: `publish:${row.attemptId}:${updated.state}`,
+      });
+    }
+    return updated;
   }
 
   function authorize(row) {

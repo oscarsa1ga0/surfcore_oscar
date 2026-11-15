@@ -19,7 +19,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { classifyEmotionText } from '../../../src/emotion.js'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
 import { pullFeed, makeHeaders } from '../tools/lib/msgfeed.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
@@ -677,6 +678,7 @@ export function startScheduler(ctx, opts) {
     automatic = true,
     dispatch = null,
     tokenBudget = null, // 每日 token 额度服务（插件注入；单测可不传）
+    recordEmotion = () => {},
     chat = null,        // 桌宠/小型摘要用的模型调用（可选）
     log = () => {},
   } = opts
@@ -1233,6 +1235,16 @@ export function startScheduler(ctx, opts) {
           const items = (any ? latest.items : (latest.items ?? [{ ts: latest.ts, text: latest.text }])
             .map((item) => ({ ...item, mid: latest.mid, name: latest.name }))).slice(0, 5);
           if (!items.length) return;
+          for (const item of items) {
+            const kind = classifyEmotionText(item.text);
+            const timestamp = Number(item.ts);
+            if (item.mid && timestamp > 0) {
+              recordEmotion({
+                source: 'bili', kind: kind && kind !== 'chat' ? kind : 'response',
+                key: `dm:${item.mid}:${timestamp}`,
+              });
+            }
+          }
           const block = items.map((it) => {
             const mine = String(it.mid) === ownerMid;
             const who = `${it.name || "mid " + it.mid}（${it.mid}）`;
@@ -1301,6 +1313,10 @@ export function startScheduler(ctx, opts) {
       const fresh = items.filter((x) => Number(x.t) > since && (!listenerCfg.onlyOwner || String(x.mid) === String(cfg.owner?.mid ?? '')))
       if (!fresh.length) { listening = false; return }
       fresh.sort((a, b) => a.t - b.t)
+      for (const item of fresh.slice(-20)) {
+        const id = item.sourceId || item.id
+        if (id && id !== 'undefined') recordEmotion({ source: 'bili', kind: 'response', key: `inbox:${id}` })
+      }
       const who = fresh.map((x) => `${x.who}（${x.kind === 'at' ? '@' : '回复'}）`).join('、')
       const limits = limitsNow()
       await ensureSession()
@@ -1427,6 +1443,9 @@ export function startScheduler(ctx, opts) {
         ;(async () => {
           try {
             await ensureSession()
+            if (lines) recordEmotion({
+              source: 'bili', kind: 'response', key: `live:${createHash('sha256').update(lines).digest('hex')}`,
+            })
             await promptBili({
               requestId: `bili-whale-live-${Date.now()}`,
               sessionId,

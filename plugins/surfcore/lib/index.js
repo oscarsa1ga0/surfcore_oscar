@@ -70,6 +70,9 @@ import { createDiaryToolDefinitions } from './diary-tools.js';
 import { startDiaryScheduler } from './diary-scheduler.js';
 import { createRoleDispatch, dispatchError, QQ_DISPATCH_ROUTE, roleRef, validQqDispatchRequest } from './role-dispatch.js';
 import { diaryStatus as readDiaryStatus, listEntries as listDiaryEntries } from '../../../src/diary-store.js';
+import { createEmotionService } from './emotion.js';
+import { assessEmotion } from './emotion-assessment.js';
+import { classifyEmotionText } from '../../../src/emotion.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
@@ -204,7 +207,20 @@ export function apply(ctx) {
   const dispatchJournal = path.join(STATE_DIR, 'role-dispatch.json');
   const dispatchFlights = globalThis[DISPATCH_FLIGHTS] ??= new Set();
   const currentDispatchRole = () => roleRef(readCurrentCharacter());
+  const emotion = createEmotionService({ log: pluginLog });
+  let hasEmotionContext = false;
   const roleDispatch = createRoleDispatch({
+    preparePrompt(job, { emotion: audience, ...args }) {
+      if (job.source === 'bili' && readUnified().config.persona?.injectInBili === false) return args;
+      const role = readCurrentCharacter();
+      if (role?.id !== job.role.characterId || role?.epoch !== job.role.epoch) return args;
+      const scope = audience ?? { source: job.source === 'qq' ? 'qq-group' : job.source };
+      emotion.bind(args.sessionId, scope, role);
+      if (hasEmotionContext) return args;
+      const block = emotion.context('', scope, role);
+      if (!block) return args;
+      return { ...args, content: [...args.content, { type: 'text', text: block }] };
+    },
     controller: ctx.sessionController,
     getRole: currentDispatchRole,
     load: () => {
@@ -329,8 +345,8 @@ export function apply(ctx) {
   });
   billing.start();
 
-  const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
-  const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
+  const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget, emotion });
+  const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge, emotion });
   const petApi = createPetApiService({
     chat: petChat,
     purpose: petPurpose,
@@ -455,6 +471,7 @@ export function apply(ctx) {
   }
   function createBiliScheduler(sessionId, automatic = true) {
     const role = currentDispatchRole();
+    if (readUnified().config.persona?.injectInBili !== false) emotion.bind(sessionId, { source: 'bili' });
     const biliWorkspace = biliWorkspacePath(DSH_HOME);
     return startScheduler(ctx, {
       dshHome: DSH_HOME,
@@ -476,6 +493,7 @@ export function apply(ctx) {
         });
       },
       chat: petChat,
+      recordEmotion: (event) => emotion.record(event, { id: role.characterId, epoch: role.epoch }),
       log: (message) => pluginLog(message),
     });
   }
@@ -549,6 +567,7 @@ export function apply(ctx) {
     try {
       const paths = characterPaths(current.id);
       const sessionId = `diary-${current.id}`;
+      emotion.bind(sessionId, { source: 'diary' }, current);
       diaryScheduler = startDiaryScheduler(ctx, {
         dshHome: DSH_HOME,
         characterId: current.id,
@@ -654,6 +673,7 @@ export function apply(ctx) {
         const bind = (candidate) => candidate.id === character.id && candidate.epoch === character.epoch;
         const publisher = createVideoPublisher({
           store: videoStore, root: videoRoot, getConfig: () => readBiliConfig().config,
+          recordEmotion: (event) => emotion.record(event, character),
           isCurrent: () => { try { return bind(requireVideoRoot().character); } catch { return false; } },
         });
         videoWorker = createVideoWorker({
@@ -662,6 +682,7 @@ export function apply(ctx) {
           root: videoRoot,
           getLimits: videoLimits,
           maxConcurrent: Math.max(1, Number(cfg.concurrentRenders) || 1),
+          recordEmotion: (event) => emotion.record(event, character),
           leaseMs: Number(cfg.renderTimeoutMs) > 0 ? Number(cfg.renderTimeoutMs) + 120_000 : 720_000,
           renderTimeoutMs: Number(cfg.renderTimeoutMs) > 0 ? Number(cfg.renderTimeoutMs) : 600_000,
           log: (message) => pluginLog(message),
@@ -969,10 +990,65 @@ export function apply(ctx) {
   };
 
   const disposers = [];
+  const emotionClock = setInterval(() => emotion.drain(), 15_000);
+  emotionClock.unref?.();
+  disposers.push(() => clearInterval(emotionClock));
+  // DSH resolves this late, including steps after tools. Only mapped SurfCore
+  // sessions and explicitly assigned workspaces can see a character's mood.
+  function nativeEmotionRole(agent) {
+    try { return emotion.nativeRole(ctx.get('workingDirectory')?.get(agent.session)); }
+    catch { return null; }
+  }
+  try {
+    const promptService = ctx.get?.('systemPrompt');
+    if (typeof promptService?.context === 'function') {
+      disposers.push(promptService.context({
+        name: 'surfcore-emotion',
+        order: 1500,
+        required: true,
+        interpolate: false,
+        text: ({ agent }) => {
+          if (!agent?.session) return '';
+          const binding = emotion.binding(agent.session.id);
+          if (binding) {
+            if (binding.scope.source === 'bili' && readUnified().config.persona?.injectInBili === false) return '';
+            return emotion.context('', binding.scope, binding.role);
+          }
+          const native = nativeEmotionRole(agent);
+          return native ? emotion.context('', { source: 'native' }, native) : '';
+        },
+      }));
+      hasEmotionContext = true;
+      disposers.push(ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
+        const decision = await next();
+        if (decision.kind !== 'enter') return decision;
+        const binding = emotion.binding(agent.session.id);
+        if (binding?.scope.source === 'qq-group' && binding.scope.partner && step > 1) {
+          // The model may have read another speaker through the tools after the initial batch.
+          const { source, channel } = binding.scope;
+          emotion.bind(agent.session.id, { source, channel }, binding.role);
+        }
+        if (!binding) {
+          const role = nativeEmotionRole(agent);
+          if (role) {
+            decision.messages.forEach((message, index) => {
+              if (message.source?.kind !== 'user') return;
+              const text = message.content?.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+              const kind = classifyEmotionText(text);
+              if (kind) emotion.record({ source: 'native', kind, key: `${agent.session.id}:${turn}:${step}:${index}` }, role);
+            });
+          }
+        }
+        return decision;
+      }, { global: true }));
+    }
+  } catch (error) {
+    pluginLog('[emotion] 注册 DSH 心境上下文失败：', error?.name || 'unknown');
+  }
   // ── 日记工具：注册为全局工具（QQ / 日记会话 / 未来微信/桌宠共用同一套）──
   // 只在这里注册一次；工具内部只走 src/diary-store.js，模型拿不到路径参数。
   try {
-    const diaryTools = createDiaryToolDefinitions({ log: pluginLog, getConfig: diaryConfig });
+    const diaryTools = createDiaryToolDefinitions({ log: pluginLog, getConfig: diaryConfig, recordEmotion: emotion.record });
     const toolsService = ctx.tools ?? (typeof ctx.get === 'function' ? ctx.get('tools') : null);
     if (!toolsService?.register) {
       pluginLog('日记工具未注册：tools 服务不可用');
@@ -4613,6 +4689,31 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname.startsWith(`${API_PREFIX}/role-dispatch`)) { await handleRoleDispatch(req, res, pathname); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
+    if (pathname === `${API_PREFIX}/emotion/initialize`) {
+      if (req.method !== 'POST') {
+        json(res, 405, { ok: false, code: 'EMOTION_METHOD', error: '自评接口只支持 POST', hint: '在情绪页点「请她自评」' });
+        return;
+      }
+      let input = null;
+      try { input = JSON.parse(await readBody(req, 1024) || '{}'); } catch {}
+      if (typeof input?.characterId !== 'string' || !Number.isSafeInteger(input.epoch)) {
+        json(res, 400, { ok: false, code: 'EMOTION_REQUEST', error: '自评请求缺少当前角色', hint: '刷新情绪页后再试' });
+        return;
+      }
+      const result = await emotion.initialize(input, (role) => assessEmotion(role, { chat: petChat, tokenBudget }));
+      const status = result.ok ? 200 : result.code === 'EMOTION_SELF_BUDGET' ? 429
+        : result.code === 'EMOTION_SELF_MODEL' || result.code === 'EMOTION_STORE' ? 503
+          : result.code === 'EMOTION_SELF_FORMAT' ? 422 : 409;
+      json(res, status, result);
+      return;
+    }
+    if (pathname === `${API_PREFIX}/emotion`) {
+      const body = req.method === 'GET' ? emotion.status()
+        : req.method === 'POST' ? emotion.configure(JSON.parse(await readBody(req) || '{}'))
+          : { ok: false, code: 'EMOTION_METHOD', error: '情绪接口只支持 GET 和 POST', hint: '刷新情绪页' };
+      json(res, body.ok ? 200 : body.code === 'EMOTION_ROLE_CHANGED' ? 409 : body.code === 'EMOTION_METHOD' ? 405 : 503, body);
+      return;
+    }
     if (pathname === `${API_PREFIX}/diary`) { await handleDiary(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }

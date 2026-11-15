@@ -10,6 +10,7 @@
  * 发之前检查 daily-dynamic.json：和任意一条四类动态 / 上一次分享至少隔 dynamics.gapMin 分钟。
  * 发之后写 daily-dynamic.json 的 share 记录 + 占一条分享额度（quota --share）。
  */
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -17,13 +18,14 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
-import { biliState } from '../lib/state-paths.mjs'
+import { currentCharacter, biliState } from '../lib/state-paths.mjs'
 import { dynamicsGapMin } from '../lib/kinds.mjs'
 import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { ownerOf, findVideoDynamic, createForward, verifyForward } from '../lib/forward.mjs'
 import { readShareState, dynamicGapWait, mergeShareRecord } from '../lib/share-dynamic.mjs'
 
+const emotionRole = currentCharacter()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
 const args = new Map()
@@ -163,6 +165,7 @@ try {
 }
 
 recordLegacyPublication(publication)
+recordBiliEmotion('progress', `dynamic:${dynId}`, emotionRole)
 // ── 记账 + 写 daily-dynamic.json（四类动态的间隔会读它）───────────────────
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })

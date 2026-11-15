@@ -13,12 +13,13 @@
 //   · 记 quota（type=free，只审计，不设上限）
 //   · 追加 bili-posts.jsonl（记忆同步：记忆卡/B站 brief 会读到）
 //   · 通过 notify.mjs 报备主人（失败不影响已发出的动态）
+import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { biliState } from '../lib/state-paths.mjs'
+import { currentCharacter, biliState } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
@@ -27,6 +28,7 @@ import { readShareState, dynamicGapWait, mergeFreeRecord } from '../lib/share-dy
 import { ownerOf, findVideoDynamic, createForward } from '../lib/forward.mjs'
 import { appendBiliPost } from '../lib/bili-posts.mjs'
 
+const emotionRole = currentCharacter()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
 const args = new Map()
@@ -144,6 +146,7 @@ if (!dynId) {
 }
 
 recordLegacyPublication(publication)
+if (dynId) recordBiliEmotion('progress', `dynamic:${dynId}`, emotionRole)
 const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })
 const url = `https://t.bilibili.com/${dynId}`

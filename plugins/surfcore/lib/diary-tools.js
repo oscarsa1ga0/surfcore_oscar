@@ -73,7 +73,18 @@ function resolveCurrent(args) {
   return { ...current, diaryDir: path.join(current.dir, 'diary') };
 }
 
-export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => ({}) } = {}) {
+export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => ({}), recordEmotion = () => {} } = {}) {
+  const feeling = {
+    type: 'string', enum: ['reflected', 'relieved', 'unsettled'],
+    description: '仅在写完这段确实有了新的感受时填写：有了新想法、释怀、或更在意。用的是写作带来变化，避免重新计算日记里记述的经历。',
+  };
+  function noteFeeling(current, result, kind) {
+    if (result?.ok && kind && feeling.enum.includes(kind)) {
+      recordEmotion({ source: 'diary', kind, key: `${result.entry.id}:${kind}` }, current);
+    }
+    return result;
+  }
+
   const tools = [
     textTool(
       'diary_write',
@@ -84,12 +95,13 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
         date: { type: 'string', description: '写哪一天（YYYY-MM-DD）；默认今天，不能写未来。' },
         tags: TAGS,
         visibility: { type: 'string', enum: ['private', 'shareable'], description: '默认 private（只给自己）；shareable 表示这篇你愿意整篇给主人看。' },
+        afterWriting: feeling,
         source: { type: 'string', description: '来源标记，如 qq/bili/pet/manual；默认 manual。' },
         characterId: CHARACTER_ID,
       },
       (args) => {
         const current = resolveCurrent(args);
-        return createEntry(current.diaryDir, {
+        const result = createEntry(current.diaryDir, {
           content: args.content,
           title: pickString(args, 'title'),
           date: pickString(args, 'date', 10),
@@ -98,6 +110,7 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
           source: pickString(args, 'source', 32) || 'manual',
           characterId: current.id,
         });
+        return noteFeeling(current, result, args.afterWriting);
       },
     ),
 
@@ -193,6 +206,7 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
         id: { type: 'string', description: '要改的日记 id。', required: true },
         content: { type: 'string', description: '新正文（整篇替换）；不传就保留原文。' },
         append: { type: 'string', description: '在原文后追加一段（不会覆盖原文）。' },
+        afterWriting: feeling,
         title: { type: 'string', description: '新标题；不传就保留。' },
         tags: TAGS,
         visibility: { type: 'string', enum: ['private', 'shareable'], description: '改可见性；private 只能摘录分享。' },
@@ -200,7 +214,7 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
       },
       (args) => {
         const current = resolveCurrent(args);
-        return editEntry(current.diaryDir, {
+        const result = editEntry(current.diaryDir, {
           id: pickString(args, 'id', 40),
           content: args.content,
           append: args.append,
@@ -209,6 +223,7 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
           visibility: args.visibility,
           characterId: current.id,
         });
+        return noteFeeling(current, result, args.content || args.append ? args.afterWriting : '');
       },
     ),
 

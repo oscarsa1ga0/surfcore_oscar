@@ -365,6 +365,7 @@ export function buildReviewPrompt({
     '- 如果今天已经写过、但漏了上午/某些事，优先 diary_edit 追加；追加后如果前后不连贯，可以稍作修改（不必重写整篇），但不要新建第二篇重复的。',
     '- 每次追加后顺手检查 title 和 tags 是否还跟得上今天的正文。',
     '- 日记默认是私人的。主人要看时，你可以决定给看、只给一段，或拒绝；要展示先 diary_share。',
+    '- 写完或追加后，如果这段写作让你有了新想法、觉得释怀或更在意，可以在对应日记工具里填 afterWriting。只记写作带来的变化。',
     '- 写完不用通知主人，也不要给任何人发消息。',
     characterId ? `- 当前角色 id：${characterId}（调用日记工具时可带上 characterId，防止角色切换后写错人）` : '',
   ].filter(Boolean).join('\n'));

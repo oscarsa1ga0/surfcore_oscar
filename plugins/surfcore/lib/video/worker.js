@@ -27,7 +27,7 @@ const DEFAULT_LEASE_MS = 20 * 60 * 1000;
 const DEFAULT_TICK_MS = 1500;
 const HEARTBEAT_MS = 60 * 1000;
 
-export function createVideoWorker({ store, root, getVoiceSettings = null, getLimits = () => ({}), synth = null, log = () => {}, maxConcurrent = 1, leaseMs = DEFAULT_LEASE_MS, tickMs = DEFAULT_TICK_MS, renderTimeoutMs = 10 * 60 * 1000, publisher = null }) {
+export function createVideoWorker({ store, root, getVoiceSettings = null, getLimits = () => ({}), synth = null, log = () => {}, maxConcurrent = 1, leaseMs = DEFAULT_LEASE_MS, tickMs = DEFAULT_TICK_MS, renderTimeoutMs = 10 * 60 * 1000, publisher = null, recordEmotion = () => {} }) {
   const owner = `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   let running = false;
   let timer = null;
@@ -90,6 +90,7 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
       });
       if (!store.completeTask(task.jobId, fence)) return { jobId: task.jobId, ok: false, code: 'VIDEO_CANCELLED' };
       store.markPreview(task.projectId, task.revision);
+      recordEmotion({ source: 'video', kind: 'progress', key: `render:${task.jobId}:done` });
       return { jobId: task.jobId, ok: true, summary: result.summary };
     } catch (error) {
       const code = timedOut ? 'VIDEO_RENDER_TIMEOUT' : error?.code ?? 'VIDEO_TASK_FAILED';
@@ -101,13 +102,14 @@ export function createVideoWorker({ store, root, getVoiceSettings = null, getLim
       }
       const retryable = RETRYABLE_CODES.has(code);
       const stage = store.getTask(task.jobId)?.progress?.stage ?? error?.stage ?? '';
-      store.failTask(task.jobId, fence, {
+      const failed = store.failTask(task.jobId, fence, {
         code,
         error: timedOut ? `渲染超过 ${Math.round(timeoutMs / 1000)} 秒` : String(error?.message ?? error),
         hint: String(error?.hint ?? (retryable ? '会自动按退避重试；也可以现在手动重试' : '改计划/素材后重试')),
         retryable,
         stage: error?.stage ?? stage,
       });
+      if (failed && !retryable) recordEmotion({ source: 'video', kind: 'setback', key: `render:${task.jobId}:blocked` });
       return { jobId: task.jobId, ok: false, code, retryable };
     } finally {
       clearTimeout(deadline);

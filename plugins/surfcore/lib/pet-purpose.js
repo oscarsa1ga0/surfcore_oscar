@@ -1,3 +1,4 @@
+import { dialogueEmotionScope } from '../../../src/emotion-events.js';
 /**
  * SurfCore · 目的机制（主动搭话）的桌宠载体
  *
@@ -70,7 +71,8 @@ function clip(text, max = 120) {
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  * @param {(path:string, opts?:object)=>Promise<{ok:boolean,status?:number,data?:any,error?:string}>} [opts.callBridge]
  */
-export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null } = {}) {
+export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null, emotion = null } = {}) {
+  const emotionScope = dialogueEmotionScope('pet', 'desktop', 'owner');
   let stateCache = null;
   let stateFile = '';
   let running = false;
@@ -260,6 +262,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       drives: prepared.drives,
       now,
       lastMasterAt: prepared.lastMasterAt,
+      emotion: emotion?.snapshot(emotionScope),
     });
   }
 
@@ -282,7 +285,8 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     ];
     if (role.persona) {
       systemLines.push('【人格卡（你就是这个人）】');
-      systemLines.push(sliceHead(role.persona, 4200));
+      const persona = sliceHead(role.persona, 4200);
+      systemLines.push(emotion?.context(persona, emotionScope) ?? persona);
       systemLines.push('');
     }
     if (memory) {
