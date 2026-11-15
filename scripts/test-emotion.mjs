@@ -86,6 +86,23 @@ test('群聊的冲突按对象隔离，公开平台只读定性状态', () => {
   assert.ok(emotionSnapshot(state, { ...alice, now: at + 6 }).blame >= 55);
 });
 
+test('连续 QQ 私聊仍能增加社交和喜悦，疲惫只缓慢积累', () => {
+  const state = createEmotionState(at);
+  state.drives.fatigue = 44;
+  for (let i = 0; i < 20; i++) {
+    event(state, classifyEmotionText('我到家啦'), owner, `bubble-${i}`, at + 6_000 * i, { inbound: true });
+  }
+  const mood = emotionSnapshot(state, { ...owner, now: at + 114_000 });
+  assert.ok(mood.drives.fatigue > 44 && mood.drives.fatigue < 45);
+  assert.notEqual(mood.mood, '有些累');
+  assert.ok(mood.drives.social > BASELINE.social + 10);
+  assert.ok(mood.drives.joy > BASELINE.joy + 5);
+
+  const beforeRequest = mood.drives.fatigue;
+  event(state, classifyEmotionText('你能帮我看一下吗'), owner, 'request', at + 114_000, { inbound: true });
+  assert.ok(state.drives.fatigue > beforeRequest + .8);
+});
+
 test('期待只跟随成功的主动互动和目标会话，目的权重有界', () => {
   const state = createEmotionState(at);
   event(state, 'proactive', owner, 'sent');

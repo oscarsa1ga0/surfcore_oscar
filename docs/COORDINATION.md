@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| QQ 私聊疲惫 | `surfcore-qq-private-fatigue` | `fix/qq-private-fatigue` | 调低普通私聊的疲惫变化 | 独立工作树，待本机安装分支合入 |
 | 鱼姬统一调度 | `surfcore-role-dispatch` | `feat/role-dispatch` | 三工作区串行、QQ 协议与状态面板 | 隔离测试通过，待合入本机安装分支与真机验收 |
 | 视频创作阶段三 | `surfcore-video-stage3` | `feat/video-creation-stage3` | 投稿、审核、报备和记忆 | 本地实现，待合入实际安装分支 |
 | 视频创作阶段二 | `surfcore-video-stage2` | `feat/video-creation-stage2` | 视频素材、混剪、版本和审片 | 本地专项通过，待合并与 DSH 真机验收 |
