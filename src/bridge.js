@@ -15994,7 +15994,7 @@ async function main() {
         const visibility = entry.visibility === 'shareable' ? '可分享' : '私人';
         return `${whenOf(entry.date)}《${entry.title || '无题'}》（${entry.id}，${visibility}）`;
       });
-      return `【日记】你最近写过：${parts.join('；')}。任意一天都可以回顾：先用 diary_list / diary_search 找，再 diary_read（可传 date）；主人问起时由你决定给看、只给一段或拒绝。`;
+      return `【日记】你最近写过：${parts.join('；')}。任意一天都可以回顾：先用 diary_list / diary_search 找，再 diary_read（可传 date）；主人问起时由你决定给看、只给一段或拒绝。你也可以用 diary_write 写日记，想写才写。`;
     } catch {
       return '';
     }
