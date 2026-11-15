@@ -1000,7 +1000,12 @@ export function startScheduler(ctx, opts) {
   }
 
   function submitWatchRound(st, signal) {
-    const id = st ? `bili-whale-watch-${sessionId}-${st.date}-${st.slotId ?? st.at}` : `bili-whale-manual-${randomUUID()}`;
+    // 2026-11-15 修：requestId 必须带上这一趟的实际时间。原来只带 slotId，
+    // 同一天同一 slot 被重排（06:49 → 12:50）后 id 不变，DSH 把新唤醒当成重试去重，
+    // 直接返回「已接受」但不插消息 → 她根本没醒，日志却照打「叫醒」。
+    const id = st
+      ? `bili-whale-watch-${sessionId}-${st.date}-${st.slotId ?? ''}-${Math.round(Number(st.at) || 0)}`
+      : `bili-whale-manual-${randomUUID()}`;
     return queueBili({
       id, signal, priority: st ? 'scheduled' : 'manual', deadline: st ? scheduleDeadline(st) : undefined,
     }, async (submit, lifetime) => {
@@ -1600,6 +1605,9 @@ export function startScheduler(ctx, opts) {
       // 2026-11-13 用户定：dynTick 不再“只发动态”，而是先完整逛 B 站（feed/debrief/评论/收件箱/点赞/收藏/日记），
       // 逛到第 4.99 步后再发这一类动态；抑制完整流程里的 4.95/4.97，避免同一天重复发。
       const day = today()
+      // 2026-11-15 修：inSlot 原来只定义在 queueBili 的回调里，下面日志在回调外引用 →
+      // ReferenceError「inSlot is not defined」，整条动态提醒被判失败（12:00 那次就没醒）。
+      const inSlotForLog = slotOf(kind, new Date(), kindsNow(config()))
       try {
         await queueBili({
           id: `bili-whale-daily-${kind}-${day}`,
@@ -1650,7 +1658,7 @@ export function startScheduler(ctx, opts) {
             content: [{ type: 'text', text }],
           }, '动态提醒')
         })
-        log(`[bili-whale] 动态提醒 · ${kind}（${inSlot ? '到点' : '补发'}）`)
+        log(`[bili-whale] 动态提醒 · ${kind}（${inSlotForLog ? '到点' : '补发'}）`)
       } catch (e) {
         log(`[bili-whale] 动态提醒失败：${String(e.message).slice(0, 120)}`)
       }
