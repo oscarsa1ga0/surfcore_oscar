@@ -1,6 +1,6 @@
 // 「看懂视频」一条龙：封面 + 简介 + 官方字幕 + 弹幕热区 + 热评 + 画面抽帧，六路齐出。
 //
-// 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8]
+// 用法: node debrief.mjs <BV> [--page N] [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8]
 // 产出: 终端摘要 + 封面图 + 字幕 TXT + 弹幕对齐表 + 九宫格/字幕带（后三者交给 read_image / 模型合成）
 //
 // 设计（2026-10-14，主人定义为「看懂视频」大模块）：
@@ -23,7 +23,7 @@ import { appendWatch } from '../lib/watch-history.mjs'
 import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 
 const argv = process.argv.slice(2)
-const bvid = argv.find((a) => !a.startsWith('--'))
+const bvid = argv.find((a) => /^BV[0-9A-Za-z]+$/i.test(a))
 if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames]'); process.exit(2) }
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
@@ -90,10 +90,28 @@ fs.mkdirSync(path.join(shots, 'subs'), { recursive: true })
 // ── ① 元信息 ──
 const view = await jget(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`)
 if (view.code !== 0) { console.error(`view 失败 code=${view.code} ${view.message}`); process.exit(3) }
-const d = view.data, cid = d.cid, aid = d.aid, dur = d.duration
+// 多 P（分P）视频：用户可用 --page N 指定看第 N P；默认第 1 P。
+const d = view.data
+const pages = Array.isArray(d.pages) && d.pages.length
+  ? d.pages
+  : [{ cid: d.cid, page: 1, part: d.title, duration: d.duration }]
+const pageNo = Math.max(1, Number(opt.page) || 1)
+if (pageNo > pages.length) {
+  console.error(`这个视频只有 ${pages.length} P，没有第 ${pageNo} P（用 --page 1~${pages.length}）`)
+  process.exit(4)
+}
+const currentPage = pages[pageNo - 1]
+const cid = currentPage.cid
+const aid = d.aid
+const dur = Number(currentPage.duration) || d.duration
 console.log('══════════ ① 元信息（它自称是什么）══════════')
 console.log(`标题: ${d.title}`)
 console.log(`UP: ${d.owner.name}${d.owner.mid ? `（mid ${d.owner.mid}）` : ''}   时长: ${fmt(dur)}   分区: ${d.tname || '-'}   发布: ${new Date(d.pubdate * 1000).toLocaleDateString('zh-CN')}`)
+if (pages.length > 1) {
+  console.log(`分P: ${pages.length} 个 · 当前第 ${pageNo} P${currentPage.part ? `：${currentPage.part}` : ''}（${fmt(dur)}）`)
+  const show = pages.slice(0, 12).map((p, i) => `${i + 1}) ${p.part || `P${i + 1}`} ${fmt(Number(p.duration) || 0)}`).join(' · ')
+  console.log(`全部分P: ${show}${pages.length > 12 ? ' …' : ''}${pages.length > 1 ? `（用 --page N 换一 P）` : ''}`)
+}
 console.log(`播放 ${d.stat.view}  点赞 ${d.stat.like}  收藏 ${d.stat.favorite}  投币 ${d.stat.coin}  弹幕 ${d.stat.danmaku}  评论 ${d.stat.reply}`)
 if (d.desc) console.log(`简介: ${d.desc.replace(/\n+/g, ' / ').slice(0, 300)}`)
 
@@ -229,6 +247,7 @@ if (!opt['no-frames']) {
     // 让 bili-watch 知道“这次由 debrief 统一记账”，避免同一次观看写两条历史。
     const out = execFileSync(process.execPath, [
       watch, bvid, GRID,
+      '--page', String(pageNo),
       ...(opt.substrip || opt['keep-mp4'] ? ['--keep-mp4'] : []),
     ], {
       encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,

@@ -1,9 +1,10 @@
 // 让 agent 真"看"视频：取直链 → 下载 → ffmpeg 抽帧拼成一张九宫格 → 输出图片路径（再交给 read_image 看）
 //
-// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir] [--keep-mp4] [--uniform]
+// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir] [--page N] [--keep-mp4] [--uniform]
 //   例: node bili-watch.mjs BV1iLYm6VET3            → 3x3 九宫格，原片默认清理
 //       node bili-watch.mjs BV1iLYm6VET3 4x4        → 16 格，看得更细
 //       node bili-watch.mjs BV... --keep-mp4         → 保留原片，方便换参数重抽
+//       node bili-watch.mjs BV... --page 2           → 多 P 视频看第 2 P（默认第 1 P）
 //
 // 依赖：ffmpeg（查找顺序见 lib/ffmpeg.mjs：$FFMPEG → PATH → bin/ → ~/.dsh/surfcore/bili/bin → 本机剪映）
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
@@ -17,8 +18,16 @@ import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
 let FFMPEG
 try { FFMPEG = requireFfmpeg() } catch (e) { console.error(String(e.message)); process.exit(2) }
 const argv = process.argv.slice(2)
-const positional = argv.filter((arg) => !arg.startsWith('--'))
-const keepMp4 = argv.includes('--keep-mp4') || process.env.SURFCORE_KEEP_MP4 === '1'
+// --page N：多 P 视频看第 N P（默认第 1 P）。先把值和旗标一起摘掉，避免 "2" 被当成格子参数。
+const rest = argv.slice()
+const pageFlag = rest.indexOf('--page')
+let pageNo = 1
+if (pageFlag >= 0) {
+  pageNo = Math.max(1, Number(rest[pageFlag + 1]) || 1)
+  rest.splice(pageFlag, 2)
+}
+const positional = rest.filter((arg) => !arg.startsWith('--'))
+const keepMp4 = rest.includes('--keep-mp4') || process.env.SURFCORE_KEEP_MP4 === '1'
 const bvid = positional[0]
 const grid = (positional[1] ?? '3x3').toLowerCase()
 const outDir = positional[2] ?? shotsPath('video')
@@ -34,9 +43,21 @@ const H = { 'user-agent': UA, referer: 'https://www.bilibili.com/', cookie: `SES
 
 const view = await (await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: H })).json()
 if (view.code !== 0) { console.error(`view 失败 code=${view.code} ${view.message}`); process.exit(3) }
-const { cid, title, duration, owner } = { ...view.data, owner: view.data.owner?.name }
+const pages = Array.isArray(view.data.pages) && view.data.pages.length
+  ? view.data.pages
+  : [{ cid: view.data.cid, page: 1, part: view.data.title, duration: view.data.duration }]
+if (pageNo > pages.length) {
+  console.error(`这个视频只有 ${pages.length} P，没有第 ${pageNo} P`)
+  process.exit(6)
+}
+const currentPage = pages[pageNo - 1]
+const cid = currentPage.cid
+const duration = Number(currentPage.duration) || view.data.duration
+const title = view.data.title
+const owner = view.data.owner?.name
 console.log(`标题: ${title}`)
 console.log(`UP: ${owner}   时长: ${duration}s   cid=${cid}`)
+if (pages.length > 1) console.log(`分P: ${pages.length} 个 · 当前第 ${pageNo} P${currentPage.part ? `：${currentPage.part}` : ''}`)
 
 // 画质实测（2026-10-14）：html5 + qn=32 会被压到 360p（返回 quality=16，界面小字全糊）；
 // 改 platform=pc + qn=80 可拿到 720p（返回 quality=64），依旧是普通 mp4 直链，不必碰 dash。
@@ -49,7 +70,7 @@ console.log(`实际画质: ${qualityText}`)
 
 fs.mkdirSync(outDir, { recursive: true })
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const mp4 = path.join(outDir, `${bvid}-${stamp}.mp4`)
+const mp4 = path.join(outDir, `${bvid}-p${pageNo}-${stamp}.mp4`)
 const sheet = path.join(outDir, `${bvid}-${stamp}-${cols}x${rows}.jpg`)
 
 const r = await fetch(url, { headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/', range: 'bytes=0-' } })
