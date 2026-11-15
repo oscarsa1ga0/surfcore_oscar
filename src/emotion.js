@@ -184,7 +184,11 @@ export function applyEmotionEvent(state, event) {
   let kind = event.kind;
   if (heatKind === 'praise' && previous.length >= 2) kind = previous.length < 4 ? 'praiseTired' : 'praiseBored';
   const [reason, delta] = EFFECTS[kind];
-  const weight = event.source === 'qq-group' ? (kind === 'atmosphere' ? .25 : (event.owner ? .8 : .55)) : 1;
+  let weight = 1;
+  if (event.source === 'qq-group') {
+    weight = event.owner ? .40 : .25;
+    if (kind === 'atmosphere') weight = .08;
+  }
   const effects = { ...delta };
   // QQ private chat records each incoming bubble, even when one thought is split across several.
   if (event.source === 'qq-private' && kind === 'chat') effects.fatigue = .12;

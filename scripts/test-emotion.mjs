@@ -86,6 +86,28 @@ test('群聊的冲突按对象隔离，公开平台只读定性状态', () => {
   assert.ok(emotionSnapshot(state, { ...alice, now: at + 6 }).blame >= 55);
 });
 
+test('群聊背景缓慢积累，直接互动按发言者区分权重', () => {
+  const ambient = createEmotionState(at);
+  const group = dialogueEmotionScope('qq-group', 'group:111');
+  for (let i = 0; i < 30; i++) {
+    event(ambient, 'atmosphere', group, `ambient-${i}`, at + 60_000 * i);
+  }
+  assert.ok(ambient.drives.fatigue > BASELINE.fatigue && ambient.drives.fatigue < BASELINE.fatigue + .5);
+  assert.ok(ambient.drives.social > BASELINE.social && ambient.drives.social < BASELINE.social + 1);
+
+  const privateRequest = createEmotionState(at);
+  const ownerRequest = createEmotionState(at);
+  const memberRequest = createEmotionState(at);
+  event(privateRequest, 'request', owner, 'private', at, { inbound: true, owner: true });
+  event(ownerRequest, 'request', alice, 'owner', at, { inbound: true, owner: true });
+  event(memberRequest, 'request', bob, 'member', at, { inbound: true });
+  for (const dimension of ['duty', 'social', 'fatigue']) {
+    const change = (state) => state.drives[dimension] - BASELINE[dimension];
+    assert.ok(change(memberRequest) > 0 && change(memberRequest) < change(ownerRequest));
+    assert.ok(change(ownerRequest) < change(privateRequest) / 2);
+  }
+});
+
 test('连续 QQ 私聊仍能增加社交和喜悦，疲惫只缓慢积累', () => {
   const state = createEmotionState(at);
   state.drives.fatigue = 44;
