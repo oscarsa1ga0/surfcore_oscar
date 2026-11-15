@@ -4723,6 +4723,27 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/dsh/follow-default`) { await proxyDshFollowDefault(req, res); return; }
     if (pathname === `${API_PREFIX}/dsh/repair`) { await handleDshRepair(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/bili/`)) { await handleBili(req, res, url); return; }
+    // ── QQ 空间面板（2026-11-15 修）：client 早就调这两个接口，但后端一直没注册 ──
+    // 桥接控制台本来就有 /api/qzone/status 和 /api/socialV2/qzone/activity，
+    // 这里只做一层带 console-token 的代理；不代理的话面板永远显示「未知接口」。
+    if (pathname === `${API_PREFIX}/qzone/status`) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
+      const r = await callBridge('/api/qzone/status', { timeoutMs: 20000 });
+      json(res, r.status || (r.ok ? 200 : 502), r.data ?? {
+        ok: false, error: r.error || '桥接未响应', hint: '先启动 QQ 桥接，再刷新状态',
+      });
+      return;
+    }
+    if (pathname === `${API_PREFIX}/socialV2/qzone/activity`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+      const r = await callBridge('/api/socialV2/qzone/activity', { method: 'POST', body, timeoutMs: 60000 });
+      json(res, r.status || (r.ok ? 200 : 502), r.data ?? {
+        ok: false, error: r.error || '桥接未响应', hint: '先启动 QQ 桥接，再重试',
+      });
+      return;
+    }
     if (pathname === `${API_PREFIX}/logs`) { handleLogs(res, url); return; }
     if (pathname === `${API_PREFIX}/owner-audit`) { await handleOwnerAudit(req, res, url); return; }
     if (pathname === `${API_PREFIX}/browse`) { await handleBrowse(req, res, url); return; }

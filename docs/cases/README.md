@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-15 | [QQ 空间面板未知接口](2026-11-15-qzone-panel-routes.md) | 插件补 qzone status/activity 代理路由 | macOS 分支 |
 | 2026-11-15 | [B站唤醒被去重](2026-11-15-bili-wake-dedupe.md) | requestId 同 slot 重排后撞车被 DSH 去重；动态提醒 inSlot 作用域 | macOS 分支 |
 | 2026-11-15 | [动图抽帧拼图](2026-11-15-gif-storyboard.md) | GIF/动态 WebP 抽 ≤9 帧拼成 3×3，让视觉模型看懂动图 | macOS 分支 |
 | 2026-11-15 | [B站多 P 视频 --page](2026-11-15-debrief-multipage.md) | debrief/bili-watch 支持指定第 N P，并列出分 P | macOS 分支 |
