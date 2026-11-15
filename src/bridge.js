@@ -15793,6 +15793,61 @@ async function main() {
   // 现在改走 A1：唤醒侧直接印一份人格卡正文，和 qq_get_prompt 同源
   // （都经 composePersonaLayers 组装），不是手抄两遍 —— 改卡不会漂。
   // 预算沿用 role.maxInjectChars（默认 6000 字）；全量 / 场景语气 / 推荐值仍由工具提供。
+  // ── B站当天日记（只给主人私聊看）2026-11-15 主人要 ────────────────────────
+  // 两本鲸日记是 B站 侧写的文件，桥接原本从不读；这里只抽「今天」的段落注入 QQ
+  // 主人私聊，让她在 QQ 里知道当天在 B站 写了什么。群聊不注入（私人日记不进群）。
+  function biliDiaryDirNow() {
+    try {
+      const cur = readCurrentCharacter();
+      return cur ? characterPaths(cur.id).biliDir : '';
+    } catch { return ''; }
+  }
+  let biliTodayDiaryCache = { key: '', text: '' };
+  function extractTodayDiary(text, today) {
+    const lines = String(text ?? '').split('\n');
+    const segs = [];
+    let curDate = '';
+    let buf = [];
+    const flush = () => {
+      if (curDate === today && buf.length) {
+        const body = buf.join('\n').trim();
+        if (body) segs.push(body);
+      }
+      buf = [];
+    };
+    for (const line of lines) {
+      const h2 = /^##\s+(\d{4}-\d{2}-\d{2})/.exec(line);
+      const h3 = /^###+\s+.*?(\d{4}-\d{2}-\d{2})/.exec(line);
+      if (h2) { flush(); curDate = h2[1]; buf = [line]; continue; }
+      if (h3) { flush(); curDate = h3[1]; buf = [line]; continue; }
+      buf.push(line);
+    }
+    flush();
+    return segs.join('\n\n').trim();
+  }
+  function todayBiliDiaryText() {
+    const dir = biliDiaryDirNow();
+    if (!dir) return '';
+    const files = ['whale-diary.md', 'whale-diary-private.md'].map((name) => path.join(dir, name));
+    try {
+      const sig = files.map((file) => {
+        try { const st = fs.statSync(file); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; }
+      }).join('|');
+      if (biliTodayDiaryCache.key === sig) return biliTodayDiaryCache.text;
+      const today = new Date().toLocaleDateString('sv-SE');
+      const parts = [];
+      for (const file of files) {
+        let raw = '';
+        try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
+        const seg = extractTodayDiary(raw, today);
+        if (seg) parts.push(seg);
+      }
+      const text = parts.join('\n\n');
+      biliTodayDiaryCache = { key: sig, text };
+      return text;
+    } catch { return ''; }
+  }
+
   function personaWakeBlockV2(key) {
     const roleState = readRoleState();
     let card = '';
@@ -15933,6 +15988,9 @@ async function main() {
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
       : '';
     const biliLine = biliBrief || biliRecall ? `${biliBrief}${biliRecall ? `${biliRecall}\n` : ''}\n` : '';
+    const ownerKey = String(cfg.ownerQQ || '').trim();
+    const biliDiaryText = ownerKey && key === `private:${ownerKey}` ? todayBiliDiaryText() : '';
+    const biliDiaryLine = biliDiaryText ? `【B站日记 · 今天】\n${biliDiaryText.slice(0, 6000)}\n\n` : '';
     const qzoneLine = qzonePromptLineV2(st);
     // 记忆方式二选一：narrative 注入预渲染记忆卡；vector 注入按当前消息检索到的旧事。
     // 两套存储都在后台继续写，这里只决定读哪一份（2026-11-02 用户要求）。
@@ -15943,7 +16001,7 @@ async function main() {
     const diaryLine = diaryText ? `${diaryText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + qzoneLine + memoryCardLine + diaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + qzoneLine + memoryCardLine + biliDiaryLine + diaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
