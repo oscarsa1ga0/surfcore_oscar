@@ -11144,6 +11144,102 @@ async function main() {
     return parts;
   }
 
+  // ── 动图抽帧拼图（2026-11-15 主人要）：让视觉模型能“看懂”GIF/动态 WebP ──
+  // 视觉模型对动图只取第一帧，所以把动图按时间均匀抽最多 9 帧，拼成一张
+  // 3x3（或按实际帧数自适应）的 PNG，作为一张图交给模型；文本里标明顺序。
+  // 源 GIF 帧数不限，9 是“送给模型的帧数上限”。超过 10 秒 / 10MB 就退回首帧。
+  const gifStoryboardCache = new Map();
+  const GIF_SB_MAX_BYTES = 10 * 1024 * 1024;
+  const GIF_SB_MAX_SECONDS = 10;
+  const GIF_SB_MAX_FRAMES = 9;
+  function ffmpegBinPath() {
+    const configured = String(cfg.socialV2?.voice?.ffmpegPath || '').trim();
+    return configured || 'ffmpeg';
+  }
+  function ffprobeBinPath() {
+    const configured = String(cfg.socialV2?.voice?.ffmpegPath || '').trim();
+    if (configured) {
+      const guess = configured.replace(/ffmpeg(\.exe)?$/i, (m, ext) => `ffprobe${ext || ''}`);
+      try { if (fs.existsSync(guess)) return guess; } catch {}
+    }
+    return 'ffprobe';
+  }
+  function isAnimatedWebpBuffer(buf) {
+    try {
+      if (!buf || buf.length < 30) return false;
+      if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WEBP') return false;
+      if (buf.toString('ascii', 12, 16) !== 'VP8X') return false;
+      return (buf[20] & 0x02) !== 0; // VP8X 的 Animation 标志位
+    } catch { return false; }
+  }
+  function runQuiet(bin, args, timeoutMs = 15000) {
+    try {
+      return execFileSync(bin, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 * 1024 * 1024 });
+    } catch { return ''; }
+  }
+  function gifStoryboard(buf, mimeType) {
+    if (!buf || !buf.length || buf.length > GIF_SB_MAX_BYTES) return null;
+    const hash = crypto.createHash('sha1').update(buf).digest('hex');
+    const cached = gifStoryboardCache.get(hash);
+    if (cached) return cached;
+    const ext = mimeType === 'image/webp' ? 'webp' : 'gif';
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-gif-'));
+    const input = path.join(dir, `in.${ext}`);
+    const output = path.join(dir, 'storyboard.png');
+    try {
+      fs.writeFileSync(input, buf);
+      const probe = runQuiet(ffprobeBinPath(), [
+        '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+        '-show_entries', 'stream=nb_read_frames,duration', '-of', 'json', input
+      ]);
+      let frameCount = 0;
+      let duration = 0;
+      try {
+        const info = JSON.parse(probe || '{}');
+        const stream = Array.isArray(info?.streams) ? info.streams[0] : null;
+        frameCount = Number(stream?.nb_read_frames) || 0;
+        duration = Number(stream?.duration) || 0;
+      } catch {}
+      if (!frameCount) return null;                    // 解不出帧（静态图/损坏）→ 走原路
+      if (frameCount <= 1) return null;
+      if (duration > GIF_SB_MAX_SECONDS) return null;  // 太长：退回首帧
+      const frames = Math.min(GIF_SB_MAX_FRAMES, frameCount);
+      const cols = frames <= 1 ? 1 : frames <= 2 ? 2 : frames <= 4 ? 2 : frames <= 6 ? 3 : 3;
+      const rows = Math.max(1, Math.ceil(frames / cols));
+      // 用 fps 重采样，正好产出 frames 张、铺满格子（select+step 会在末格留空）。
+      // duration 缺失时退回 select 等间隔抽帧。
+      const fps = duration > 0 ? Math.min(30, frames / duration) : 0;
+      const pick = fps > 0
+        ? `fps=${fps.toFixed(4)}`
+        : `select='not(mod(n,${Math.max(1, Math.ceil(frameCount / frames))}))'`;
+      const vf = [
+        pick,
+        'scale=320:320:force_original_aspect_ratio=decrease',
+        'pad=320:320:(ow-iw)/2:(oh-ih)/2:color=white',
+        `tile=${cols}x${rows}:padding=4:margin=4`
+      ].join(',');
+      runQuiet(ffmpegBinPath(), ['-y', '-loglevel', 'error', '-i', input, '-vf', vf, '-frames:v', '1', output], 20000);
+      if (!fs.existsSync(output) || fs.statSync(output).size < 1000) return null;
+      const png = fs.readFileSync(output);
+      const result = {
+        mimeType: 'image/png',
+        data: png.toString('base64'),
+        text: `这张是动图抽帧拼图：共 ${frameCount} 帧 / ${duration.toFixed(1)}s 的动图，均匀抽了 ${frames} 帧，按行从左到右、按时间顺序（不是九张不同的图）。`
+      };
+      log(`[动图] ${mimeType} ${frameCount} 帧 / ${duration.toFixed(1)}s → 抽 ${frames} 帧拼图`);
+      gifStoryboardCache.set(hash, result);
+      if (gifStoryboardCache.size > 30) {
+        const firstKey = gifStoryboardCache.keys().next().value;
+        gifStoryboardCache.delete(firstKey);
+      }
+      return result;
+    } catch {
+      return null;
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
   async function fetchMediaData(mediaList) {
     const out = [];
     let index = 0;
@@ -11215,11 +11311,22 @@ async function main() {
             continue;
           }
           totalBytes += img.buffer.length;
+          let mimeType = img.mimeType || 'image/jpeg';
+          let dataB64 = img.buffer.toString('base64');
+          let storyboardNote = '';
+          if (mimeType === 'image/gif' || (mimeType === 'image/webp' && isAnimatedWebpBuffer(img.buffer))) {
+            const sb = gifStoryboard(img.buffer, mimeType);
+            if (sb) {
+              mimeType = sb.mimeType;
+              dataB64 = sb.data;
+              storyboardNote = sb.text;
+            }
+          }
           out.push({
             ...base,
-            mimeType: img.mimeType || 'image/jpeg',
-            data: img.buffer.toString('base64'),
-            text: ''
+            mimeType,
+            data: dataB64,
+            text: storyboardNote
           });
         } else {
           out.push({ ...base, text: mediaFallbackText(media, noun) });
