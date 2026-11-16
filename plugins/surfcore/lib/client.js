@@ -1471,7 +1471,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("limits.daily", "普通评论 / 天", "默认 30", "number", { min: 0, max: 200 }),
         F("limits.replyDaily", "回找我的人 / 天", "默认 50", "number", { min: 0, max: 500 }),
         F("limits.taDaily", "主动搭话 / 天", "默认 15", "number", { min: 0, max: 200 }),
-        F("limits.mineDaily", "动态回复 / 类 / 天", "默认 10；三类各自算", "number", { min: 0, max: 100 }),
+        F("limits.mineDaily", "动态回复 / 类 / 天", "默认 10；四条各自算", "number", { min: 0, max: 100 }),
         F("limits.minePerPerson", "动态回复 / 人 / 类 / 天", "默认 5", "number", { min: 0, max: 20 }),
         F("limits.globalMin", "任意两条发言间隔（分钟）", "默认 2；0 = 不冷却", "number", { min: 0, max: 120 }),
         F("limits.perUpMin", "同一 UP 冷却（分钟）", "默认 10", "number", { min: 0, max: 1440 }),
@@ -1482,6 +1482,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("dynamics.enabled", "动态总开关", "关掉 = 不再定时提醒发动态", "switch"),
         F("dynamics.gapMin", "任意两条动态间隔（分钟）", "默认 30；5~240", "number", { min: 5, max: 240 }),
         ...Object.entries({
+          noon: "12 点 · 内容不限",
           anime: "18 点 · 内容不限",
           gaming: "20 点 · 内容不限",
           best: "23 点 · 最高分视频",

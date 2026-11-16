@@ -34,7 +34,7 @@ const map = {
   notify: ['commands/notify.mjs', '通知分发：把"自主发言后必须报备"落到代码里（后端 stdout/file/webhook/command，由 config.notify 决定）'],
   night: ['commands/whale-night.mjs', '生物钟：plan 掷骰子定今晚 / clock 到点退出叫醒她 / mark 兜底标记 / status 看计划'],
   score: ['commands/score.mjs', '记分（每天动态要用）：score <BV> --score 0-20 / --today / --best'],
-  daily: ['commands/daily.mjs', '每天三条动态：--kind best(23:00 最高分视频) / anime(18:00 内容不限) / gaming(20:00 内容不限)'],
+  daily: ['commands/daily.mjs', '每天四条动态：--kind noon(12:00 内容不限) / anime(18:00 内容不限) / gaming(20:00 内容不限) / best(23:00 最高分视频)'],
   'free-post': ['commands/free-post.mjs', '自由发布（不是任务、不设每日上限）：文字 / 一张图 / 任意视频卡片 / 链接：--text … [--image 图] [--bvid BV] [--link URL] --dry|--go'],
   article: ['commands/article.mjs', '原创专栏：--title … --file 文章.md|--content … [--cover 图] --dry|--draft|--go（B站每天最多 5 篇）；--delete/--check <aid>'],
   'video-project': ['commands/video-project.mjs', '本地视频创作：项目、素材、混剪、渲染、版本比较与审片（video-project help）'],

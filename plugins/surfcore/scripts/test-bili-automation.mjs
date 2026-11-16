@@ -147,7 +147,7 @@ assert.equal(snap.usage.comment, 1);
 assert.equal(snap.share.daily, 5);
 assert.equal(snap.share.used, 1);
 assert.equal(snap.dynamics.gapMin, 10);
-assert.equal(snap.dynamics.kinds.length, 3);
+assert.equal(snap.dynamics.kinds.length, 4);
 assert.equal(snap.dynamics.kinds.find((k) => k.key === 'best').postedAt !== null, true);
 assert.ok(snap.dynamics.next, '应能算出下一类动态');
 assert.deepEqual(snap.qqShare.times, ['09:00', '21:00']);

@@ -555,9 +555,9 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
     ...(skipDailyDynamics ? [] : [
-      `4.95) ⭐ **今天的动态（共三类：best / anime / gaming）**：时段 ${String(K.best.slot).padStart(2, '0')}:00 / ${String(K.anime.slot).padStart(2, '0')}:00 / ${String(K.gaming.slot).padStart(2, '0')}:00；**内容不限，什么类型都可以**（设置页关掉的类会跳过）`,
+      `4.95) ⭐ **今天的动态（共四条：noon / anime / gaming / best）**：时段 ${String(K.noon.slot).padStart(2, '0')}:00 / ${String(K.anime.slot).padStart(2, '0')}:00 / ${String(K.gaming.slot).padStart(2, '0')}:00 / ${String(K.best.slot).padStart(2, '0')}:00；**noon/anime/gaming 三条内容不限，什么类型都可以**（设置页关掉的类会跳过）`,
       '     `daily --kind best --text "…" --dry` → `--go`',
-      '     ⚠️ best 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）；另外两类挑你今天真想推的，什么类型都行 ✓',
+      '     ⚠️ best 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）；另外三条挑你今天真想推的，什么类型都行、三条完全一样 ✓',
       `     ⚠️ 正文 best **${K.best.minLen}~${K.best.maxLen} 字**，另外两类 **${K.anime.minLen}~${K.anime.maxLen} 字**，用你（当前人格卡）的口吻说 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
       '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
       '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
@@ -1487,7 +1487,7 @@ export function startScheduler(ctx, opts) {
     log(`[bili-whale] 直播间监听已挂上（房间 ${room} · ${String(L.liveScope ?? 'owner') === 'owner' ? '只回主人' : '只回@她的'}）✓`)
   }
 
-  // ── 动态的定点提醒 + 补发（2026-10-21 加；2026-11-16 由四类改成三类）──────
+  // ── 动态的定点提醒 + 补发（2026-10-21 加；2026-11-16 去掉内容类别）──────
   //   正常：按设置页的 slot 到点提醒（默认 08/12/16/20）
   //   补发：重启后发现今天有类错过了时段 → **一次只提醒一类**，两条之间隔 dynamics.gapMin
   //   （`daily-nudge.json` 记每类最近一次提醒，gapMin 内不重复吵她 ✓）
@@ -1692,7 +1692,7 @@ export function startScheduler(ctx, opts) {
     setTimeout(() => { dmTick().catch(() => {}) }, 25_000),
     setTimeout(() => { liveTick().catch(() => {}) }, 20_000),
   ]
-  // 2026-10-21（用户定）：动态各有固定发布点 —— 到点叫她一次（现在 18/20/23）
+  // 2026-10-21（用户定）：动态各有固定发布点 —— 到点叫她一次（现在 12/18/20/23）
   const timerDyn = setInterval(() => { dynTick().catch(() => {}) }, 60_000)
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
   const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)

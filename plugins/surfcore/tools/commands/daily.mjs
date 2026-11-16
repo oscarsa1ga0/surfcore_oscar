@@ -1,5 +1,6 @@
-// 每天三类动态（2026-10-21 管理员定；2026-11-16 砍掉二游类、不再限类别）
+// 每天四条动态（2026-10-21 管理员定；2026-11-16 去掉内容类别，只剩时段）
 //
+//   12:00 二类 noon   ：内容不限，什么类型都行 → 60~200 字
 //   18:00 三类 anime  ：内容不限，什么类型都行 → 60~200 字
 //   20:00 四类 gaming ：内容不限，什么类型都行 → 60~200 字
 //   23:00 一类 best   ：当天评分最高的视频      → 50~100 字
@@ -7,7 +8,7 @@
 // 每类**各自一天一条**（前缀默认空）。
 // 共同规则：公开发给所有人（正文不许 @ 人）· 必须带视频链接。
 //
-//   node bili.mjs daily --text "…" [--kind best|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
+//   node bili.mjs daily --text "…" [--kind best|noon|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
 import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
@@ -154,6 +155,7 @@ if (CATCHUP) {
 // 2026-11-16：不再校验内容类别（二游/动漫/游戏区），只保留质量门槛。
 const LIMITS = {
   best: { days: 999, play: 0, likeRate: 0 },
+  noon: { days: 14, play: 5000, likeRate: 0.025 },
   anime: { days: 14, play: 5000, likeRate: 0.025 },
   gaming: { days: 14, play: 5000, likeRate: 0.025 },
 }
