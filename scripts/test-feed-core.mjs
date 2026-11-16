@@ -221,11 +221,6 @@ function quotaTester(labels, weights, n, perPref = 3, seed = 1) {
 
 // ── 游戏候选取样器也必须排除看过的视频（2026-10-23 原神/鸣潮又推旧片）──
 {
-  const gamefeed = fs.readFileSync(new URL('../plugins/surfcore/tools/commands/gamefeed.mjs', import.meta.url), 'utf8');
-  assert.ok(gamefeed.includes('readWatchHistory'), 'gamefeed 没接观看历史');
-  assert.ok(gamefeed.includes('gamefeed-picks.json'), 'gamefeed 没记最近推过');
-  assert.ok(gamefeed.includes('已排除：看过'), 'gamefeed 没有输出排除统计');
-  assert.ok(gamefeed.includes("opt['no-remember']"), 'gamefeed 缺少 --no-remember（测试/重跑会污染备忘）');
 }
 
 console.log('OK test-feed-core');

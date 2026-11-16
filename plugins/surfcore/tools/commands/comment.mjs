@@ -349,7 +349,7 @@ if (GATE && parent && !TA && !FISH_GATHER && (String(type) === '11' || String(ty
     const k = r.ok ? r.map.get(String(oid)) : null
     if (k) {
       DYN_KIND = k
-      const label = { best: '最高分视频', game: '游戏 AI 二创', anime: '动漫', gaming: '游戏区' }[k] ?? k
+      const label = { best: '最高分视频', anime: '内容不限', gaming: '内容不限' }[k] ?? k
       console.log(`  [动态] 这条评论在**你自己那条「${label}」动态**底下 → 记「${label}动态回复」那本账 ✓`)
     }
   } catch {}

@@ -1,14 +1,13 @@
-// 每天四类动态（2026-10-21 管理员定）
+// 每天三类动态（2026-10-21 管理员定；2026-11-16 砍掉二游类、不再限类别）
 //
-//   08:00 一类 best   ：当天评分最高的视频          → 50~100 字
-//   12:00 二类 game   ：六款游戏之一的 AI 二创（轮换）→ 60~200 字
-//   16:00 三类 anime  ：动漫（MAD/新番导视/番剧评价/资讯）→ 60~200 字
-//   20:00 四类 gaming ：游戏区视频（解说/实况/评测/整活） → 60~200 字
+//   18:00 三类 anime  ：内容不限，什么类型都行 → 60~200 字
+//   20:00 四类 gaming ：内容不限，什么类型都行 → 60~200 字
+//   23:00 一类 best   ：当天评分最高的视频      → 50~100 字
 //
-// 每类**各自一天一条**，各有固定开头（脚本会自动补到最前面 ✓）。
-// 共同规则：公开发给所有人（正文不许 @ 人）· 配图自动挑。
+// 每类**各自一天一条**（前缀默认空）。
+// 共同规则：公开发给所有人（正文不许 @ 人）· 必须带视频链接。
 //
-//   node bili.mjs daily --text "…" [--kind best|game|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
+//   node bili.mjs daily --text "…" [--kind best|anime|gaming] [--bvid BV] [--image 路径] --dry|--go
 import { recordBiliEmotion } from '../lib/emotion.mjs'
 import { acquireLegacyPublicationSlot, readPublicationMid, recordLegacyPublication } from '../lib/publication-slot.mjs'
 import { currentCharacter, accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
@@ -17,13 +16,11 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { bestToday, todayScores } from '../lib/scores.mjs'
-import { currentGame, advanceRotation, GAMES } from '../lib/games.mjs'
 import { rememberKind } from '../lib/my-dynamics.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, stripLegacyPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
 import { config } from '../lib/config.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
-import { hasKindSignal } from '../lib/kind-signals.mjs'
 import { ownerOf, findVideoDynamic, createForward, verifyForward } from '../lib/forward.mjs'
 import { pinOf, clearPin } from '../lib/pins.mjs'
 
@@ -97,7 +94,7 @@ const PINNED = pinOf(KIND)
 function loadState() {
   let j = {}
   try { j = JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch {}
-  if (j && j.date && !j.best && !j.game && !j.anime && !j.gaming) return { best: j }
+  if (j && j.date && !j.best && !j.anime && !j.gaming) return { best: j }
   return j ?? {}
 }
 const st = loadState()
@@ -154,10 +151,9 @@ if (CATCHUP) {
 }
 
 // ── 质量与选题 ────────────────────────────────────────────────
-// 信号正则在 lib/kind-signals.mjs（可单测）；这里只保留各档的硬门槛。
+// 2026-11-16：不再校验内容类别（二游/动漫/游戏区），只保留质量门槛。
 const LIMITS = {
   best: { days: 999, play: 0, likeRate: 0 },
-  game: { days: 21, play: 2000, likeRate: 0.02 },
   anime: { days: 14, play: 5000, likeRate: 0.025 },
   gaming: { days: 14, play: 5000, likeRate: 0.025 },
 }
@@ -194,12 +190,8 @@ if (KIND === 'best') {
     bv = PINNED
     console.log(`  本条用管理员钦定的视频：${PINNED} ✓`)
   }
-  let game = ''
-  if (KIND === 'game') {
-    game = currentGame()
-    if (!bv) { console.error(`✗ 二类要指定视频：--bvid <BV>（今天是「${game}」）`); process.exit(5) }
-  } else if (!bv) {
-    console.error(`✗ ${K.label}要指定视频：--bvid <BV>（先跑 \`gamefeed --for ${KIND}\` 看候选）`)
+  if (!bv) {
+    console.error(`✗ ${K.label}要指定视频：--bvid <BV>（先挑一条想推的，debrief 确认）`)
     process.exit(5)
   }
   const v = await viewOf(bv)
@@ -209,15 +201,6 @@ if (KIND === 'best') {
   const likeRate = v.play ? v.like / v.play : 0
   const L = LIMITS[KIND]
   const bad = []
-  if (KIND === 'game') {
-    if (!GAMES.includes(game)) bad.push(`轮换的游戏名异常：${game}`)
-    if (!text.includes(game)) bad.push(`标题/简介里没有「${game}」`)
-    if (!hasKindSignal('game', text)) bad.push('标题/简介里没有 AI 二创的信号')
-  } else if (KIND === 'anime' && !hasKindSignal('anime', text)) {
-    bad.push('标题/简介里没有动漫/MAD/新番的信号')
-  } else if (KIND === 'gaming' && !hasKindSignal('gaming', text)) {
-    bad.push('标题/简介里没有游戏区的信号')
-  }
   if (days > L.days) bad.push(`太旧了（${days} 天前，上限 ${L.days} 天）`)
   if (v.play < L.play) bad.push(`播放太低（${v.play} < ${L.play}）`)
   if (likeRate < L.likeRate) bad.push(`点赞率太低（${(likeRate * 100).toFixed(1)}% < ${(L.likeRate * 100).toFixed(1)}%）`)
@@ -225,12 +208,12 @@ if (KIND === 'best') {
   if (bad.length) {
     console.error(`✗ 这条不够格当「${K.label}」的推荐：`)
     for (const b of bad) console.error(`   · ${b}`)
-    console.error(`   换一条 —— 先 \`gamefeed${KIND === 'game' ? '' : ' --for ' + KIND}\` 看候选，再 debrief 确认 ✓`)
+    console.error('   换一条 —— 先 debrief 确认质量 ✓')
     process.exit(5)
   }
-  meta = { game: game || null, title: v.title, play: v.play, like: v.like, days, score: null }
+  meta = { title: v.title, play: v.play, like: v.like, days, score: null }
   console.log(`[${K.n}类] ${K.label}：${bv} 通过质量核对 ✓`)
-  console.log(`  ${v.title.slice(0, 50)} · ${v.play} 播放 · 赞/播 ${(likeRate * 100).toFixed(1)}% · ${days} 天前${game ? ' · ' + game : ''}`)
+  console.log(`  ${v.title.slice(0, 50)} · ${v.play} 播放 · 赞/播 ${(likeRate * 100).toFixed(1)}% · ${days} 天前`)
 }
 
 // ── 正文字数（不算前缀）──────────────────────────────────────
@@ -240,7 +223,7 @@ if (n < K.minLen || n > K.maxLen) {
   process.exit(6)
 }
 
-// 四类公开动态继续禁止在正文 @ 人。
+// 三类公开动态继续禁止在正文 @ 人。
 if (/^\s*@|[@＠]\S/.test(BODY)) {
   console.error('✗ 这条动态是推给所有人的，正文里别 @ 人。')
   process.exit(7)
@@ -363,14 +346,13 @@ const at = new Date().toISOString()
 const atText = new Date().toLocaleTimeString('zh-CN', { hour12: false })
 st[KIND] = {
   date: today(), at, atText, kind: KIND, bvid: bv,
-  game: meta.game ?? null, score: meta.score ?? null, chars: n,
+  score: meta.score ?? null, chars: n,
   image: image ? path.basename(image) : null, dynId,
 }
 fs.mkdirSync(path.dirname(STATE), { recursive: true })
 fs.writeFileSync(STATE, JSON.stringify(st, null, 2) + '\n')
 try { clearPin(KIND) } catch {}
 
-if (KIND === 'game') advanceRotation(meta.game)
 if (dynId) {
   try {
     const cred = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))

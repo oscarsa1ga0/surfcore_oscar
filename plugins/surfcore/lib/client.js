@@ -1417,7 +1417,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
 
     const BILI_ADV_CATEGORIES = [
       { title: "身份与权限", members: ["她自己（只读）", "B站 会话权限"] },
-      { title: "内容与口味", members: ["口味（文本）", "四类动态", "鱼群判定关键词（B站）", "鱼群保护（B站）"] },
+      { title: "内容与口味", members: ["口味（文本）", "动态", "鱼群判定关键词（B站）", "鱼群保护（B站）"] },
       { title: "作息与分享", members: ["作息", "分享", "倾听（别人找她）", "日记与推送"] },
       { title: "额度与工具", members: ["额度（代码闸门）", "B站 视频缓存", "工具链"] },
       { title: "其他", members: null },
@@ -1471,21 +1471,20 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("limits.daily", "普通评论 / 天", "默认 30", "number", { min: 0, max: 200 }),
         F("limits.replyDaily", "回找我的人 / 天", "默认 50", "number", { min: 0, max: 500 }),
         F("limits.taDaily", "主动搭话 / 天", "默认 15", "number", { min: 0, max: 200 }),
-        F("limits.mineDaily", "动态回复 / 类 / 天", "默认 10；四类各自算", "number", { min: 0, max: 100 }),
+        F("limits.mineDaily", "动态回复 / 类 / 天", "默认 10；三类各自算", "number", { min: 0, max: 100 }),
         F("limits.minePerPerson", "动态回复 / 人 / 类 / 天", "默认 5", "number", { min: 0, max: 20 }),
         F("limits.globalMin", "任意两条发言间隔（分钟）", "默认 2；0 = 不冷却", "number", { min: 0, max: 120 }),
         F("limits.perUpMin", "同一 UP 冷却（分钟）", "默认 10", "number", { min: 0, max: 1440 }),
         F("limits.perVideoMin", "同一视频冷却（分钟）", "默认 60", "number", { min: 0, max: 1440 }),
         F("limits.perThreadMin", "同一条评论冷却（分钟）", "默认 1440（24 小时）", "number", { min: 0, max: 10080 }),
       ]},
-      { group: "四类动态", note: "每类一天一条；时段从该类的点开始，到下一类启用的点为止。前缀留空 = 不加固定开头。", fields: [
-        F("dynamics.enabled", "四类动态总开关", "关掉 = 不再定时提醒发动态", "switch"),
+      { group: "动态", note: "每类一天一条；内容不限，什么类型都可以；时段从该类的点开始，到下一类启用的点为止。前缀留空 = 不加固定开头。", fields: [
+        F("dynamics.enabled", "动态总开关", "关掉 = 不再定时提醒发动态", "switch"),
         F("dynamics.gapMin", "任意两条动态间隔（分钟）", "默认 30；5~240", "number", { min: 5, max: 240 }),
         ...Object.entries({
-          best: "一类 · 最高分视频",
-          game: "二类 · 游戏 AI 二创",
-          anime: "三类 · 动漫",
-          gaming: "四类 · 游戏区",
+          anime: "18 点 · 内容不限",
+          gaming: "20 点 · 内容不限",
+          best: "23 点 · 最高分视频",
         }).flatMap(([key, label]) => [
           F(`dynamics.kinds.${key}.enabled`, `${label} · 开关`, "", "switch"),
           F(`dynamics.kinds.${key}.slot`, `${label} · 时段（点）`, "0~23；从该点起，到下一类启用的点", "number", { min: 0, max: 23 }),
@@ -1494,7 +1493,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
           F(`dynamics.kinds.${key}.prefix`, `${label} · 固定开头`, "留空 = 不加前缀", "text", { wide: true }),
         ]),
       ]},
-      { group: "自由发布（不是任务）", note: "逛 B 站时想发就发，不设每日上限；和四类动态/分享/原创专栏共用「任意两条动态间隔」。想发就发，很多天一条不发也正常。原创视频投稿和审核状态在「视频创作」页。", fields: [
+      { group: "自由发布（不是任务）", note: "逛 B 站时想发就发，不设每日上限；和动态/分享/原创专栏共用「任意两条动态间隔」。想发就发，很多天一条不发也正常。原创视频投稿和审核状态在「视频创作」页。", fields: [
         F("freePost.enabled", "允许自由动态", "文字 / 一张图 / 任意视频卡片 / 链接；不要求是推荐视频", "switch"),
         F("article.enabled", "允许原创专栏", "先 --draft 进草稿箱验证，再用 --go 发布", "switch"),
         F("article.category", "专栏默认分类", "0 = B站默认；有需要再填分类 ID", "number", { min: 0, max: 1000 }),

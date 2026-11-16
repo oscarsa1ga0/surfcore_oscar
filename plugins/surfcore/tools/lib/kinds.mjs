@@ -1,16 +1,17 @@
-// 四类动态的定义（2026-10-21 管理员定；2026-10-22 改成可配置）
+// 动态分类定义（2026-10-21 管理员定；2026-10-22 改成可配置；2026-11-16 砍掉二游那类）
 //
 // 每类**一天一条**，各有默认发布时段和固定开头（前缀默认必须原样出现在正文最前面）：
-//   08:00 一类「推荐评分最高的视频」→ 【哦花哇哇哟！早晨视频递上~】
-//   12:00 二类「六款游戏的 AI 二创」  → 【午mer！hao看的二创】
-//   16:00 三类「动漫」                → 【角色……也算二次元嘛？】
-//   20:00 四类「游戏区视频」          → 【打电动时间dao】
+//   18:00 三类「内容不限」→ 默认无前缀
+//   20:00 四类「内容不限」→ 默认无前缀
+//   23:00 一类「推荐评分最高的视频」→ 默认无前缀
 //
-// 时段规则：从该类的点开始，到**下一类启用的点**为止（默认 08–12 / 12–16 / 16–20 / 20–24）。
-//   错过就等明天 —— 不后补（凌晨补发"早晨视频"很怪 ✗）
+// 2026-11-16 主人定：不再要求动态的内容类别，什么类型都可以；二类「游戏 AI 二创」整类删除。
+//
+// 时段规则：从该类的点开始，到**下一类启用的点**为止。
+//   错过就等明天 —— 不后补。
 //
 // 2026-10-22：开关/时段/长度/前缀移到 bili.config.json 的 `dynamics` 段，
-//   设置页「四类动态」可编辑；本文件只保留默认值和收敛逻辑。
+//   设置页「动态」可编辑；本文件只保留默认值和收敛逻辑。
 //   质量门槛（近 N 天/播放/点赞率）仍在 daily.mjs 里，故意不开放——
 //   那是"选题质量"，不是"发不发"。
 import { config } from './config.mjs'
@@ -19,19 +20,15 @@ export const CATCHUP_DAY = '2026-10-21'
 
 export const DEFAULT_KINDS = {
   best: {
-    n: 1, label: '最高分视频', slot: 8, prefix: '【哦花哇哇哟！早晨视频递上~】',
+    n: 1, label: '最高分视频', slot: 23, prefix: '',
     minLen: 50, maxLen: 100, enabled: true,
   },
-  game: {
-    n: 2, label: '游戏 AI 二创', slot: 12, prefix: '【午mer！hao看的二创】',
-    minLen: 60, maxLen: 200, enabled: true,
-  },
   anime: {
-    n: 3, label: '动漫', slot: 16, prefix: '【二次元……也算二次元嘛？】',
+    n: 3, label: '内容不限', slot: 18, prefix: '',
     minLen: 60, maxLen: 200, enabled: true,
   },
   gaming: {
-    n: 4, label: '游戏区', slot: 20, prefix: '【打电动时间dao】',
+    n: 4, label: '内容不限', slot: 20, prefix: '',
     minLen: 60, maxLen: 200, enabled: true,
   },
 }
@@ -53,7 +50,7 @@ function clampPrefix(value, fallback) {
   return value.replace(/[\r\n]+/g, ' ').trim().slice(0, 80)
 }
 
-/** 把配置收敛成运行期的四类定义（缺省值来自 DEFAULT_KINDS）。 */
+/** 把配置收敛成运行期的分类定义（缺省值来自 DEFAULT_KINDS）。 */
 export function kindsNow(cfg) {
   const src = cfg && typeof cfg === 'object' ? cfg : config()
   const user = src?.dynamics?.kinds && typeof src.dynamics.kinds === 'object' ? src.dynamics.kinds : {}

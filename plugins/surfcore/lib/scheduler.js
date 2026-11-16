@@ -531,6 +531,8 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     '     在 `--go` 之前跑一遍：`node "/Users/wangyiyi/.dsh/surfcore/state/bili-agents/style-check.mjs" "<要发的文字>"`',
     '     它按人设卡 §四.10「少一点 AI 味」逐条检查：我认、破折号——、不是…而是…、直角引号/花引号、开头先肯定、先复述对方再肯定、首先其次、总结腔、模板腔、作为一个 AI。',
     '     ⚠️ 红了就改到绿再发；不要靠记性，靠这一步 ✗',
+    '     ✍️ 格式（2026-11-16 主人定）：评论**不打句号**，用空格断句；太长就换行。单句短句直接说不带标点也行。',
+    '     ✍️ 接梗时不要先复述对方的话，直接给自己的反应（例：笑死我 我掉线也这样）。遇问句先回答，再想别的。',
     '4.7) ⭐ **每次醒来至少发一条主动评论（2026-10-23 主人定的硬规则）**：',
     '     看完想吐槽/想夸/想接梗/想补充 → 直接发一条普通评论（不 @ 我，是你自己在说话）：',
     '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
@@ -553,21 +555,14 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
     ...(skipDailyDynamics ? [] : [
-      `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
+      `4.95) ⭐ **今天的动态（共三类：best / anime / gaming）**：时段 ${String(K.best.slot).padStart(2, '0')}:00 / ${String(K.anime.slot).padStart(2, '0')}:00 / ${String(K.gaming.slot).padStart(2, '0')}:00；**内容不限，什么类型都可以**（设置页关掉的类会跳过）`,
       '     `daily --kind best --text "…" --dry` → `--go`',
-      '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
-      `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
+      '     ⚠️ best 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）；另外两类挑你今天真想推的，什么类型都行 ✓',
+      `     ⚠️ 正文 best **${K.best.minLen}~${K.best.maxLen} 字**，另外两类 **${K.anime.minLen}~${K.anime.maxLen} 字**，用你（当前人格卡）的口吻说 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
       '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
       '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
       '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
       '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
-      // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
-      '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
-      '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
-      '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
-      `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
-      '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
-      '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
     ]),
     // 2026-10-21（用户定）：**全局回复规则** —— 疑似被攻击/阴阳怪气一律不接，记账等审
     '4.99) ⭐⭐ **遇到攻击 / 阴阳怪气 → 一个字都别回，记待审**：',
@@ -586,7 +581,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     '     封面：有合适的本地图就传 `--cover`；没有现成图时，也可以自己用本机 Python/Pillow 生成一张 1146×717 的简单图（色块+标题+小鱼），存本地再 `--cover`；不想画就不传，别拿别人视频的封面。Pillow 是 bash 里的脚本，不是内置生图工具。',
     '     ⚠️ 两种日记都可以用：B站侧的 whale-diary / whale-diary-private，和你晚上用 diary_write 写的那本；公开前自己挑适合公开的段落。',
     '     ⚠️ 这是**公开发布**，自己判断什么适合公开；`diary_share` 只用于给主人看，不是公开发布授权。',
-    `     ⚠️ 和四类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
+    `     ⚠️ 和三类动态/分享/专栏共用间隔：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟；发布后照例 notify 报备。`,
     ...(B.video?.enabled && B.video?.offerOnWake ? [
       '     你也可以做本地视频。只有想创作时才打开 `video-project list --json`，先看看上次有无在做的项目。准备题材时可以参考 feed 和 debrief；观看缓存仅用于参考，剪辑只用素材库登记的 assetId。',
       '     先用 `video-project help` 看命令。渲染排队后可以先收工；下次用 preview 看关键帧、旁白、字幕和质检。用 compare 对照旧版，用 revise 按镜头改一版，满意时用 review --decision keep，想搁置时用 shelve 决策。每天最多主动提交三十次渲染（2026-11-14 主人定：两次 → 五次 → 十次 → 三十次；按天算，别在一天里把额度用光）。',
@@ -603,7 +598,7 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     `   · 当前分享方式：${B.share?.via === 'dm' ? 'B 站私信' : '自己的公开动态'}。`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
-    `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
+    `     - 和三类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
     '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
     '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
     `     ⚠️ 必须带 --share：使用分享额度（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）。`,
@@ -1492,7 +1487,7 @@ export function startScheduler(ctx, opts) {
     log(`[bili-whale] 直播间监听已挂上（房间 ${room} · ${String(L.liveScope ?? 'owner') === 'owner' ? '只回主人' : '只回@她的'}）✓`)
   }
 
-  // ── 四类动态的定点提醒 + 补发（2026-10-21 加，当晚扩成"错过就补"）──────
+  // ── 动态的定点提醒 + 补发（2026-10-21 加；2026-11-16 由四类改成三类）──────
   //   正常：按设置页的 slot 到点提醒（默认 08/12/16/20）
   //   补发：重启后发现今天有类错过了时段 → **一次只提醒一类**，两条之间隔 dynamics.gapMin
   //   （`daily-nudge.json` 记每类最近一次提醒，gapMin 内不重复吵她 ✓）
@@ -1622,7 +1617,7 @@ export function startScheduler(ctx, opts) {
 
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
       // 2026-11-13 用户定：dynTick 不再“只发动态”，而是先完整逛 B 站（feed/debrief/评论/收件箱/点赞/收藏/日记），
-      // 逛到第 4.99 步后再发这一类动态；抑制完整流程里的 4.95/4.97，避免同一天重复发。
+      // 逛到第 4.99 步后再发这一类动态；抑制完整流程里的 4.95，避免同一天重复发。
       const day = today()
       // 2026-11-15 修：inSlot 原来只定义在 queueBili 的回调里，下面日志在回调外引用 →
       // ReferenceError「inSlot is not defined」，整条动态提醒被判失败（12:00 那次就没醒）。
@@ -1655,7 +1650,7 @@ export function startScheduler(ctx, opts) {
             ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
             kind === 'best'
               ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
-              : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
+              : '1) 挑一条你今天真的想推的视频（什么类型都行）→ `debrief` 确认质量',
             `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
             inSlot
               ? `3) \`daily --kind ${kind} --text "…" --dry\` → \`--go\``
@@ -1697,7 +1692,7 @@ export function startScheduler(ctx, opts) {
     setTimeout(() => { dmTick().catch(() => {}) }, 25_000),
     setTimeout(() => { liveTick().catch(() => {}) }, 20_000),
   ]
-  // 2026-10-21（用户定）：四类动态各有固定发布点 —— 到点叫她一次（08/12/16/20）
+  // 2026-10-21（用户定）：动态各有固定发布点 —— 到点叫她一次（现在 18/20/23）
   const timerDyn = setInterval(() => { dynTick().catch(() => {}) }, 60_000)
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
   const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)

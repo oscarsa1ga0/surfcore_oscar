@@ -64,7 +64,7 @@ export async function myDynamicCommentIds(cred, force = false) {
   }
 }
 
-// ── 每条动态属于哪一类（一类=最高分视频 / 二类=游戏 AI 二创）────────────
+// ── 每条动态属于哪一类（best=最高分视频 / anime、gaming=内容不限）────────────
 //   回评时靠它决定记「动态回复」还是「二创动态回复」那本账。
 const KINDS = biliState('dyn-kinds.json')
 const loadKinds = () => { try { return JSON.parse(fs.readFileSync(KINDS, 'utf8')) } catch { return {} } }

@@ -61,7 +61,7 @@ assert.equal(bili.share.via, 'dynamic');
 // 2026-10-22：四本账额度 / 四类动态改成可编辑，保存时必须收敛
 const biliEditable = normalizeBiliConfig({
   limits: { daily: -1, globalMin: 999, mineDaily: 50 },
-  dynamics: { gapMin: 1, kinds: { best: { slot: 99 }, game: { enabled: false } } },
+  dynamics: { gapMin: 1, kinds: { best: { slot: 99 } } },
 });
 assert.equal(biliEditable.limits.daily, 0);
 assert.equal(biliEditable.limits.globalMin, 120);
@@ -69,8 +69,7 @@ assert.equal(biliEditable.limits.mineDaily, 50);
 assert.equal(biliEditable.dynamics.gapMin, 5);
 assert.equal(biliEditable.dynamics.kinds.best.slot, 23);
 assert.equal(biliEditable.dynamics.kinds.best.minLen, 50);
-assert.equal(biliEditable.dynamics.kinds.anime.slot, 16);
-assert.equal(biliEditable.dynamics.kinds.game.enabled, false);
+assert.equal(biliEditable.dynamics.kinds.anime.slot, 18);
 assert.equal(biliEditable.dynamics.enabled, true);
 
 // 2026-10-23：偏好权重（用户要求「每个偏好能拉高/降低」）保存时收敛。
