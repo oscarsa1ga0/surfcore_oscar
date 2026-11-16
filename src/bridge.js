@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { classifyEmotionText, composeCharacterContext } from './emotion.js';
+import { evaluateQqStyle } from './style-gate.js';
 import { dialogueEmotionScope, enqueueEmotionEvent, readCurrentEmotion } from './emotion-events.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
@@ -7417,7 +7418,7 @@ async function main() {
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
             const splitWarn = findSplitBoundaryWarning(messages);
-            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
+            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) , ...(sentMessages.styleWarnings?.length ? { styleWarn: `有点 AI 味：${sentMessages.styleWarnings.join('、')}；能改就改，别硬发` } : {}) });
           } catch (error) {
             if (error?.sent?.length) {
               recordSentMessagesV2(key, error.sent);
@@ -7568,7 +7569,7 @@ async function main() {
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
             const splitWarn = findSplitBoundaryWarning(messages);
-            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotedInfo, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
+            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotedInfo, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) , ...(sentMessages.styleWarnings?.length ? { styleWarn: `有点 AI 味：${sentMessages.styleWarnings.join('、')}；能改就改，别硬发` } : {}) });
           } catch (error) {
             if (error?.sent?.length) {
               recordSentMessagesV2(key, error.sent);
@@ -10083,7 +10084,7 @@ async function main() {
             log(`[send] ${url.pathname} ${key}: 成功 ${sentMessages.length}/1 条`);
             appendActivity(`${key} [send] 成功 ${sentMessages.length}/1 条：${message.slice(0, 80)}`);
             if (sentMessages.length > 0) scheduleReplyCheckV2(key);
-            sendJson({ ok: true, key, sent: sentMessages.length, failed: sentMessages.length ? 0 : 1, quoted: quotedInfo });
+            sendJson({ ok: true, key, sent: sentMessages.length, failed: sentMessages.length ? 0 : 1, quoted: quotedInfo, ...(sentMessages.styleWarnings?.length ? { styleWarn: `有点 AI 味：${sentMessages.styleWarnings.join('、')}；能改就改，别硬发` } : {}) });
           } catch (error) {
             if (error?.sent?.length) {
               recordSentMessagesV2(key, error.sent);
@@ -11425,12 +11426,20 @@ async function main() {
     return delays;
   }
 
+  function styleCheckConfig() {
+    const raw = cfg.socialV2?.styleCheck ?? {};
+    const mode = ['off', 'warn', 'block'].includes(raw.mode) ? raw.mode : 'warn';
+    return { enabled: raw.enabled !== false && mode !== 'off', mode, minChars: Math.max(0, Number(raw.minChars) || 8) };
+  }
+
   function sendMessagesV2(key, messages, delays, replyToMessageId, atUserId = null) {
     const assertSendAllowed = captureSendGuard(key);
     const retryContext = captureReplyContext(key);
     const [kind, id] = key.split(':');
     const sent = [];
     const failed = [];
+    const styleCfg = styleCheckConfig();
+    const styleWarnings = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const useReply = i === 0 ? replyToMessageId : null;
@@ -11438,6 +11447,18 @@ async function main() {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
+          if (styleCfg.enabled) {
+            const style = await evaluateQqStyle(msg, { minChars: styleCfg.minChars });
+            if (style.hard.length) {
+              const names = style.hard.slice(0, 3).join('、');
+              if (styleCfg.mode === 'block') {
+                throw new Error(`这句有 AI 味（${names}），改写后再发；这一条没有发出去`);
+              }
+              styleWarnings.push(...style.hard);
+              log(`[style] ${key} 提示 AI 味：${names}`);
+            }
+            if (style.soft.length) styleWarnings.push(...style.soft);
+          }
           await onebotSend(kind, id, msg, useReply, useAt, { retryContext });
           sent.push(msg);
         })
@@ -11457,6 +11478,9 @@ async function main() {
         throw err;
       }
       if (sent.length) recordSelfMemoryEvent(key, sent.join('\n'));
+      if (styleWarnings.length) {
+        sent.styleWarnings = [...new Set(styleWarnings)].slice(0, 4);
+      }
       return sent;
     });
   }
@@ -11489,6 +11513,19 @@ async function main() {
 
   // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
   async function auditAndSend(key, text) {
+    const styleCfg = styleCheckConfig();
+    if (styleCfg.enabled) {
+      const style = await evaluateQqStyle(text, { minChars: styleCfg.minChars });
+      if (style.hard.length) {
+        const names = style.hard.slice(0, 3).join('、');
+        if (styleCfg.mode === 'block') {
+          log(`[style] ${key} 机器模式发送被拦：${names}`);
+          appendActivity(`${key} [style] 机器模式发送被拦：${names}`);
+          return false;
+        }
+        log(`[style] ${key} 机器模式提示 AI 味：${names}`);
+      }
+    }
     const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && String(text ?? '').includes(t));
     if (shouldAuditKey(key) && (SENSITIVE_RE.test(text) || hasKnownToken)) {
       log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);

@@ -1289,6 +1289,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.history.wake", "发现漏消息时主动醒一次", "默认开；关掉则只并入未读，等下次有人说话再看", "switch"),
         F("socialV2.history.includePrivate", "也补私聊", "默认开；只补白名单会话", "switch"),
       ]},
+      { group: "二代 · 出门检查（AI 味）", note: "规则在 B站 工作区的 style-rules.mjs；B站 评论和 QQ 共用同一份。", fields: [
+        F("socialV2.styleCheck.enabled", "出门检查", "发送前扫一遍 AI 味规则（通用条）", "switch"),
+        F("socialV2.styleCheck.mode", "模式", "warn=只提醒照发；block=拦下不发；off=关闭", "text"),
+        F("socialV2.styleCheck.minChars", "最短检查字数", "默认 8；更短的句子直接跳过", "number", { min: 0, max: 100 }),
+      ]},
       { group: "二代 · 发送与节奏", fields: [
         F("socialV2.send.burstEnabled", "分条发送", "", "switch"),
         F("socialV2.send.burstMaxMessages", "单轮最多条数", "", "number", { min: 1 }),
