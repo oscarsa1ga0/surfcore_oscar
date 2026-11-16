@@ -5840,7 +5840,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "频率与触发规则保存后立即生效；总闸改动后建议重启桥接。")),
         h("div", { className: "qbw-card" },
           h("strong", null, "BreezeBlue"),
-          h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "API Key 只写本机 config.json；输出 wav_24000，直接进 QQ 语音条。"),
+          h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "API Key 只写本机 config.json；输出 wav_24000，直接进 QQ 语音条。发语音时她自己可传 tone（开心/温柔/委屈/生气/疲惫/撒娇/平静/兴奋）改变语气；预设可用 config 的 socialV2.voice.tonePresets 覆盖。"),
           h("div", { style: { marginTop: "10px", fontSize: "13px" } }, "Base URL",
             h("input", { className: "qbw-input", defaultValue: bz.baseUrl || "", onBlur: (e) => saveBreeze({ baseUrl: e.target.value }), style: { marginLeft: "8px", width: "320px" } })),
           h("div", { style: { marginTop: "8px", fontSize: "13px" } }, "Voice ID",

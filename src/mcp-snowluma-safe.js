@@ -1323,23 +1323,27 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectStic
 if (true) {
   server.tool(
     'qq_send_voice',
-    '在指定会话发一条 QQ 语音。两种来源二选一：① text：把这句话用当前 TTS 服务（BreezeBlue 云端或本地语音包）现场合成后发出去（最常用，像"说一句"而不是"转发一段录音"）；② voice：把语音库里准备好的音频当语音条发出去（传 qq_list_voices 返回的 name，可带子目录/可省略扩展名）。注意：① text 受字数上限（默认 120 字）与合成耗时约束，太长就分次说或改打字；② 受频率上限约束（见 qq_list_voices 的 limits），超限会被拒绝；③ 语音是「开口说话」的强表达，别滥用，闲聊里偶尔发一条即可；④ 返回的 verified=true 表示已经用 get_msg 回读到这条消息的 record 段（语音确实落地了）—— 只有 verified=true 才能对用户说你发了语音；⑤ 返回 502/「语音合成失败」说明当前 TTS 服务不可用（Breeze 配置/网络或本地语音包），此时**改回打字**，不要重试也不要假装发了；⑥ readback 只对「收到的」语音有意义（QQ 会转写别人的语音），自己发的语音一般拿不到转写文本，默认关闭；⑦ 如果返回 code=VOICE_DISABLED，说明语音总闸/工具开关没开，按返回里的 hint 去设置页开启，别反复重试。',
+    '在指定会话发一条 QQ 语音。两种来源二选一：① text：把这句话用 BreezeBlue 现场合成后发出去（最常用，像"说一句"而不是"转发一段录音"）；② voice：把语音库里准备好的音频当语音条发出去（传 qq_list_voices 返回的 name，可带子目录/可省略扩展名）。tone：可选语气（开心/温柔/委屈/生气/疲惫/撒娇/平静/兴奋），会改变合成语气；intensity 0~1 控制强弱。注意：① text 受字数上限（默认 120 字）与合成耗时约束，太长就分次说或改打字；② 受频率上限约束（见 qq_list_voices 的 limits），超限会被拒绝；③ 语音是「开口说话」的强表达，别滥用，闲聊里偶尔发一条即可；④ 返回的 verified=true 表示已经用 get_msg 回读到这条消息的 record 段（语音确实落地了）—— 只有 verified=true 才能对用户说你发了语音；⑤ 返回 502/「语音合成失败」说明 BreezeBlue 不可用（Key/额度/网络），此时**改回打字**，不要重试也不要假装发了；⑥ readback 只对「收到的」语音有意义（QQ 会转写别人的语音），自己发的语音一般拿不到转写文本，默认关闭；⑦ 如果返回 code=VOICE_DISABLED，说明语音总闸/工具开关没开，按返回里的 hint 去设置页开启，别反复重试。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
       voice: z.string().optional().describe('语音库里的文件名（来自 qq_list_voices 的 name，可带子目录/可省略扩展名）。与 text 二选一'),
       text: z.string().optional().describe('要说的话：用当前 TTS 服务（BreezeBlue/本地语音包）现场合成后作为语音条发出（最多 120 字）。与 voice 二选一'),
+      tone: z.string().optional().describe('可选语气：开心 / 温柔 / 委屈 / 生气 / 疲惫 / 撒娇 / 平静 / 兴奋；不传就是基础语气'),
+      intensity: z.number().optional().describe('可选 0~1：语气强弱（默认按预设）'),
       label: z.string().optional().describe('可选：写进会话记录里的说明，如「说了句晚安」'),
       verify: z.boolean().optional().describe('是否回读校验语音已落地（默认 true，建议保持开启）'),
       readback: z.boolean().optional().describe('是否额外索取 QQ 转写文本（自己发的语音通常没有，默认 false）')
     },
-    async ({ key, token, voice, text: sayText, label, verify, readback }) => {
+    async ({ key, token, voice, text: sayText, tone, intensity, label, verify, readback }) => {
       try {
         const data = await agentApi('/api/socialV2/send-voice', {
           method: 'POST',
           body: JSON.stringify({
             key,
             ...(sayText ? { text: String(sayText) } : { voice: String(voice ?? '') }),
+            ...(tone ? { tone: String(tone) } : {}),
+            ...(intensity === undefined || intensity === null ? {} : { intensity: Number(intensity) }),
             label: label || '',
             verify: verify !== false,
             readback: readback === true,

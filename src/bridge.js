@@ -2182,6 +2182,30 @@ async function main() {
     return null;
   }
 
+  // 语音语气预设（方案 2：她发语音时自己选 tone）。会拼进 Breeze instructions。
+  const VOICE_TONES = {
+    '开心': '语气轻快，尾音微微上扬，带一点笑意',
+    '温柔': '语气柔和，语速稍慢，像在耳边说话',
+    '委屈': '语气低一点，语速慢，句尾往下沉',
+    '生气': '语气硬，语速稍快，不拖泥带水',
+    '疲惫': '声音有点懒，语速偏慢，不用力',
+    '撒娇': '带点笑意和黏糊，尾音软下来',
+    '平静': '平稳、干净，不带明显情绪',
+    '兴奋': '语速快一点，情绪外放，声音亮',
+  };
+
+  function toneInstructions(tone, intensity) {
+    const name = String(tone || '').trim();
+    const custom = cfg.socialV2?.voice?.tonePresets ?? {};
+    const preset = name ? String(custom[name] || VOICE_TONES[name] || '') : '';
+    if (!preset) return '';
+    const k = Number(intensity);
+    const adjust = Number.isFinite(k)
+      ? (k >= 0.75 ? '语气再明显一点' : k <= 0.3 ? '收着一点，不要过' : '')
+      : '';
+    return [preset, adjust].filter(Boolean).join('；');
+  }
+
   function voiceCfg() {
     const v = cfg.socialV2?.voice ?? {};
     return {
@@ -2246,7 +2270,7 @@ async function main() {
   /**
    * text → 本地 wav。AI 通道与操作者通道共用，抛出的错误已经是可直接展示的句子。
    */
-  async function synthesizeVoiceText(text, { character = '', voice = '', route = '' } = {}) {
+  async function synthesizeVoiceText(text, { tone = '', intensity = null } = {}) {
     const vc = voiceCfg();
     const say = String(text ?? '').trim();
     if (!say) throw codedVoiceError(new Error('要合成的内容是空的'));
@@ -2258,16 +2282,27 @@ async function main() {
     }
     if (say.length > vc.tts.maxChars) throw codedVoiceError(new Error(`要说的话最多 ${vc.tts.maxChars} 字（收到 ${say.length}）`));
 
+    const base = String(vc.tts.breeze.instructions || '');
+    const extra = toneInstructions(tone, intensity);
+    const withTone = [base, extra].filter(Boolean).join('；').slice(0, 300);
+    const attempt = (instructions) => synthesizeToFile({
+      text: say,
+      breeze: { ...vc.tts.breeze, instructions },
+      timeoutMs: vc.tts.timeoutMs,
+      cacheVersion: vc.tts.cacheVersion ?? null,
+      outDir: vc.tts.dir,
+    });
     try {
-      const result = await synthesizeToFile({
-        text: say,
-        provider: 'breeze',
-        breeze: vc.tts.breeze,
-        timeoutMs: vc.tts.timeoutMs,
-        cacheVersion: vc.tts.cacheVersion ?? null,
-        outDir: vc.tts.dir,
-      });
-      return { path: result.path, via: 'tts', ttsCached: result.cached, ttsDurationMs: result.durationMs, route: 'breeze' };
+      let result;
+      try {
+        result = await attempt(withTone);
+      } catch (error) {
+        // 带语气被上游拒绝时退回基础语气重试一次，别让整条语音失败。
+        if (!extra) throw error;
+        log(`[voice] 带语气（${tone}）合成失败，退回基础语气重试：${String(error?.message ?? error).slice(0, 120)}`);
+        result = await attempt(base);
+      }
+      return { path: result.path, via: 'tts', ttsCached: result.cached, ttsDurationMs: result.durationMs, route: 'breeze', tone: extra ? String(tone) : '' };
     } catch (error) {
       const info = classifyVoiceError(error?.message ?? error);
       logVoiceError({ scope: 'synth', route: 'breeze', code: info.code, stage: info.stage, message: String(error?.message ?? error).slice(0, 400) });
@@ -7906,9 +7941,8 @@ async function main() {
           try {
             resolved = opText
               ? await synthesizeVoiceText(opText, {
-                  character: body.character ? String(body.character) : '',
-                  voice: body.voice ? String(body.voice) : '',
-                  route: body.route ? String(body.route) : ''
+                  tone: body.tone ? String(body.tone) : '',
+                  intensity: body.intensity === undefined ? null : Number(body.intensity)
                 })
               : resolveVoicePathForOperator(body.file ?? body.path ?? '');
           } catch (error) {
@@ -8058,8 +8092,8 @@ async function main() {
             try {
               voiceBudgetCheck(key, voice);
               resolved = await synthesizeVoiceText(sayText, {
-                character: body.character ? String(body.character) : '',
-                route: body.route ? String(body.route) : ''
+                tone: body.tone ? String(body.tone) : '',
+                intensity: body.intensity === undefined ? null : Number(body.intensity)
               });
             } catch (error) {
               const msg = error?.message ?? String(error);
@@ -14366,7 +14400,7 @@ async function main() {
     const on = enabled && tool;
     const state = `总闸${enabled ? '开' : '关'}；发语音工具${tool ? '开' : '关'}${enabled ? `；语音库 ${count} 个（text 模式不依赖语音库）` : ''}`;
     return `【语音状态】${state}。${on
-      ? 'qq_send_voice 当前可用；工具存在就正常使用，不要因为旧提示/旧记忆里的“不能发语音”拒绝，也不要假装发过。若工具列表里没有 qq_send_voice，说明 MCP 还没重启，重启 DSH 后再试。'
+      ? 'qq_send_voice 当前可用（可选 tone：开心/温柔/委屈/生气/疲惫/撒娇/平静/兴奋，intensity 0~1 控强弱）；工具存在就正常使用，不要因为旧提示/旧记忆里的“不能发语音”拒绝，也不要假装发过。若工具列表里没有 qq_send_voice，说明 MCP 还没重启，重启 DSH 后再试。'
       : '当前不能发语音；只有确实需要时才按 VOICE_DISABLED / VOICE_TOOL_DISABLED 的 hint 去设置，不要反复重试或假装发送。'}\n\n`;
   }
   function ownerMessageTag() {
