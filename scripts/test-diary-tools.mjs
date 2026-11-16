@@ -77,7 +77,8 @@ test('候选：capture 后可读；同日重复不重复记', async () => {
 
 test('分享边界：private 整篇拒绝、原文摘录通过、改写拒绝', async () => {
   const body = '今天和主人聊了很久，最后他说希望我一直记得今天。';
-  const write = await call('diary_write', { content: body });
+  // 固定过去日期 + newEntry，避免和别的用例共用「当天最后一篇」。
+  const write = await call('diary_write', { content: body, date: '2026-01-07' });
   const full = await call('diary_share', { id: write.entry.id, mode: 'full' });
   assert.equal(full.ok, false);
   assert.match(full.error, /私人日记/);
@@ -90,7 +91,7 @@ test('分享边界：private 整篇拒绝、原文摘录通过、改写拒绝', 
   assert.equal(excerpt.ok, true);
   assert.equal(excerpt.text, '最后他说希望我一直记得今天。');
 
-  const shareable = await call('diary_write', { content: '这条可以给你看：今天学会了一句新歌。', visibility: 'shareable' });
+  const shareable = await call('diary_write', { content: '这条可以给你看：今天学会了一句新歌。', date: '2026-01-07', newEntry: true, visibility: 'shareable' });
   const whole = await call('diary_share', { id: shareable.entry.id, mode: 'full' });
   assert.equal(whole.ok, true);
   assert.equal(whole.text, '这条可以给你看：今天学会了一句新歌。');
@@ -119,4 +120,31 @@ test('参数错误返回 ok:false，不抛到工具层外', async () => {
   assert.equal(badDay.ok, false);
   const badId = await call('diary_delete', { id: '../../etc/passwd' });
   assert.equal(badId.ok, false);
+});
+
+test('同一天默认追加到最后一篇，newEntry 才另开一篇', async () => {
+  // 用固定过去日期，避免和前面用例当天写的条目串到一起。
+  const day = '2026-01-05';
+  const first = await call('diary_write', { content: '第一篇，先写到这里。', title: '一天一篇', date: day });
+  assert.equal(first.ok, true);
+  assert.equal(first.appended, undefined);
+  assert.equal(first.entry.date, day);
+
+  const second = await call('diary_write', { content: '后面又想起一段，接着写。', date: day });
+  assert.equal(second.ok, true);
+  assert.equal(second.appended, true, '第二次写同一天应该追加，而不是新开');
+  assert.equal(second.entry.id, first.entry.id, '追加到同一篇');
+  assert.equal(second.entry.title, '一天一篇', '追加不该改标题');
+
+  const body = (await call('diary_read', { id: first.entry.id })).entries[0].body;
+  assert.ok(body.includes('第一篇'), '原文还在');
+  assert.ok(body.includes('后面又想起一段'), '追加的内容进了同一篇');
+
+  const sep = await call('diary_write', { content: '这件事跟上面不相干，另起一篇。', date: day, newEntry: true });
+  assert.equal(sep.ok, true);
+  assert.equal(sep.appended, undefined);
+  assert.notEqual(sep.entry.id, first.entry.id, 'newEntry:true 才应该新建');
+
+  const list = await call('diary_list', { from: day, to: day, limit: 10 });
+  assert.equal(list.entries.filter((entry) => entry.date === day).length, 2, '当天应该正好两篇');
 });

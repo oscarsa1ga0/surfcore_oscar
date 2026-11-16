@@ -10,7 +10,7 @@
  */
 import path from 'node:path';
 import {
-  captureCandidate, createEntry, deleteEntry, editEntry, getCurrentCharacter, listEntries,
+  captureCandidate, createEntry, deleteEntry, editEntry, getCurrentCharacter, listEntries, localDay,
   readEntries, resolveCharacter, searchEntries, shareEntry,
 } from '../../../src/diary-store.js';
 
@@ -88,19 +88,40 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
   const tools = [
     textTool(
       'diary_write',
-      '写一篇自己的日记：第一人称、自然，写给自己看，不是给主人交报告。可以写今天发生的事、当时想法、和主人/别人的相处；没有值得记的就别写，不要编造。',
+      '写自己的日记：第一人称、自然，写给自己看，不是给主人交报告。默认接着当天的最后一篇往后写（追加），不会另开新篇；确实要在同一天另起一篇时才传 newEntry: true。',
       {
         content: { type: 'string', description: '日记正文（第一人称）；最多 20000 字。', required: true },
         title: { type: 'string', description: '可选标题；不强制。' },
         date: { type: 'string', description: '写哪一天（YYYY-MM-DD）；默认今天，不能写未来。' },
+        newEntry: { type: 'boolean', description: '默认 false：当天已有日记就追加到最后一篇。true = 确实要在同一天另开一篇（标题/可见性独立）。' },
         tags: TAGS,
-        visibility: { type: 'string', enum: ['private', 'shareable'], description: '默认 private（只给自己）；shareable 表示这篇你愿意整篇给主人看。' },
+        visibility: { type: 'string', enum: ['private', 'shareable'], description: '默认 private（只给自己）；shareable 表示这篇你愿意整篇给主人看。追加时沿用原篇的可见性。' },
         afterWriting: feeling,
         source: { type: 'string', description: '来源标记，如 qq/bili/pet/manual；默认 manual。' },
         characterId: CHARACTER_ID,
       },
       (args) => {
         const current = resolveCurrent(args);
+        const day = pickString(args, 'date', 10) || localDay();
+        // 默认「一天一篇」：当天已经有日记就追加到最后一篇，避免她每次想到什么都新开一篇。
+        // 真要在同一天另起一篇（不同的事）时显式传 newEntry: true。
+        if (args.newEntry !== true && String(args.content ?? '').trim() !== '') {
+          const existing = readEntries(current.diaryDir, { date: day, limit: 10 });
+          const last = [...existing.entries].sort((a, b) => String(a.id).localeCompare(String(b.id))).pop();
+          if (last) {
+            const tags = Array.isArray(args.tags)
+              ? [...new Set([...(last.tags ?? []), ...args.tags])]
+              : undefined;
+            const result = editEntry(current.diaryDir, {
+              id: last.id,
+              append: args.content,
+              tags,
+              characterId: current.id,
+            });
+            if (result?.ok) result.appended = true;
+            return noteFeeling(current, result, args.afterWriting);
+          }
+        }
         const result = createEntry(current.diaryDir, {
           content: args.content,
           title: pickString(args, 'title'),
