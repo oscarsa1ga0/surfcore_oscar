@@ -8,7 +8,8 @@
 //   node bili.mjs score --best      只看最高分那条
 import { recordScore, today, todayScores, bestToday } from '../lib/scores.mjs'
 import { recordBiliEmotion } from '../lib/emotion.mjs'
-import { currentCharacter } from '../lib/state-paths.mjs'
+import { biliState, currentCharacter } from '../lib/state-paths.mjs'
+import fs from 'node:fs'
 
 const emotionRole = currentCharacter()
 const argv = process.argv.slice(2)
@@ -43,6 +44,7 @@ const score = Number(opt.score)
 if (!/^BV[0-9A-Za-z]{10}$/.test(bv)) { console.error('用法: score <BV号> --score 0-20 [--reason "…"] [--title "…"]'); process.exit(2) }
 if (!Number.isFinite(score) || score < 0 || score > 20) { console.error('✗ --score 必须是 0~20 的数字（每项 0-4，满 20）'); process.exit(2) }
 
+const prevToday = todayScores().find((item) => item.bv === bv)
 const list = recordScore({ bv, score, reason: String(opt.reason ?? ''), title: String(opt.title ?? '') })
 if (list.some((item) => item.bv === bv)) {
   recordBiliEmotion(score >= 16 ? 'enjoyed' : 'rated', `score:${bv}:${today()}`, emotionRole)
@@ -50,3 +52,22 @@ if (list.some((item) => item.bv === bv)) {
 const best = [...list].sort((a, b) => Number(b.score) - Number(a.score))[0]
 console.log(`✓ 记下了：${bv} → ${score}/20`)
 console.log(`  今天最高分：${best.bv}（${best.score}/20）${best.bv === bv ? '  ← 就是这条' : ''}`)
+
+// 打分后顺手想一下（2026-11-16 主人要）：只在高分/首次打分时提示一次，
+// 点赞/投币/收藏都做过了就不出现；不阻塞、不算配额。
+function readStateJson(name) {
+  try { return JSON.parse(fs.readFileSync(biliState(name), 'utf8')) } catch { return null }
+}
+const dayKey = today()
+const quotaLog = Array.isArray(readStateJson('quota.json')?.log) ? readStateJson('quota.json').log : []
+const done = (type) => quotaLog.some((x) => x?.type === type && x?.at
+  && new Date(x.at).toLocaleDateString('sv-SE') === dayKey && String(x?.target ?? '') === `BV:${bv}`)
+const faved = (Array.isArray(readStateJson('favorites.json')?.items) ? readStateJson('favorites.json').items : [])
+  .some((x) => String(x?.bv ?? '') === bv)
+const changed = !prevToday || Number(score) > Number(prevToday.score ?? -1)
+const allDone = done('like-video') && done('coin') && faved
+if (score >= 13 && changed && !allDone) {
+  console.log('')
+  console.log('── 顺手想一下 ──')
+  console.log(`这条 ${score} 分：点赞？ 投币？ 收藏？ 关注这个 UP？`)
+}
