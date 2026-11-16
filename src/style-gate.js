@@ -49,9 +49,16 @@ export async function loadStyleRules(filePath) {
  */
 export async function evaluateQqStyle(text, { minChars = 8 } = {}) {
   const t = String(text ?? '');
-  if ([...t].length < Math.max(0, Number(minChars) || 0)) return { hard: [], soft: [], skipped: true };
+  const short = [...t].length < Math.max(0, Number(minChars) || 0);
   const mod = await loadStyleRules();
   if (!mod) return { hard: [], soft: [], unavailable: true };
   const res = mod.scanStyle(t, { surface: 'qq' });
-  return { hard: Array.isArray(res?.hard) ? res.hard : [], soft: Array.isArray(res?.soft) ? res.soft : [] };
+  const rules = Array.isArray(res?.rules) ? res.rules : [];
+  // 短句默认跳过，但标了 always 的规则（如「我记下了」）照样查。
+  const hard = Array.isArray(res?.hard) ? res.hard.filter((name) => {
+    if (!short) return true;
+    return rules.some((rule) => rule?.name === name && rule.always === true);
+  }) : [];
+  const soft = short ? [] : (Array.isArray(res?.soft) ? res.soft : []);
+  return { hard, soft, ...(short ? { skipped: true } : {}) };
 }

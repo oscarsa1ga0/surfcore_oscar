@@ -14,6 +14,7 @@ export const STYLE_RULES = [
   { name: '复述原话再评价', re: /这句(很|太)好/, scope: 'general' },
   { name: '讲的是（评论专用）', re: /讲的是/, scope: 'comment' },
   { name: '直角引号', re: /[「」]/, scope: 'format' },
+  { name: '我记下了', re: /我记下了/, scope: 'general', always: true },
 ]
 export function scanStyle(text, { surface = 'qq' } = {}) {
   const t = String(text ?? '')
@@ -43,6 +44,10 @@ assert.deepEqual(commentOnly.hard, [], '评论专用规则 QQ 不看');
 
 const short = await evaluateQqStyle('——', { minChars: 8 });
 assert.equal(short.skipped, true, '短句跳过');
+assert.deepEqual(short.hard, [], '短句里的普通规则不查');
+
+const always = await evaluateQqStyle('我记下了', { minChars: 8 });
+assert.ok(always.hard.includes('我记下了'), 'always 规则短句也查');
 
 const echoEval = await evaluateQqStyle('这句很好，我也笑了，不是客套而是真的');
 assert.ok(echoEval.hard.includes('复述原话再评价'));
