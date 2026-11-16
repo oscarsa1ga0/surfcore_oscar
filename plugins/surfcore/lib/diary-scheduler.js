@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { extractDaySegments, trimNewestFirst } from '../../../src/bili-diary-inject.js';
 import {
   archiveCandidates, ensureDiaryDir, listCandidates, localDay, readSchedulerState,
   scanEntries, writeSchedulerState,
@@ -148,22 +149,6 @@ function pushBounded(lines, line, budget, counters) {
  * 这不是聊天全文，是给她的“原材料”；写不写、写什么由她决定。
  */
 /** 从 B站 侧日记里取某一天的 section（`## YYYY-MM-DD` 开头，直到下一个日期 section）。 */
-function extractDiaryDaySection(text, day, maxChars = 2000) {
-  const lines = String(text ?? '').split('\n');
-  let start = -1;
-  let end = lines.length;
-  for (let i = 0; i < lines.length; i += 1) {
-    const m = /^##\s+(\d{4}-\d{2}-\d{2})\b/.exec(lines[i]);
-    if (!m) continue;
-    if (start >= 0) { end = i; break; }
-    if (m[1] === day) start = i;
-  }
-  if (start < 0) return '';
-  const section = lines.slice(start, end).join('\n').trim();
-  if (!section) return '';
-  if (section.length <= maxChars) return section;
-  return `${section.slice(0, maxChars)}\n\n（中略：这篇 B站 日记今天太长，已截断）`;
-}
 
 export function buildDailyDigest({
   characterDir, qqStateDir, day = '', now = Date.now(), maxChars = 8000, history = null,
@@ -285,7 +270,9 @@ export function buildDailyDigest({
     for (const [file, label] of books) {
       try {
         const text = fs.readFileSync(path.join(biliDir, file), 'utf8');
-        const section = extractDiaryDaySection(text, target, 2000);
+        // 私人本用的是 `### 四十四、…（2026-11-16 23:20）` 这种三级标题，旧实现只认 `## 日期`，
+        // 整本今天都抽不出来；统一走 bili-diary-inject，并按「从最新往回装」保留刚写的条目。
+        const section = trimNewestFirst(extractDaySegments(text, target), 2000);
         if (section) sections.push({ label, section });
       } catch {}
     }

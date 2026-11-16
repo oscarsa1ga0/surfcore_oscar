@@ -67,3 +67,12 @@ const diary = [
 }
 
 console.log('✅ B站日记注入测试通过');
+
+// 7) 私人本没有 `## 日期`，只有 `### 四十四、…（2026-11-16 23:20）` 这种三级标题。
+//    旧实现只认 `^## `，整本当天都抽不出来 —— 日记会话因此看不到私人日记。
+{
+  const privateOnly = '### 四十四、我编了一件事（2026-11-16 23:20）\n正文内容';
+  const segs = extractDaySegments(privateOnly, '2026-11-16');
+  assert.equal(segs.length, 1, '三级标题也要算当天段落');
+  assert.ok(segs[0].includes('四十四'));
+}
