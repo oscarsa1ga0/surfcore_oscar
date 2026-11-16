@@ -32,7 +32,6 @@ import { discoverSnowLumaConnection, usesExternalOneBot } from '../../../src/sno
 import { unwrapSchemaValue } from '../../../src/schema-values.js';
 import { findSnowLumaInstall as findSnowLumaInstallIn, normalizeSnowLumaInstall, snowLumaMissingReport } from './snowluma-install.js';
 import { buildInstallChecks, installOk, planDoctorFix } from './doctor.js';
-import { VOICE_PORTS, readPackCharacters, validateCharacter } from './voice-health.js';
 import {
   autoSnapshot, beforeSwitchSnapshot, characterDetail, characterOverview, createCharacterFromPayload,
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
@@ -383,7 +382,7 @@ export function apply(ctx) {
       // 2) 语音包**不进入自动更新列表**：它是离线运行时/模型/vendor 包，
       //    不是 SurfCore 那种代码 zip；统一 updateFromZip 会按 surfcore-* + package.json
       //    解析而必然失败（2026-10-30 用户反馈）。需要新包时在「语音」页重新导入离线包，
-      //    由 voice-pack-import 保留 config.toml / .venv / models / vendor。
+
       //    语音包自己的 version.json / models.json 仍由语音页/包管理读取。
       // 3) 桌宠：构建产物，走版本清单（zip 安装包）；更新交给 petService.updateFromZip（保留 data/）
       try {
@@ -1263,17 +1262,6 @@ export function apply(ctx) {
       result.notes.push('B站配置已保存；生物钟每轮重读配置，下一轮即生效。');
       // 视频创作开关/预算改动 → 执行器立刻跟随（幂等，代价是一次配置读 + 探活）。
       result.video = ensureVideoWorker('config-saved');
-    }
-    // 角色名校验：tts.character 必须是 [voice.characters] 里的名字，不能填音色 id。
-    const incomingCharacter = body?.unified?.socialV2?.voice?.tts?.character;
-    if (typeof incomingCharacter === 'string' && incomingCharacter.trim()) {
-      const packsDir = path.resolve(String(currentQq?.voicePacks?.dir || path.join(QQBOT_ROOT, 'state', 'voice-packs')));
-      const { characters } = readPackCharacters(packsDir);
-      const verdict = validateCharacter(incomingCharacter, characters);
-      if (!verdict.ok) {
-        json(res, 400, { ok: false, error: verdict.reason, characters: verdict.characters });
-        return;
-      }
     }
     if (body.unified && typeof body.unified === 'object') {
       const saved = saveUnified(body.unified);
@@ -2251,11 +2239,9 @@ ${body}`;
         done(idStep, true, '没选群，跳过（之后在设置 → QQ → 白名单里加）');
       }
 
-      // 6) 可选：语音包 / 桌宠（只报告状态，不自动下 GB 级内容）
-      const optStep = installStep('optional', '可选组件（语音包 / 桌宠）');
-      const voiceDir = path.join(STATE_DIR, 'voice-packs');
-      const voiceInstalled = fs.existsSync(voiceDir) && fs.readdirSync(voiceDir).length > 0;
-      done(optStep, true, voiceInstalled ? '语音包已存在' : '未装（体积大，需要时按 INSTALL.md §7 单独装）');
+      // 6) 可选：桌宠（只报告状态，不自动下 GB 级内容）
+      const optStep = installStep('optional', '可选组件（桌宠）');
+      done(optStep, true, '语音已固定走 BreezeBlue，不需要本地组件');
 
       // 7) 起桥接
       const bridgeStep = installStep('bridge', '启动 QQ 桥接');
@@ -2322,30 +2308,15 @@ ${body}`;
       const all = readAll();
       add('隐私策略', PRIVACY_POLICY_VERSION >= 3, `v${PRIVACY_POLICY_VERSION}（私信/密钥/PII 一律不跨平台）`);
       const install = await installChecks(bridge);
-      // 语音链路：只报端口状态 + 一句怎么补（2026-10-27 用户踩过"只起了 8765 就以为装好了"）
+      // 语音链路：只剩 BreezeBlue，检查配置是否齐
       try {
-        const v = readUnified().config?.socialV2?.voice?.tts ?? {};
-        for (const item of VOICE_PORTS) {
-          const open = await portOpen(item.port, 800);
-          const hint = item.key === 'voxd'
-            ? '启动语音包：voice-packs\voice-local\run.bat'
-            : item.key === 'gsv'
-              ? '本地音色还需要 GPT-SoVITS：voice-local\gsv.bat，等约 40 秒'
-              : '云端包：voice-cloud\run.bat，并在设置→语音里启用';
-          const optional = item.key !== 'voxd';
-          install.push({
-            name: item.label, level: open ? 'ok' : (optional ? 'warn' : 'fail'), ok: open,
-            detail: open ? `端口 ${item.port} 在监听` : `端口 ${item.port} 没监听${v.route === 'cloud' && item.key === 'cloud' ? '（当前路由是云端，会直接失败）' : ''}`,
-            fix: open ? '' : hint,
-          });
-        }
-        if (v.enabled && v.route === 'local' && !install.find((x) => x.name.includes('GPT-SoVITS'))?.ok) {
-          install.push({
-            name: '语音配置', level: 'warn', ok: true,
-            detail: `路由=本地，角色=${v.character ?? '(未填)'}：本地引擎没起，合成会 503`,
-            fix: '先起 gsv.bat；只想马上能用可把路由切到「本机 Piper」或云端',
-          });
-        }
+        const bz = readUnified().config?.socialV2?.voice?.tts?.breeze ?? {};
+        const ok = Boolean(bz.apiKey && bz.voiceId);
+        install.push({
+          name: 'BreezeBlue 语音', level: ok ? 'ok' : 'fail', ok,
+          detail: ok ? `voice=${bz.voiceId} · ${bz.modelId || 'breeze-tts-2'}` : 'API Key / Voice ID 未配置',
+          fix: ok ? '' : '设置 → SurfCore → 语音 → BreezeBlue：填 API Key 和 Voice ID',
+        });
       } catch {}
 
       // 同名检查只留一条（installChecks 与旧 checks 有重叠，比如"QQ 桥接源码"）。
@@ -3106,56 +3077,6 @@ ${body}`;
 
     const suffix = url.pathname.slice(`${API_PREFIX}/voice`.length) || '';
     const method = String(req.method || 'GET').toUpperCase();
-    // 网盘离线包入口：Electron 里 target=_blank 会被拦，统一由宿主打开浏览器。
-    // 链接写死（不接受用户输入），避免变成任意 URL 打开器。
-    if (url.pathname === `${API_PREFIX}/voice/packs/netdisk`) {
-      if (method !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' }); return; }
-      const NETDISK_URL = 'https://pan.quark.cn/s/ec6cf2b123de?pwd=sxUZ';
-      if (process.platform !== 'win32') {
-        json(res, 200, { ok: false, code: 'OPEN_URL_UNSUPPORTED', error: '当前系统不支持自动打开浏览器', hint: `手动打开：${NETDISK_URL}`, url: NETDISK_URL });
-        return;
-      }
-      try {
-        // start 的第一个空参数是窗口标题，不能省；.usebackq 不需要，URL 里无 & 之外的 shell 元字符。
-        spawn('cmd.exe', ['/c', 'start', '', NETDISK_URL], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-        json(res, 200, { ok: true, url: NETDISK_URL });
-      } catch (error) {
-        json(res, 500, { ok: false, code: 'OPEN_URL_FAILED', error: `打开浏览器失败：${String(error?.message ?? error).slice(0, 120)}`, hint: `手动打开：${NETDISK_URL}`, url: NETDISK_URL });
-      }
-      return;
-    }
-    // 参考音频“下载”在 Electron/新窗口里会没反应（target=_blank 被宿主拦截），
-    // 改为打开包内 voicepack 目录并选中文件；插件侧直接做，不走桥接代理。
-    if (url.pathname === `${API_PREFIX}/voice/packs/sample-open`) {
-      if (method !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', error: '只支持 POST' }); return; }
-      try {
-        const body = await readBody(req);
-        const id = String(body.id || 'voice-cloud');
-        const listed = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
-        const pack = (listed.data?.packs || []).find((p) => p.id === id);
-        if (!pack?.dir) {
-          json(res, 404, { ok: false, code: 'SAMPLE_PACK_NOT_FOUND', error: '语音包还没安装，找不到参考音频', hint: '先安装/导入云端语音包，再点「打开所在目录」。' });
-          return;
-        }
-        const dir = path.join(pack.dir, 'voicepack');
-        const files = await fs.promises.readdir(dir).catch(() => []);
-        const name = files.find((f) => /\.(wav|mp3|m4a)$/i.test(f));
-        if (!name) {
-          json(res, 404, { ok: false, code: 'SAMPLE_FILE_NOT_FOUND', error: '包内没有参考音频文件', hint: `检查目录：${dir}` });
-          return;
-        }
-        const file = path.join(dir, name);
-        if (process.platform !== 'win32') {
-          json(res, 200, { ok: false, code: 'OPEN_FOLDER_UNSUPPORTED', error: '当前系统不支持自动打开目录', hint: `手动打开：${dir}` });
-          return;
-        }
-        execFile('explorer.exe', ['/select,', file], { windowsHide: true }, () => {});
-        json(res, 200, { ok: true, path: file, dir });
-      } catch (e) {
-        json(res, 502, { ok: false, code: 'OPEN_FOLDER_FAILED', error: `打开参考音频目录失败：${e?.message || e}`, hint: '桥接/文件管理器是否可用；也可以手动打开语音包目录下的 voicepack。' });
-      }
-      return;
-    }
     const target = `${consoleBase()}/api/voice${suffix}${url.search || ''}`;
     const headers = { 'x-console-token': consoleToken() };
     const init = { method: req.method };
@@ -3458,8 +3379,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   }
 
   // ── 一键启动 / 停止（概览、QQ、B站、桌宠、语音共用同一份状态）────────────
-  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice', 'vector'];
-  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音', vector: '向量记忆' };
+  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'vector'];
+  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', vector: '向量记忆' };
 
   function normalizeLaunchComponents(input) {
     const list = Array.isArray(input) ? input : [];
@@ -3467,23 +3388,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     return [...new Set(picked)];
   }
 
-  async function voicePacksSnapshot() {
-    const bridge = await bridgeStatus().catch(() => ({ running: false }));
-    if (!bridge.running) return { ok: false, running: false, packs: [], error: 'QQ 桥接未运行，无法读取语音包状态', code: 'VOICE_BRIDGE_DOWN' };
-    try {
-      const r = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
-      const packs = Array.isArray(r?.data?.packs) ? r.data.packs : [];
-      const running = packs.find((p) => p.running) || null;
-      return { ok: true, running: Boolean(running), id: running?.id || '', packs, bridge };
-    } catch (error) {
-      return { ok: false, running: false, packs: [], bridge, error: `读取语音包状态失败：${String(error?.message ?? error).slice(0, 160)}`, code: 'VOICE_STATUS_FAILED' };
-    }
-  }
-
   async function launchStatus() {
     const bridge = await bridgeStatus().catch((error) => ({ running: false, error: String(error?.message ?? error) }));
-    let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
-    if (bridge.running) voice = await voicePacksSnapshot();
     const pet = petService.status();
     let vector = { ok: false, running: false, models: [], providers: [], selected: '', provider: '', model: '', modelSpace: '' };
     try {
@@ -3524,14 +3430,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         installed: Boolean(pet.installed),
         pid: pet.pid ?? null,
         lastError: pet.lastError ?? null,
-      },
-      voice: {
-        ok: voice.ok !== false,
-        running: Boolean(voice.running),
-        id: voice.id || '',
-        installed: (voice.packs ?? []).filter((p) => p.installed).map((p) => p.id),
-        packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
-        lastError: voice.error || null,
       },
       vector,
     };
@@ -3610,25 +3508,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           detail: result,
         });
       }
-      if (id === 'voice') {
-        const bridge = await bridgeStatus().catch(() => ({ running: false }));
-        if (!bridge.running) {
-          return launchItem(id, false, { code: 'VOICE_BRIDGE_DOWN', error: '语音包由 QQ 桥接托管，桥接未运行', hint: '同时勾选「QQ（含 SnowLuma）」或先启动 QQ' });
-        }
-        const packs = await voicePacksSnapshot();
-        const wanted = String(opts.voicePack === 'voice-cloud' ? 'voice-cloud' : 'voice-local');
-        const pack = (packs.packs ?? []).find((p) => p.id === wanted);
-        if (!pack) return launchItem(id, false, { code: 'VOICE_PACK_UNKNOWN', error: `未知语音包：${wanted}`, hint: '在「语音」页确认包 ID' });
-        if (!pack.installed) return launchItem(id, false, { code: 'VOICE_PACK_NOT_INSTALLED', error: `${pack.name || wanted} 还没安装`, hint: '先在「语音」页导入离线包或安装语音包' });
-        const r = await callBridge('/api/voice/packs/activate', { method: 'POST', body: { id: wanted }, timeoutMs: 90_000 });
-        const data = r?.data ?? {};
-        return launchItem(id, r?.ok !== false && data.ok !== false, {
-          code: data.ok === false ? 'VOICE_START_FAILED' : '',
-          error: data.ok === false ? (data.error || '语音包启动失败') : '',
-          hint: data.ok === false ? (data.hint || '检查语音包是否装好、端口 8765/8767 是否被占用') : '',
-          detail: { packId: wanted, ...data },
-        });
-      }
       return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知启动项：${id}` });
     } catch (error) {
       return launchItem(id, false, {
@@ -3674,25 +3553,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
           detail: r,
         });
       }
-      if (id === 'voice') {
-        const bridge = await bridgeStatus().catch(() => ({ running: false }));
-        if (!bridge.running) return launchItem(id, true, { message: 'QQ 桥接未运行，语音包无需单独停止' });
-        const packs = await voicePacksSnapshot();
-        const running = (packs.packs ?? []).filter((p) => p.running);
-        if (!running.length) return launchItem(id, true, { message: '语音包本来就没在跑' });
-        const results = [];
-        for (const p of running) {
-          const r = await callBridge('/api/voice/packs/stop', { method: 'POST', body: { id: p.id }, timeoutMs: 30_000 });
-          results.push({ id: p.id, ok: r?.ok !== false && r?.data?.ok !== false, error: r?.data?.error || r?.error || '' });
-        }
-        const failed = results.find((x) => !x.ok);
-        return launchItem(id, !failed, {
-          code: failed ? 'VOICE_STOP_FAILED' : '',
-          error: failed ? (failed.error || `语音包 ${failed.id} 停止失败`) : '',
-          hint: failed ? '检查端口占用；必要时在「语音」页手动停止' : '',
-          detail: results,
-        });
-      }
       return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知停止项：${id}` });
     } catch (error) {
       return launchItem(id, false, {
@@ -3710,7 +3570,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     const items = [];
     // 停止时先停语音（它由 QQ 桥接托管），再停桥接；否则桥接先死，语音进程会变成孤儿。
-    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet', 'vector'].filter((id) => ids.includes(id)) : ids;
+    const ordered = action === 'stop' ? ['qq', 'bili', 'pet', 'vector'].filter((id) => ids.includes(id)) : ids;
     for (const id of ordered) {
       items.push(action === 'stop' ? await stopComponent(id, body) : await startComponent(id, body));
     }

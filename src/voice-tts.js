@@ -1,26 +1,19 @@
-// 本地 TTS 客户端：把一段文字变成「能交给 sendVoiceV2 的本地音频文件」。
+// TTS 客户端（只保留 BreezeBlue）：把一段文字变成「能交给 sendVoiceV2 的音频文件」。
 //
 // 只做一件事，且失败要**可读**——桥接那层会把它翻译成 502 交给模型，
 // 模型据此决定「改回打字」而不是编一句「我发了语音」。
-//
-// 与 voxd 的契约见 ../voice/README.md：POST /v1/speak/file → wav 字节，
-// X-Duration-Ms 是时长（毫秒），X-Cached 表示是否命中服务端缓存。
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
-
-/** 按内容寻址：同一句话重复发不会在磁盘上堆文件（voxd 端也有缓存）。 */
-export function ttsKey({ baseUrl, text, character, voice, style, cacheVersion, provider = 'voxd', breeze = {} }) {
+/** 按内容寻址：同一句话重复发不会在磁盘上堆文件。 */
+export function ttsKey({ baseUrl, text, cacheVersion, breeze = {} }) {
   return crypto
     .createHash('sha1')
     .update(JSON.stringify([
-      provider, baseUrl, cacheVersion ?? null, text, character ?? null, voice ?? null, style ?? null,
-      provider === 'breeze' ? {
-        voiceId: breeze.voiceId ?? '', modelId: breeze.modelId ?? '', instructions: breeze.instructions ?? '',
-        outputFormat: breeze.outputFormat ?? '', baseUrl: breeze.baseUrl ?? '',
-      } : null,
+      baseUrl, cacheVersion ?? null, text,
+      breeze.voiceId ?? '', breeze.modelId ?? '', breeze.instructions ?? '',
+      breeze.outputFormat ?? '', breeze.baseUrl ?? '',
     ]))
     .digest('hex');
 }
@@ -75,7 +68,7 @@ export async function synthesizeBreezeToFile({
   const voice = String(voiceId).trim();
   fs.mkdirSync(outDir, { recursive: true });
   const key = ttsKey({
-    provider: 'breeze', baseUrl: base, cacheVersion, text: say,
+    baseUrl: base, cacheVersion, text: say,
     breeze: { voiceId: voice, modelId, instructions, outputFormat: format },
   });
   const file = path.join(outDir, `${key}.wav`);
@@ -128,79 +121,15 @@ export async function synthesizeBreezeToFile({
  * @returns {Promise<{path:string,durationMs:number,cached:boolean}>}
  * @throws  Error（message 已可直接展示给模型/操作者）
  */
-export async function synthesizeToFile({
-  text,
-  character = '',
-  voice = '',
-  style = null,
-  baseUrl = DEFAULT_BASE_URL,
-  timeoutMs = 60000,
-  cacheVersion = null,
-  outDir,
-  provider = 'voxd',
-  breeze = {},
-  fetchImpl = fetch
-} = {}) {
+export async function synthesizeToFile({ text, timeoutMs = 60000, cacheVersion = null, outDir, breeze = {}, fetchImpl = fetch } = {}) {
   const say = String(text ?? '').trim();
-  if (provider === 'breeze') {
-    return synthesizeBreezeToFile({
-      text: say, outDir, timeoutMs, cacheVersion,
-      apiKey: breeze.apiKey, voiceId: breeze.voiceId, modelId: breeze.modelId,
-      instructions: breeze.instructions, outputFormat: breeze.outputFormat,
-      guidanceScale: breeze.guidanceScale, baseUrl: breeze.baseUrl, fetchImpl,
-    });
-  }
   if (!say) throw new Error('要合成的内容是空的');
-  if (!outDir) throw new Error('缺少 outDir（TTS 缓存目录）');
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const url = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
-  const key = ttsKey({ baseUrl: url, text: say, character, voice, style, cacheVersion, provider, breeze });
-  const file = path.join(outDir, `${key}.wav`);
-  if (fs.existsSync(file)) {
-    const st = fs.statSync(file);
-    if (st.size > 44) return { path: file, durationMs: wavDurationMs(fs.readFileSync(file)), cached: true };
-  }
-
-  const body = { text: say, format: 'wav', sr: 24000, cache: true };
-  if (character) body.character = String(character);
-  if (voice) body.voice = String(voice);
-  if (style && typeof style === 'object') body.style = style;
-
-  let res;
-  try {
-    res = await fetchImpl(`${url}/v1/speak/file`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-  } catch (error) {
-    const hint =
-      error?.name === 'TimeoutError'
-        ? `合成超时（>${Math.round(timeoutMs / 1000)}s）`
-        : 'TTS 服务没起来（voxd 是否在运行？）';
-    throw new Error(`${hint}：${error?.message ?? error}`);
-  }
-
-  if (!res.ok) {
-    let detail = '';
-    try {
-      const j = await res.json();
-      detail = j?.detail ?? j?.error ?? '';
-    } catch {}
-    throw new Error(`TTS 服务返回 ${res.status}${detail ? `：${detail}` : ''}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length <= 44) throw new Error('TTS 返回了空音频');
-
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, file);
-  pruneCache(outDir);
-
-  const dur = Number(res.headers.get('x-duration-ms')) || 0;
-  return { path: file, durationMs: dur, cached: res.headers.get('x-cached') === '1' };
+  return synthesizeBreezeToFile({
+    text: say, outDir, timeoutMs, cacheVersion,
+    apiKey: breeze.apiKey, voiceId: breeze.voiceId, modelId: breeze.modelId,
+    instructions: breeze.instructions, outputFormat: breeze.outputFormat,
+    guidanceScale: breeze.guidanceScale, baseUrl: breeze.baseUrl, fetchImpl,
+  });
 }
 
 /**

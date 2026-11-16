@@ -165,14 +165,14 @@ assert.ok(source.includes('function PlatformStartCard'), '缺少平台启动开�
 assert.ok(source.includes('"platforms", "start", "qq"'), 'QQ 启动开关没有绑定 platforms.start.qq');
 assert.ok(source.includes('"platforms", "start", "bili"'), 'B站 启动开关没有绑定 platforms.start.bili');
 assert.ok(source.includes('h(PlatformStartCard'), 'QQ / B站 页没有渲染启动开关卡片');
-for (const label of ['一键启动 SurfCore', '一键停止（全部）', '语音分支']) {
+for (const label of ['一键启动 SurfCore', '一键停止（全部）']) {
   assert.ok(source.includes(label), `概览启动卡缺少：${label}`);
 }
 for (const action of ['start-selected', 'stop-selected']) {
   assert.ok(source.includes(`"${action}"`), `设置页没有调用 ${action}`);
   assert.ok(pluginIndexSource.includes(`action === '${action}'`), `插件代理缺少 ${action} 动作`);
 }
-assert.ok(source.includes('voiceBranch'), '语音缺少本地/云端分支选择');
+assert.ok(!source.includes('voiceBranch'), '本地/云端语音分支已移除');
 assert.ok(source.includes('start-qq') || source.includes('start-selected'), '概览缺少启动入口');
 assert.ok(!source.includes('一键启动（含 SnowLuma）'), '旧的一键启动按钮应被整合');
 assert.ok(!source.includes('随 DSH 启动自动拉起 QQ 桥接'), '旧 bridge.autoStart 开关应迁到 QQ 页的「是否启动」');
@@ -377,15 +377,6 @@ assert.ok(!/h\(VoiceTab, \{ toast \}\)/.test(source), 'VoiceTab 不能收裸 toa
 }
 assert.ok(source.includes('const [toastText, setToastText]'), '浮层文案状态应叫 toastText（避免与 notify 混淆）');
 assert.ok(source.includes('h(VoiceTab, {') && source.includes('onResource: () => setResourceOpen(true)'), '语音页接线固定为 notify + 配置/保存 + 网盘资源入口');
-
-// ── 语音页网盘离线包入口（2026-11-06：统一到顶部资源按钮）──
-assert.ok(source.includes('网络不稳定装不上？用网盘下载离线包（本地包 / 云端包都适用）'), '必须说明本地包/云端包都适用');
-assert.ok(source.includes('获取网盘资源（语音、向量记忆模型）'), '语音页必须有统一的网盘资源按钮');
-assert.ok(source.includes('https://pan.quark.cn/s/2f49b5496874?pwd=jXqr'), '必须包含夸克网盘链接');
-assert.ok(source.includes('https://pan.xunlei.com/s/VP5iWnY5xJ1D8KpL-gFpAsj9A1?pwd=tqi7'), '必须包含迅雷网盘链接');
-assert.ok(source.includes('（待补链）'), '百度/UC 必须标待补链');
-assert.ok(!source.includes('打开网盘下载（提取码 sxUZ）'), '旧的「打开网盘下载」按钮应移除');
-assert.ok(!source.includes('api("/voice/packs/netdisk"'), '旧的 netdisk 打开逻辑应移除');
 
 // ── 桌宠安装：表单必须随请求提交（2026-10-30 用户反馈：填了也不生效）──
 assert.ok(/api\("\/pet\/install",[\s\S]{0,200}source: form\.source\.trim\(\)/.test(source), '桌宠安装请求必须带 source');

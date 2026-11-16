@@ -45,11 +45,9 @@ import { isSpamCommandText } from './command-spam.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { createQqRoleDispatch, usesLocalDispatch } from './qq-role-dispatch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
-import { createVoicePacks } from './voice-packs.js';
-import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, oneBotWsToken, persistSnowLumaEndpoint, persistToken, usesExternalOneBot } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
-import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
+import { classifyVoiceError } from './voice-diagnostics.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { buildProvenanceBlock, buildSelfIdentityBlock, selfIdentityPath } from './self-identity.js';
@@ -2204,23 +2202,12 @@ async function main() {
         members: Array.isArray(v.trigger?.members) ? v.trigger.members.map(String) : [],
         groups: Array.isArray(v.trigger?.groups) ? v.trigger.groups.map(String) : []
       },
-      // 文字直接合成语音（本地 voxd）。和「语音库文件」是两条来源：
+      // 文字直接合成语音：只走 BreezeBlue 云端。和「语音库文件」是两条来源：
       //   voice 参数 → 读 audio/ 里的现成音频；text 参数 → 现场合成。
-      // 默认关闭：没装 voxd 时打开只会得到一串 502。
       tts: {
         enabled: v.tts?.enabled === true,
-        // breeze = 直接调 BreezeBlue 云端；voxd = 原来的本地/云端语音包。
-        provider: String(v.tts?.provider) === 'breeze' ? 'breeze' : 'voxd',
-        baseUrl: String(v.tts?.baseUrl || 'http://127.0.0.1:8765'),
         timeoutMs: Number(v.tts?.timeoutMs) > 0 ? Number(v.tts.timeoutMs) : 60000,
         maxChars: Number(v.tts?.maxChars) > 0 ? Number(v.tts.maxChars) : 120,
-        character: String(v.tts?.character || ''),
-        // voxd 的路由；provider=breeze 时不用。
-        route: ['local', 'cloud'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'local',
-        endpoints: {
-          local: String(v.tts?.endpoints?.local || 'http://127.0.0.1:8765'),
-          cloud: String(v.tts?.endpoints?.cloud || 'http://127.0.0.1:8767')
-        },
         breeze: {
           apiKey: String(process.env.BREEZE_API_KEY || v.tts?.breeze?.apiKey || ''),
           baseUrl: String(v.tts?.breeze?.baseUrl || 'https://api.breeze.blue').replace(/\/+$/, ''),
@@ -2271,64 +2258,21 @@ async function main() {
     }
     if (say.length > vc.tts.maxChars) throw codedVoiceError(new Error(`要说的话最多 ${vc.tts.maxChars} 字（收到 ${say.length}）`));
 
-    if (vc.tts.provider === 'breeze') {
-      try {
-        const result = await synthesizeToFile({
-          text: say,
-          provider: 'breeze',
-          breeze: vc.tts.breeze,
-          timeoutMs: vc.tts.timeoutMs,
-          cacheVersion: vc.tts.cacheVersion ?? null,
-          outDir: vc.tts.dir,
-        });
-        return { path: result.path, via: 'tts', ttsCached: result.cached, ttsDurationMs: result.durationMs, route: 'breeze' };
-      } catch (error) {
-        const info = classifyVoiceError(error?.message ?? error);
-        logVoiceError({ scope: 'synth', route: 'breeze', code: info.code, stage: info.stage, message: String(error?.message ?? error).slice(0, 400) });
-        throw codedVoiceError(error, info);
-      }
-    }
-
-    const primary = ['local', 'cloud'].includes(String(route)) ? String(route) : vc.tts.route;
-    const endpointOf = (r) => String(vc.tts.endpoints?.[r] || vc.tts.baseUrl || '').replace(/\/+$/, '');
-
-    const attempt = (r) => synthesizeToFile({
-      text: say,
-      character: voice ? '' : character || vc.tts.character,
-      voice: voice || '',
-      baseUrl: endpointOf(r),
-      timeoutMs: vc.tts.timeoutMs,
-      cacheVersion: vc.tts.cacheVersion ?? null,
-      outDir: vc.tts.dir
-    });
-
-    let first = null;
     try {
-      first = await attempt(primary);
+      const result = await synthesizeToFile({
+        text: say,
+        provider: 'breeze',
+        breeze: vc.tts.breeze,
+        timeoutMs: vc.tts.timeoutMs,
+        cacheVersion: vc.tts.cacheVersion ?? null,
+        outDir: vc.tts.dir,
+      });
+      return { path: result.path, via: 'tts', ttsCached: result.cached, ttsDurationMs: result.durationMs, route: 'breeze' };
     } catch (error) {
       const info = classifyVoiceError(error?.message ?? error);
-      const fallback = pickFallbackRoute(primary, vc.tts.endpoints, info.code);
-      logVoiceError({
-        scope: 'synth', route: primary, code: info.code, stage: info.stage,
-        message: String(error?.message ?? error).slice(0, 400), fallback: fallback || '',
-      });
-      if (fallback) {
-        // 云端抖动时换到本地另一条路（或反过来），别让整条语音失败。
-        try {
-          const second = await attempt(fallback);
-          logVoiceError({ scope: 'synth', route: fallback, code: 'voice.recovered', stage: 'fallback', message: `主路 ${primary} 失败后已用 ${fallback} 合成成功` });
-          return { path: second.path, via: 'tts', ttsCached: second.cached, ttsDurationMs: second.durationMs, degraded: true, degradedFrom: primary, route: fallback };
-        } catch (error2) {
-          const info2 = classifyVoiceError(error2?.message ?? error2);
-          logVoiceError({ scope: 'synth', route: fallback, code: info2.code, stage: info2.stage, message: String(error2?.message ?? error2).slice(0, 400), fallback: '' });
-          const err = codedVoiceError(error2, info2);
-          err.message = `${err.message}（主路 ${primary} 也失败：${String(error?.message ?? error).slice(0, 160)}）`;
-          throw err;
-        }
-      }
+      logVoiceError({ scope: 'synth', route: 'breeze', code: info.code, stage: info.stage, message: String(error?.message ?? error).slice(0, 400) });
       throw codedVoiceError(error, info);
     }
-    return { path: first.path, via: 'tts', ttsCached: first.cached, ttsDurationMs: first.durationMs, route: primary };
   }
 
   function voiceLibrary() {
@@ -4752,24 +4696,6 @@ async function main() {
     };
     // 二代会话工具必须仍命中当前模式的白名单/准入；避免白名单移除后旧 agentToken 继续读状态。
     const v2SessionAllowed = isSessionAllowedInCurrentMode;
-    // 语音包服务实例：按 config.json 的 mtime 缓存（既热生效，又保住安装进度）。
-    // 必须放在请求回调**外面**：每次请求新建实例会把 activeInstalls（进度）随实例丢掉，
-    // 前端就只看到"开始安装…"、永远没有进度条（2026-10-28 用户反馈）。
-    let vpCache = { key: '', vp: null };
-    function getVoicePacksCached() {
-      let key = 'default';
-      try {
-        const st = fs.statSync(path.join(ROOT, 'config.json'));
-        key = `${st.mtimeMs}:${st.size}`;
-      } catch {}
-      if (!vpCache.vp || vpCache.key !== key) {
-        let freshCfg = cfg;
-        try { freshCfg = readConfigObject(path.join(ROOT, 'config.json')); } catch {}
-        vpCache = { key, vp: createVoicePacks(freshCfg) };
-      }
-      return vpCache.vp;
-    }
-
     const server = http.createServer(async (req, res) => {
       let url;
       try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
@@ -7833,18 +7759,14 @@ async function main() {
         // 语音自检：把「服务 → 合成 → 发送前置」分成三步各自给结论（2026-10-30 P1）。
         if (url.pathname === '/api/voice/tts-check' && req.method === 'POST') {
           const vc = voiceCfg();
-          const provider = vc.tts.provider === 'breeze' ? 'breeze' : 'voxd';
-          const route = provider === 'breeze'
-            ? 'breeze'
-            : (['local', 'cloud'].includes(String(vc.tts.route)) ? vc.tts.route : 'local');
-          const endpoint = provider === 'breeze'
-            ? vc.tts.breeze.baseUrl
-            : String(vc.tts.endpoints?.[route] || vc.tts.baseUrl || '').replace(/\/+$/, '');
+          const provider = 'breeze';
+          const route = 'breeze';
+          const endpoint = vc.tts.breeze.baseUrl;
           const stages = [];
           // 1) 服务可达 / 配置完整
           {
             const t0 = Date.now();
-            if (provider === 'breeze') {
+            {
               const ok = Boolean(vc.tts.breeze.apiKey && vc.tts.breeze.voiceId);
               stages.push({
                 name: 'service', ok, ms: Date.now() - t0,
@@ -7852,12 +7774,6 @@ async function main() {
                 code: ok ? '' : 'voice.breeze-config',
                 hint: ok ? '' : '设置 → SurfCore → 语音 → TTS 服务：填 BreezeBlue API Key 和 Voice ID',
               });
-            } else try {
-              const r = await fetch(`${endpoint}/v1/health`, { signal: AbortSignal.timeout(3000) });
-              const body = await r.json().catch(() => null);
-              stages.push({ name: 'service', ok: r.ok, ms: Date.now() - t0, detail: r.ok ? `HTTP ${r.status} · ${String(body?.engine || route)}` : `HTTP ${r.status}` });
-            } catch (error) {
-              stages.push({ name: 'service', ok: false, ms: Date.now() - t0, code: 'voice.service-down', detail: String(error?.message ?? error).slice(0, 160) });
             }
           }
           // 2) 实际合成（走与 QQ 相同的 synthesizeVoiceText）
@@ -7867,7 +7783,7 @@ async function main() {
               const r = await synthesizeVoiceText('语音自检', { route });
               stages.push({
                 name: 'synth', ok: true, ms: Date.now() - t0,
-                detail: `${r.degraded ? `已换路 ${r.degradedFrom}→${r.route}` : `route=${r.route}`} · ${r.ttsCached ? '缓存' : '实时合成'} · ${Math.round((r.ttsDurationMs || 0))}ms`,
+                detail: `${r.ttsCached ? '缓存' : '实时合成'} · ${Math.round((r.ttsDurationMs || 0))}ms`,
               });
             } catch (error) {
               const info = classifyVoiceError(error?.message ?? error);
@@ -7907,8 +7823,8 @@ async function main() {
                 maxPerMinute: v.maxPerMinute ?? 2,
                 maxPerHour: v.maxPerHour ?? 10,
                 aiEnabled: v.tts?.enabled === true,
-                provider: String(v.tts?.provider) === 'breeze' ? 'breeze' : 'voxd',
-                route: ['local', 'cloud'].includes(String(v.tts?.route)) ? String(v.tts.route) : 'local',
+                provider: 'breeze',
+                route: 'breeze',
                 breeze: {
                   baseUrl: String(bz.baseUrl || 'https://api.breeze.blue'),
                   voiceId: String(bz.voiceId || ''),
@@ -7936,8 +7852,6 @@ async function main() {
               if (Number.isFinite(Number(body.maxPerHour))) v.maxPerHour = Math.max(1, Math.min(600, Number(body.maxPerHour)));
               v.tts = v.tts || {};
               v.tts.enabled = body.aiEnabled === true;
-              if (body.provider === 'breeze' || body.provider === 'voxd') v.tts.provider = body.provider;
-              if (['local', 'cloud'].includes(String(body.route))) v.tts.route = String(body.route);
               if (body.breeze && typeof body.breeze === 'object') {
                 const bz = body.breeze;
                 v.tts.breeze = { ...(v.tts.breeze || {}) };
@@ -7948,9 +7862,6 @@ async function main() {
                 if (String(bz.apiKey ?? '').trim()) v.tts.breeze.apiKey = String(bz.apiKey).trim();
                 if (bz.clearApiKey === true) delete v.tts.breeze.apiKey;
               }
-              v.cloud = v.cloud || {};
-              if (Number.isFinite(Number(body.pricePerKChar))) v.cloud.pricePerKChar = Math.max(0, Number(body.pricePerKChar));
-              if (Number.isFinite(Number(body.monthlyQuota))) v.cloud.monthlyQuota = Math.max(0, Number(body.monthlyQuota));
               atomicWriteJson(cfgFile, c);
               sendJson({ ok: true });
               return;
@@ -7960,132 +7871,6 @@ async function main() {
             sendJson({ ok: false, error: String(e?.message || e) }, 500);
           }
           return;
-        }
-
-        // ── 语音包管理（安装/启停/配置/试听）────────────────────────────
-        // 语音引擎不随插件分发，用户在这里按需安装；不装也完全不影响聊天。
-        if (url.pathname === '/api/voice/packs' || url.pathname.startsWith('/api/voice/packs/')) {
-          // 配置热生效 + 实例复用都要：按 config.json 的 mtime 缓存实例。
-          // ⚠️ 每次请求都 createVoicePacks 会把 activeInstalls（安装进度）随实例丢掉 →
-          // 前端只能看到"开始安装…"、永远没有进度条（2026-10-28 用户反馈）。
-          const vp = getVoicePacksCached();
-          try {
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs') {
-              sendJson(await vp.list());
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/install') {
-              const body = await readBody();
-              sendJson(await vp.install(String(body.id || ''), {
-                force: !!body.force,
-                mirror: String(body.mirror || ''),
-                jobs: Number(body.jobs) || 0,
-              }));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-inspect') {
-              const body = await readBody();
-              sendJson(await vp.inspectImport(String(body.id || ''), String(body.sourceDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import') {
-              const body = await readBody();
-              sendJson(await vp.startImport(String(body.id || ''), {
-                sourceDir: String(body.sourceDir || ''),
-                allowUnverified: body.allowUnverified === true,
-              }));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-cancel') {
-              const body = await readBody();
-              sendJson(vp.cancelImport(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-delete-source') {
-              const body = await readBody();
-              sendJson(await vp.deleteImportSource(String(body.id || ''), String(body.sourceDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/import-delete-backup') {
-              const body = await readBody();
-              sendJson(await vp.deleteImportBackup(String(body.id || ''), String(body.backupDir || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/remove') {
-              const body = await readBody();
-              sendJson(await vp.remove(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/activate') {
-              const body = await readBody();
-              sendJson(await vp.activate(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/start') {
-              const body = await readBody();
-              sendJson(await vp.start(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/cancel') {
-              const body = await readBody();
-              sendJson(await vp.cancelInstall(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/clean') {
-              const body = await readBody();
-              sendJson(await vp.cleanPartial(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/stop') {
-              const body = await readBody();
-              sendJson(await vp.stop(String(body.id || '')));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/cloud-stats') {
-              sendJson(await vp.cloudStats(String(url.searchParams.get('id') || 'voice-cloud')));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/cloud-config') {
-              sendJson(await vp.readCloudConfig(String(url.searchParams.get('id') || 'voice-cloud')));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/cloud-config') {
-              const body = await readBody();
-              sendJson(await vp.cloudConfig(String(body.id || ''), body));
-              return;
-            }
-            if (req.method === 'GET' && url.pathname === '/api/voice/packs/sample') {
-              const id = String(url.searchParams.get('id') || 'voice-cloud');
-              const s = await vp.sampleFile(id);
-              res.writeHead(200, {
-                'content-type': 'audio/wav',
-                'content-length': s.buffer.length,
-                'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(s.name)}`,
-                ...SECURITY_HEADERS,
-              });
-              res.end(s.buffer);
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/enable') {
-              const body = await readBody();
-              sendJson(await vp.setEnabled(String(body.id || ''), body.enabled !== false));
-              return;
-            }
-            if (req.method === 'POST' && url.pathname === '/api/voice/packs/test') {
-              const body = await readBody();
-              sendJson(await vp.test(String(body.id || ''), { text: body.text }));
-              return;
-            }
-            sendJson({ ok: false, error: '未知的语音包操作' }, 404);
-            return;
-          } catch (e) {
-            if (e instanceof ImportError) {
-              sendJson(e.toJSON(), e.status || 400);
-              return;
-            }
-            sendJson({ ok: false, error: String(e?.message || e) }, 400);
-            return;
-          }
         }
 
         if (req.method === 'POST' && (url.pathname === '/api/voice/send' || url.pathname === '/api/send/voice')) {
@@ -8261,7 +8046,7 @@ async function main() {
           if (fishBlock) { sendJson({ ok: false, ...fishBlock }, 403); return; }
           const tokenBlock = body.dryRun === true ? null : tokenGuardSendBlock(key, st, 1);
           if (tokenBlock) { sendJson({ ok: false, ...tokenBlock }, 429); return; }
-          // 两条来源：text（现场合成，需要本地 voxd）与 voice/file（语音库现成音频）。二选一。
+          // 两条来源：text（现场合成，BreezeBlue）与 voice/file（语音库现成音频）。二选一。
           const sayText = String(body.text ?? '').trim();
           const libRef = body.voice ?? body.file ?? '';
           if (sayText && libRef) { sendJson({ ok: false, error: 'text 和 voice 只能传一个' }, 400); return; }

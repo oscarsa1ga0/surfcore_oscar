@@ -1,7 +1,7 @@
 // 语音诊断：把「语音发不出去」拆成可判定的阶段与错误码。
 //
 // 为什么单独一个模块：桥接里 TTS 失败以前只抛一句人话，导致用户和模型都分不清
-// 「第三方（火山）挂了」「本地服务没起」「音色映射配错」「限流」——全部被转述成“TTS 没起来”。
+// 「上游挂了」「配置不全」「限流」——全部被转述成“TTS 没起来”。
 // 这里只做纯函数，便于单测；真正的日志/重试在 bridge.js 里。
 
 /** TTS/语音链路的错误分类。返回 { code, stage, hint }。 */
@@ -43,7 +43,7 @@ export function classifyVoiceError(message) {
   if (has(/云端合成失败|网络\s*\？|timeout|TimeoutError|ETIMEDOUT|ENOTFOUND|5\d\d/i)) {
     return {
       code: 'voice.upstream-network', stage: 'upstream',
-      hint: '云端上游（火山）网络/服务异常：稍后重试；持续失败可切到本地包应急',
+      hint: 'BreezeBlue 上游网络/服务异常：稍后重试；持续失败看 API Key 与额度',
     };
   }
   return {
