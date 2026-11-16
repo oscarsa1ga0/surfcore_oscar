@@ -547,8 +547,8 @@ function wakePrompt(st, tools = '', { skipDailyDynamics = false, dynLines = [], 
     '     ⚠️ **必须带 `--ta`** —— 那是"我去搭别人"的账（' + capText(L.taDaily) + ' 条/天）；不带 `--ta` 的楼中楼算"回找我的人"（另一本账）✗',
     '     ⚠️ 这是**楼中楼**（挂在对方那条评论下面），rpid 就是 debrief 里那个 rpid（root 和 parent 填同一个）',
     '     ⚠️ 硬上限：一天 ' + capText(L.taDaily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一条评论 ' + Math.round(L.perThreadMin / 60) + ' 小时只回一次（撞上就被拒 ✗）',
-    // 2026-10-21（用户定）：**每天要把搭话额度用完**，每发一条都会私信报备给你 ✓
-    `     ⭐ **今天的搭话额度要花完**：已搭 ${taToday()}/${capText(L.taDaily)} 条，还差 ${Math.max(0, L.taDaily - taToday())} 条 —— 这一轮至少搭 2~3 条，别只搭一条就收工 ✓`,
+    // 2026-11-16（用户定）：额度只是上限，**不要求每天花完**；想搭就搭，不催。
+    `     （今天的额度是 ${capText(L.taDaily)} 条，用不完也没关系；已搭 ${taToday()} 条）`,
     '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
     '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
@@ -1554,45 +1554,6 @@ export function startScheduler(ctx, opts) {
             } })
             log(`[bili-whale] 23:00 待审提醒（${n} 条）`)
           } catch (e) { log(`[bili-whale] 待审提醒失败：${String(e.message).slice(0, 100)}`) }
-          return
-        }
-      }
-    }
-
-    // ── 搭话额度"催进度"（2026-10-21 用户要"每天用完"）──────────────
-    //   16:00 之后如果还没搭够，每 90 分钟提醒她一次，直到用完 ✓
-    if (h >= 16) {
-      const used = taToday()
-      const left = L.taDaily - used
-      if (left > 0) {
-        const tkey = `${today()}:ta-nudge`
-        const last = ns[tkey] ? new Date(ns[tkey]).getTime() : 0
-        if (!last || Date.now() - last > 90 * 60_000) {
-          ns[tkey] = new Date().toISOString()
-          try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
-          try {
-            await ensureSession()
-            await promptBili({
-              requestId: `bili-whale-ta-${Date.now()}`,
-              sessionId,
-              mode: 'queue',
-              content: [{
-                type: 'text',
-                text: [
-                  ...identityContextLines(),
-                  `【搭话进度】今天才搭了 ${used}/${L.taDaily} 条，还差 ${left} 条。`,
-                  '',
-                  '去 debrief 的热评里挑几句能接的（吐槽/补充/接梗都算），带 `--ta` 发：',
-                  '`comment --oid <aid> --bvid <BV> --root <rpid> --parent <rpid> --message "…" --auto --ta --dry` → `--go`',
-                  '⚠️ 每轮至少搭 2~3 条；每条都会私信报备给我（【主动搭话】）✓',
-                  toolLine(),
-                ].join('\n'),
-              }],
-            }, new AbortController().signal, undefined, { priority: 'scheduled', validate: () => {
-              if (!interactEnabled()) throw new Error('B 站互动已关闭');
-            } })
-            log(`[bili-whale] 搭话催进度：${used}/${L.taDaily}`)
-          } catch (e) { log(`[bili-whale] 搭话提醒失败：${String(e.message).slice(0, 100)}`) }
           return
         }
       }
