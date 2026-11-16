@@ -3845,7 +3845,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
               h("details", null,
                 h("summary", { style: { fontSize: "12px", opacity: 0.8, cursor: "pointer" } }, "操作日志（最近 10 条）"),
                 (data.opLog ?? []).slice(-10).reverse().map((x, i) => h("div", { key: i, className: "qbw-hint", style: { marginTop: "2px" } },
-                  `${String(x.at ?? "").slice(11, 19)} ${x.ok ? "✓" : "✗"} ${x.action}${x.tid ? " tid=" + x.tid : ""}${x.detail ? " " + x.detail : ""}${x.error ? " " + x.error : ""}`)))),
+                  `${x.at ? new Date(x.at).toLocaleTimeString("zh-CN", { hour12: false }) : ""} ${x.ok ? "✓" : "✗"} ${x.action}${x.tid ? " tid=" + x.tid : ""}${x.detail ? " " + x.detail : ""}${x.error ? " " + x.error : ""}`)))),
         h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
           h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新状态"),
           h(Btn, { kind: "qbw-btn2", onClick: runActivity, disabled: !!busy || !ownerQQ }, busy === "qzone-activity" ? "扫描中…" : "立即空间活动（只读扫描）"),

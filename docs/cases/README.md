@@ -12,6 +12,7 @@
 | 2026-11-16 | [B站日记注入被截断](2026-11-16-bili-diary-inject-truncation.md) | 注入按从前往后切，刚写的那条被切掉；改成从最新往回装 | macOS 分支 |
 | 2026-11-16 | [日记会话看不到私人日记](2026-11-16-diary-review-missed-private.md) | 只认 `## 日期`，私人本用 `### 条目` 标题，整本当天被跳过 | macOS 分支 |
 | 2026-11-16 | [日记时间被读成 UTC](2026-11-16-diary-time-utc-misread.md) | 工具返回裸 UTC，她把 23:36 念成 15:36；改成带本地偏移 | macOS 分支 |
+| 2026-11-16 | [展示层时区审计](2026-11-16-local-time-audit.md) | 6 处把 UTC 当本地给模型看；统一 localIso 带偏移 | macOS 分支 |
 | 2026-11-15 | [QQ 空间面板未知接口](2026-11-15-qzone-panel-routes.md) | 插件补 qzone status/activity 代理路由 | macOS 分支 |
 | 2026-11-15 | [鱼姬跨平台情绪](2026-11-15-emotion.md) | 角色共享九维心境、独立情绪页、模型请求前刷新 | 待合入 |
 | 2026-11-15 | [B站唤醒被去重](2026-11-15-bili-wake-dedupe.md) | requestId 同 slot 重排后撞车被 DSH 去重；动态提醒 inSlot 作用域 | macOS 分支 |

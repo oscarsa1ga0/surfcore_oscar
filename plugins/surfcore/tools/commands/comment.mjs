@@ -14,6 +14,7 @@
 //   · 鱼太多 → 拒绝发新楼层，自动改成回复一条合适的鱼（--no-fish-gather 可关）；
 //   · 发完后顺手给识别到的鱼点赞（受每日上限约束，见 lib/fish-guard.mjs）。
 import { accountBili, biliState, biliStateDir, currentCharacter } from '../lib/state-paths.mjs'
+import { localIso } from '../../../../src/local-time.js'
 import { recordBiliEmotion } from '../lib/emotion.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -234,7 +235,7 @@ if (ONCE) {
       const led = loadReplied()
       const hist = (led.byUid?.[who.mid] ?? []).filter((x) => Date.now() - new Date(x.at).getTime() < ONCE_DAYS * 86_400_000)
       if (hist.length) {
-        console.error(`  [once] ${ONCE_DAYS} 天内已经回过 ${who.name || who.mid}（${hist[0].at} · ${hist[0].target}）→ 这次不回`)
+        console.error(`  [once] ${ONCE_DAYS} 天内已经回过 ${who.name || who.mid}（${hist[0].at ? localIso(hist[0].at) : ''} · ${hist[0].target}）→ 这次不回`)
         console.error('  （不想要这个开关，就别传 --once-per-person）')
         process.exit(2)
       }

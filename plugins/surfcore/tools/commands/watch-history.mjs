@@ -9,6 +9,7 @@
  */
 import { readWatchHistory } from '../lib/watch-history.mjs'
 import { enrichWatchHistory } from '../lib/watch-actions.mjs'
+import { localIso } from '../../../../src/local-time.js'
 
 const argv = process.argv.slice(2)
 const sub = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'list'
@@ -31,7 +32,8 @@ const result = readWatchHistory({
 // 2026-10-23：设置页要显示「她之后做了什么」；CLI 也一起给，方便不重启宿主先验收。
 const enriched = enrichWatchHistory(result.items)
 if (args.get('json') === true) {
-  console.log(JSON.stringify({ ...result, items: enriched.items, actions: enriched.actions }, null, 2))
+  const items = (enriched.items ?? []).map((item) => ({ ...item, ...(item.at ? { at: localIso(item.at) } : {}) }))
+  console.log(JSON.stringify({ ...result, items, actions: enriched.actions }, null, 2))
   process.exit(0)
 }
 const fmtDur = (s) => {

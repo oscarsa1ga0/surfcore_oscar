@@ -17,6 +17,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
 import { freeLimits } from '../lib/limits.mjs'
+import { localIso } from '../../../../src/local-time.js'
 
 const FILE = biliState('quota.json')
 // 2026-10-22：四本账额度改成 bili.config.json 的 limits 段（设置页可改）。
@@ -122,7 +123,7 @@ if (cmd === 'status') {
   console.log(`已删除（2026-10-18 主人定）：白名单 ✗ · 「自主 N 条」独立额度 ✗`)
   const recent = q.log.slice(-5)
   console.log(recent.length ? '最近记录:' : '最近记录: (无)')
-  for (const r of recent) console.log(`  ${r.at}  ${r.type}  ${r.target ?? '-'}  ${r.note ?? ''}`)
+  for (const r of recent) console.log(`  ${r.at ? localIso(r.at) : ''}  ${r.type}  ${r.target ?? '-'}  ${r.note ?? ''}`)
   process.exit(0)
 }
 
@@ -154,7 +155,7 @@ if (cmd === 'check') {
     if (target) {
       const dup = q.log.find((x) => x.share && String(x.target ?? '') === target && Date.now() - new Date(x.at).getTime() < SEVEN)
       if (dup) {
-        console.log(`✗ 这个视频 7 天内已经分享过了：${dup.at}（${dup.target}）`)
+        console.log(`✗ 这个视频 7 天内已经分享过了：${localIso(dup.at)}（${dup.target}）`)
         process.exit(2)
       }
     }

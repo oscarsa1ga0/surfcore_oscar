@@ -13,6 +13,7 @@ import {
   captureCandidate, createEntry, deleteEntry, editEntry, getCurrentCharacter, listEntries, localDay,
   readEntries, resolveCharacter, searchEntries, shareEntry,
 } from '../../../src/diary-store.js';
+import { localIso } from '../../../src/local-time.js';
 
 const CHARACTER_ID = {
   type: 'string',
@@ -24,24 +25,6 @@ const TAGS = {
   items: { type: 'string' },
   description: '可选标签（最多 12 个，每个最多 24 字）。',
 };
-
-/**
- * 工具返回的时间一律带本地时区偏移。
- *
- * 存储层用 UTC ISO（`...Z`），模型经常直接念数字：`2026-11-16T15:36Z` 会被她当成"15:36"，
- * 实际北京时间是 23:36（2026-11-16 真事）。这里统一转成 `2026-11-16T23:36:42+08:00`。
- */
-function localIso(value) {
-  const t = new Date(value);
-  if (!value || Number.isNaN(t.getTime())) return value;
-  const pad = (n) => String(n).padStart(2, '0');
-  const offset = -t.getTimezoneOffset();
-  const sign = offset >= 0 ? '+' : '-';
-  const abs = Math.abs(offset);
-  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`
-    + `T${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
-    + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
-}
 
 function localizeEntry(entry) {
   if (!entry || typeof entry !== 'object') return entry;

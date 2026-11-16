@@ -11,6 +11,7 @@ import os from 'node:os'
 import { biliState } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 import { loadBiliAccount } from '../../../../src/bili-api.js'
+import { localIso } from '../../../../src/local-time.js'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -80,7 +81,7 @@ const payload = {
   ok: true,
   follower,
   following,
-  newFans: fresh.map((x) => ({ ...x, at: x.time ? new Date(x.time * 1000).toISOString() : '' })),
+  newFans: fresh.map((x) => ({ ...x, at: x.time ? localIso(new Date(x.time * 1000)) : '' })),
 }
 if (JSONOUT) {
   console.log(JSON.stringify(payload))

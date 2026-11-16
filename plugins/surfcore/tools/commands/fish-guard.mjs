@@ -12,6 +12,7 @@
  * likeFailed / lastLikeRun，设置页能直接看到「最近一次到底失败在哪」。
  */
 import { accountBili } from '../lib/state-paths.mjs'
+import { localIso } from '../../../../src/local-time.js'
 import fs from 'node:fs'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
@@ -90,7 +91,7 @@ if (sub === 'status') {
     console.log(fishGuardStatusText(plan) || '（没有结果）')
     if (summary.lastRun) {
       const last = summary.lastRun
-      console.log(`上次点赞：${last.ok ? '✓' : '✗'} 尝试 ${last.attempted} 条 · 成功 ${last.liked} 条 · 失败 ${last.failed.length} 条（${last.at}）`)
+      console.log(`上次点赞：${last.ok ? '✓' : '✗'} 尝试 ${last.attempted} 条 · 成功 ${last.liked} 条 · 失败 ${last.failed.length} 条（${last.at ? localIso(last.at) : ''}）`)
       for (const f of last.failed) console.log(`  ✗ rpid=${f.rpid} code=${f.code ?? '?'} ${f.message ?? ''}`)
       for (const s of last.skipped) console.log(`  · ${s}`)
     }
@@ -133,7 +134,7 @@ if (sub === 'like') {
   }
   if (!plan.likeTargets.length) {
     console.log('没有需要点赞的鱼（或今天额度已用完 / 都已赞过 / 刚失败过在冷却）')
-    if (summary.lastRun) console.log(`上次点赞：${summary.lastRun.at}（成功 ${summary.lastRun.liked} / 失败 ${summary.lastRun.failed.length}）`)
+    if (summary.lastRun) console.log(`上次点赞：${summary.lastRun.at ? localIso(summary.lastRun.at) : ''}（成功 ${summary.lastRun.liked} / 失败 ${summary.lastRun.failed.length}）`)
     if (summary.likeBlockedUntil) console.log(`风控冷却到：${new Date(summary.likeBlockedUntil).toLocaleString('zh-CN')}`)
     process.exit(0)
   }
