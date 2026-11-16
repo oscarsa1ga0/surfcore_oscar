@@ -157,8 +157,11 @@ export function buildNightSchedule({
     if (!count) continue
     const span = Math.max(1, w.end - w.start)
     const seg = Math.max(1, span / Math.max(1, count))
+    // 最后一分钟不能排：生物钟每 60s tick 一次，落在 :59 的点会让 tick 到点时窗口已经结束，
+    // 直接被记成 missed（2026-11-16 22:00–23:00 就是这样丢的）。留 2 分钟缓冲。
+    const latest = Math.max(w.start, w.end - 2)
     for (let i = 0; i < count; i += 1) {
-      const desired = w.start + i * seg + random() * seg
+      const desired = Math.min(w.start + i * seg + random() * seg, latest)
       let at = Math.max(w.start, desired)
       if (Number.isFinite(lastAt)) at = Math.max(at, lastAt + gap)
       // 已经过了窗口：这个窗口今天不补（C 的“不补醒”）
@@ -168,7 +171,7 @@ export function buildNightSchedule({
       // 放不下：base 必须保；extra 丢掉；两者都记 warning
       if (at >= w.end) {
         if (i === 0) {
-          const fallback = Math.max(w.start, Math.min(w.end - 1, Number.isFinite(lastAt) ? lastAt + gap : w.start))
+          const fallback = Math.max(w.start, Math.min(latest, Number.isFinite(lastAt) ? lastAt + gap : w.start))
           at = fallback
           if (Number.isFinite(lastAt) && at < lastAt + gap) {
             warnings.push(`${w.label} 的保底 slot 放不下 ${gap} 分钟间隔，已压缩到 ${minToHHMM(at)}`)

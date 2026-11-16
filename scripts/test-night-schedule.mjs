@@ -91,3 +91,17 @@ assert.equal(qq['18:00–19:00'], 10);
 assert.equal(qq['20:00–21:00'], undefined);
 
 console.log('night schedule tests OK');
+
+// 回归：落在窗口最后一分钟的点会被 60s tick 判成 missed（2026-11-16 22:00–23:00 丢过）。
+// 排程必须把 at 压到 end-2 以内，random=0.999 也不能贴边。
+{
+  const edge = buildNightSchedule({
+    windows: [{ start: '22:00', end: '23:00', wakes: 1 }],
+    maxWakes: 1, minGapMin: 20, skipChance: 0, nowMin: 0,
+    quality: {}, random: () => 0.999,
+  });
+  assert.equal(edge.slots.length, 1);
+  assert.ok(edge.slots[0].at <= edge.slots[0].end - 2, `不能排在最后一分钟：${edge.slots[0].atText}`);
+  assert.ok(edge.slots[0].at >= edge.slots[0].start, '仍要落在窗口内');
+}
+console.log('night schedule edge tests OK');

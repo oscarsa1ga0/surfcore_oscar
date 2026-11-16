@@ -8,6 +8,7 @@
 | --- | --- | --- | --- |
 | 2026-11-16 | [私信卡片只剩标题](2026-11-16-dm-card-loss.md) | dm-await 只取 content 丢了 jump_url，卡片/图片都退化成文字 | macOS 分支 |
 | 2026-11-16 | [同一天写了三篇日记](2026-11-16-diary-same-day-append.md) | diary_write 只会新建；改成默认追加，另开要 newEntry | macOS 分支 |
+| 2026-11-16 | [生物钟整轮没醒](2026-11-16-bili-window-last-minute-missed.md) | 叫醒点落进窗口最后一分钟，60s tick 到点已是 missed | macOS 分支 |
 | 2026-11-15 | [QQ 空间面板未知接口](2026-11-15-qzone-panel-routes.md) | 插件补 qzone status/activity 代理路由 | macOS 分支 |
 | 2026-11-15 | [鱼姬跨平台情绪](2026-11-15-emotion.md) | 角色共享九维心境、独立情绪页、模型请求前刷新 | 待合入 |
 | 2026-11-15 | [B站唤醒被去重](2026-11-15-bili-wake-dedupe.md) | requestId 同 slot 重排后撞车被 DSH 去重；动态提醒 inSlot 作用域 | macOS 分支 |
