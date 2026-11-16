@@ -148,3 +148,15 @@ test('同一天默认追加到最后一篇，newEntry 才另开一篇', async ()
   const list = await call('diary_list', { from: day, to: day, limit: 10 });
   assert.equal(list.entries.filter((entry) => entry.date === day).length, 2, '当天应该正好两篇');
 });
+
+test('工具返回的时间带本地时区偏移（别再把 UTC 念成本地时间）', async () => {
+  const list = await call('diary_list', { limit: 3 });
+  assert.ok(list.entries.length > 0);
+  for (const entry of list.entries) {
+    assert.match(entry.createdAt, /[+-]\d{2}:\d{2}$/, `createdAt 要带偏移：${entry.createdAt}`);
+    assert.match(entry.updatedAt, /[+-]\d{2}:\d{2}$/, `updatedAt 要带偏移：${entry.updatedAt}`);
+    assert.ok(!String(entry.createdAt).endsWith('Z'), '不该再返回裸 UTC');
+  }
+  const read = await call('diary_read', { id: list.entries[0].id });
+  assert.match(read.entries[0].updatedAt, /[+-]\d{2}:\d{2}$/);
+});
