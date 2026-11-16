@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { config } from '../lib/config.mjs'
+import { parseDmContent } from '../lib/dm-content.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -53,10 +54,10 @@ function saveState(state) {
     throw error;
   }
 }
-const parsed = (content) => {
-  // 私信内容可能是 {"content":"…"} 或纯文本
-  try { const j = JSON.parse(String(content)); return String(j.content ?? j.text ?? content) } catch { return String(content ?? '') }
-}
+// 私信 content 可能是纯文本，也可能是卡片 JSON（视频/专栏/小程序）。
+// 只取 text 会丢掉 jump_url —— 她就只能看到标题，点不开（2026-11-16 修）。
+const parsed = (content) => parseDmContent(content)
+const shortText = (value) => String(value ?? '').replace(/\n/g, ' ').slice(0, 200)
 
 async function fetchSessions() {
   const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=50&mobi_app=web'
@@ -100,10 +101,13 @@ if (ANY) {
     if (Number(talker) < 1000) continue                 // 系统 / 官方号会话：不当"人"处理 ✗
     if (sender === SELF) { if (ts > Number(seenMap[talker] ?? 0)) seenMap[talker] = ts; continue }  // 最后一句是她自己说的 → 不是在找她
     if (ts <= Number(seenMap[talker] ?? 0)) continue
+    const info = parsed(last.content)
     items.push({
       mid: talker,
       name: String(s.account_info?.name ?? s.talker_name ?? ''),
-      text: parsed(last.content),
+      text: info.text,
+      url: info.url,
+      kind: info.kind,
       ts,
       unread: Number(s.unread_count ?? 0),
       isOwner: talker === OWNER,
@@ -134,7 +138,7 @@ if (ANY) {
     for (const it of items) seenMap[it.mid] = it.ts
     if (!PEEK) saveState({ seen: seenMap, seenAt: now, at: new Date().toISOString() })
     if (JSONOUT) console.log(JSON.stringify({ hit: true, items }))
-    else for (const it of items) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${it.text.replace(/\n/g, ' ').slice(0, 200)}`)
+    else for (const it of items) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${shortText(it.text)}${it.url ? ` url=${it.url}` : ''}`)
     process.exit(0)
   }
   if (JSONOUT) console.log(JSON.stringify({ hit: false, items: [], baseline: FIRST_ANY }))
@@ -149,11 +153,16 @@ async function fetchHistory(talkerId, size = 50) {
   const j = await r.json().catch(() => ({}))
   if (j.code !== 0) return { ok: false, why: `fetch_session_msgs code=${j.code} ${j.message ?? ''}`, messages: [] }
   const messages = (Array.isArray(j.data?.messages) ? j.data.messages : [])
-    .map((m) => ({
-      ts: Number(m.timestamp) || 0,
-      sender: String(m.sender_uid ?? ''),
-      text: parsed(m.content),
-    }))
+    .map((m) => {
+      const info = parsed(m.content)
+      return {
+        ts: Number(m.timestamp) || 0,
+        sender: String(m.sender_uid ?? ''),
+        text: info.text,
+        url: info.url,
+        kind: info.kind,
+      }
+    })
     .filter((m) => m.ts > 0)
     .sort((a, b) => a.ts - b.ts)
   return { ok: true, messages }
@@ -167,10 +176,11 @@ async function poll({ since = 0 } = {}) {
   if (!mine) return { ok: true, hit: false, why: '没找到主人的会话' }
   const last = mine.last_msg ?? {}
   const ts = Number(last.timestamp ?? 0)
-  const text = parsed(last.content)
+  const info = parsed(last.content)
+  const text = info.text
   const sender = Number(last.sender_uid ?? 0)
   const fromOwner = String(sender) === OWNER      // 只有主人发的才算
-  const base = { ok: true, ts, text, fromOwner, unread: Number(mine.unread_count ?? 0) }
+  const base = { ok: true, ts, text, url: info.url, kind: info.kind, fromOwner, unread: Number(mine.unread_count ?? 0) }
   // 有旧水位且最后一条确实比水位新：拉这段时间的完整消息，避免连发只看到最后一条。
   if (fromOwner && since > 0 && ts > since) {
     const h = await fetchHistory(OWNER)
@@ -198,13 +208,13 @@ const hit = r.ts > lastSeen && r.fromOwner
 if (hit) {
   const items = Array.isArray(r.items) && r.items.length
     ? r.items
-    : [{ ts: r.ts, sender: OWNER, text: r.text }]
+    : [{ ts: r.ts, sender: OWNER, text: r.text, url: r.url, kind: r.kind }]
   const maxTs = Math.max(r.ts, ...items.map((m) => Number(m.ts) || 0))
   if (!PEEK) saveState({ ...st, lastSeen: maxTs, at: new Date().toISOString() })
-  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, ts: maxTs, count: items.length, items }))
+  if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, url: r.url ?? '', ts: maxTs, count: items.length, items }))
   else {
-    console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${maxTs} count=${items.length} text=${r.text.replace(/\n/g, ' ').slice(0, 200)}`)
-    for (const m of items) console.log(`  [${new Date(Number(m.ts) * 1000).toLocaleTimeString('zh-CN', { hour12: false })}] ${String(m.text).replace(/\n/g, ' ').slice(0, 200)}`)
+    console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${maxTs} count=${items.length} text=${shortText(r.text)}${r.url ? ` url=${r.url}` : ''}`)
+    for (const m of items) console.log(`  [${new Date(Number(m.ts) * 1000).toLocaleTimeString('zh-CN', { hour12: false })}] ${shortText(m.text)}${m.url ? ` → ${m.url}` : ''}`)
   }
   process.exit(0)
 }

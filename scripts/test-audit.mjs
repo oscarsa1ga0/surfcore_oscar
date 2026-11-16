@@ -81,6 +81,8 @@ const tests = [
   'test-bili-listen-error.mjs',
   // B站收件箱坐标：@ 一级评论补 root=source；resolveLatestReply 按 source rpid 找。
   'test-bili-reply-coordinates.mjs',
+  // 私信卡片：content 是 JSON 时 jump_url/rid 不能被丢掉（只取文字=卡片点不开）。
+  'test-dm-card-parse.mjs',
   'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 管理员身份（QQ ⇄ B站 同一个人）+「对管理员温柔 / 绝不回嘴」提示词：
