@@ -119,6 +119,7 @@ import { checkProfileMcp, presetMismatch } from './dsh-health.js';
 import { createContextTelemetry } from './context-telemetry.js';
 import { createBiliDynamicsSync } from './bili-dynamics.js';
 import { createBiliShareScheduler } from './bili-share-scheduler.js';
+import { composeDiaryInjection } from './bili-diary-inject.js';
 import { createBiliCardSender, normalizeCardMode } from './bili-card.js';
 import { fetchVideoInfo } from './bili-api.js';
 import {
@@ -15791,28 +15792,7 @@ async function main() {
     } catch { return ''; }
   }
   let biliTodayDiaryCache = { key: '', text: '' };
-  function extractTodayDiary(text, today) {
-    const lines = String(text ?? '').split('\n');
-    const segs = [];
-    let curDate = '';
-    let buf = [];
-    const flush = () => {
-      if (curDate === today && buf.length) {
-        const body = buf.join('\n').trim();
-        if (body) segs.push(body);
-      }
-      buf = [];
-    };
-    for (const line of lines) {
-      const h2 = /^##\s+(\d{4}-\d{2}-\d{2})/.exec(line);
-      const h3 = /^###+\s+.*?(\d{4}-\d{2}-\d{2})/.exec(line);
-      if (h2) { flush(); curDate = h2[1]; buf = [line]; continue; }
-      if (h3) { flush(); curDate = h3[1]; buf = [line]; continue; }
-      buf.push(line);
-    }
-    flush();
-    return segs.join('\n\n').trim();
-  }
+  const BILI_DIARY_BUDGET = 6000;
   function todayBiliDiaryText() {
     const dir = biliDiaryDirNow();
     if (!dir) return '';
@@ -15823,14 +15803,9 @@ async function main() {
       }).join('|');
       if (biliTodayDiaryCache.key === sig) return biliTodayDiaryCache.text;
       const today = new Date().toLocaleDateString('sv-SE');
-      const parts = [];
-      for (const file of files) {
-        let raw = '';
-        try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
-        const seg = extractTodayDiary(raw, today);
-        if (seg) parts.push(seg);
-      }
-      const text = parts.join('\n\n');
+      const texts = files.map((file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } });
+      // 截断改成「从最新往回装」：被丢的永远是最老的条目，而不是刚写的这条。
+      const text = composeDiaryInjection(texts, today, BILI_DIARY_BUDGET);
       biliTodayDiaryCache = { key: sig, text };
       return text;
     } catch { return ''; }

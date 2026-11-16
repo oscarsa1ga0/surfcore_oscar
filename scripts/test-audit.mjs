@@ -83,6 +83,8 @@ const tests = [
   'test-bili-reply-coordinates.mjs',
   // 私信卡片：content 是 JSON 时 jump_url/rid 不能被丢掉（只取文字=卡片点不开）。
   'test-dm-card-parse.mjs',
+  // B站日记注入 QQ：只取当天段落，预算从最新往回装（最新的不会被截掉）。
+  'test-bili-diary-inject.mjs',
   'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 管理员身份（QQ ⇄ B站 同一个人）+「对管理员温柔 / 绝不回嘴」提示词：
