@@ -78,8 +78,10 @@ assert.equal(normalizeCardUrl(''), '');
 const cli = fs.readFileSync('plugins/surfcore/tools/commands/dm-await.mjs', 'utf8');
 assert.match(cli, /import \{ parseDmContent \} from '\.\.\/lib\/dm-content\.mjs'/, 'dm-await 没接 dm-content');
 assert.match(cli, /url: info\.url/, 'items 没带 url');
-assert.match(cli, /url=\$\{it\.url\}/, '--any 输出没带 url');
-assert.match(cli, /→ \$\{m\.url\}/, 'owner 模式逐条输出没带 url');
+const dmFormat = fs.readFileSync('plugins/surfcore/tools/lib/dm-format.mjs', 'utf8');
+assert.match(cli, /dmItemLine\(\{ name: it\.name, ts: it\.ts, text: it\.text, url: it\.url \}\)/, '--any 输出没走 dmItemLine');
+assert.match(cli, /dmItemLine\(\{ name: OWNER_NAME, ts: m\.ts, text: m\.text, url: m\.url \}\)/, 'owner 模式逐条输出没走 dmItemLine');
+assert.match(dmFormat, /url \? ` → \$\{url\}`/, 'dmItemLine 没带 url');
 assert.doesNotMatch(cli, /text: parsed\(last\.content\)/, '还在把 parsed() 的结果当字符串用');
 
 console.log('✅ B站私信卡片解析通过');

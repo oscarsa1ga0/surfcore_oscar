@@ -13,6 +13,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { config } from '../lib/config.mjs'
 import { parseDmContent } from '../lib/dm-content.mjs'
+import { dmItemLine, dmSummaryLine } from '../lib/dm-format.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -57,7 +58,6 @@ function saveState(state) {
 // 私信 content 可能是纯文本，也可能是卡片 JSON（视频/专栏/小程序）。
 // 只取 text 会丢掉 jump_url —— 她就只能看到标题，点不开（2026-11-16 修）。
 const parsed = (content) => parseDmContent(content)
-const shortText = (value) => String(value ?? '').replace(/\n/g, ' ').slice(0, 200)
 
 async function fetchSessions() {
   const u = 'https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&group_id=0&count=50&mobi_app=web'
@@ -138,7 +138,11 @@ if (ANY) {
     for (const it of items) seenMap[it.mid] = it.ts
     if (!PEEK) saveState({ seen: seenMap, seenAt: now, at: new Date().toISOString() })
     if (JSONOUT) console.log(JSON.stringify({ hit: true, items }))
-    else for (const it of items) console.log(`DM_HIT mid=${it.mid} name=${it.name} ts=${it.ts} text=${shortText(it.text)}${it.url ? ` url=${it.url}` : ''}`)
+    else {
+      console.log(`DM_HIT 新私信 ${items.length} 条`)
+      for (const it of items) console.log(dmItemLine({ name: it.name, ts: it.ts, text: it.text, url: it.url }))
+      console.log(dmSummaryLine(items, '完整条目在上面，别用 tail 截断'))
+    }
     process.exit(0)
   }
   if (JSONOUT) console.log(JSON.stringify({ hit: false, items: [], baseline: FIRST_ANY }))
@@ -213,8 +217,9 @@ if (hit) {
   if (!PEEK) saveState({ ...st, lastSeen: maxTs, at: new Date().toISOString() })
   if (JSONOUT) console.log(JSON.stringify({ hit: true, mid: OWNER, name: OWNER_NAME, text: r.text, url: r.url ?? '', ts: maxTs, count: items.length, items }))
   else {
-    console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} ts=${maxTs} count=${items.length} text=${shortText(r.text)}${r.url ? ` url=${r.url}` : ''}`)
-    for (const m of items) console.log(`  [${new Date(Number(m.ts) * 1000).toLocaleTimeString('zh-CN', { hour12: false })}] ${shortText(m.text)}${m.url ? ` → ${m.url}` : ''}`)
+    console.log(`DM_HIT mid=${OWNER} name=${OWNER_NAME} count=${items.length}`)
+    for (const m of items) console.log(dmItemLine({ name: OWNER_NAME, ts: m.ts, text: m.text, url: m.url }))
+    console.log(dmSummaryLine(items.map((m) => ({ name: OWNER_NAME, ts: m.ts })), '完整条目在上面，别用 tail 截断'))
   }
   process.exit(0)
 }
