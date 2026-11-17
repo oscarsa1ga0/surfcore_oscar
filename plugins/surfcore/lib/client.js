@@ -1984,12 +1984,50 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "关闭"))));
     }
 
+    function WebChatTab({ reload }) {
+      const [status, setStatus] = useState(null);
+      const [error, setError] = useState("");
+      const [working, setWorking] = useState(false);
+      const [pair, setPair] = useState("");
+      const load = () => api("/web-chat").then(setStatus).catch((e) => setError(e.message));
+      useEffect(() => { void load(); }, []);
+      const update = async (action) => {
+        setWorking(true);
+        setError("");
+        setPair("");
+        try {
+          const result = await api("/web-chat", { method: "POST", body: { action } });
+          if (action === "pair") {
+            if (!result.opened) setPair(result.url);
+          } else {
+            setStatus(result);
+            if (['primary', 'rollback'].includes(action)) await reload();
+          }
+        } catch (e) { setError([e.message, e.hint].filter(Boolean).join(" · ")); }
+        finally { setWorking(false); }
+      };
+      const active = status?.running === true;
+      const primary = status?.carrier === "web";
+      return h("div", { className: "qbw-card" },
+        h("h4", null, "鱼姬之家"),
+        h("p", null, active ? `本机已启动 · ${status.url}` : status ? "本机聊天未启动" : "正在读取服务状态…"),
+        h("p", null, primary ? "主动搭话和主人的私聊通知投递到网页。" : "可以先试用网页聊天，再切换私聊通知。"),
+        h("div", { className: "qbw-actions" },
+          active ? h(Btn, { onClick: () => update("pair"), disabled: working }, "打开并配对")
+            : h(Btn, { onClick: () => update("enable"), disabled: working || !status }, "启用本机聊天"),
+          primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("rollback"), disabled: working }, "切回 QQ 私聊投递")
+            : active ? h(Btn, { kind: "qbw-btn2", onClick: () => update("primary"), disabled: working }, "切换到网页私聊投递") : null,
+          active && !primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("disable"), disabled: working }, "停用本机聊天") : null),
+        pair ? h("a", { href: pair, target: "_blank", rel: "noreferrer" }, "在浏览器打开一次性配对链接") : null,
+        error || status?.error ? h("div", { className: "qbw-warnbox", role: "alert" }, error || status.error) : null);
+    }
+
     function RoleDispatchCard() {
       const [state, setState] = useState(null);
       const [error, setError] = useState("");
       const [stopError, setStopError] = useState("");
       const [stopping, setStopping] = useState(false);
-      const labels = { qq: "QQ", bili: "B 站", diary: "日记" };
+      const labels = { qq: "QQ", bili: "B 站", diary: "日记", web: "鱼姬之家" };
       const stages = { preparing: "准备中", submitting: "正在提交", running: "工作中", checking: "等待 DSH 核对" };
       useEffect(() => {
         let mounted = true;
@@ -2856,8 +2894,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
 
       const doRun = async () => {
         const toPet = (carrier ?? P.carrier) === "pet";
+        const toWeb = (carrier ?? P.carrier) === "web";
         const ok = confirm(toPet
           ? "现在就让小肥鱼在桌宠气泡里主动搭话一次？\n\n会真的生成一句话（算一次模型回合）；语音载体还会合成语音。"
+          : toWeb ? "让鱼姬在网页主动搭话一次？这会运行一个 DSH 回合。"
           : "现在就让小肥鱼按「目的机制」主动私聊你一次？\n\n这会真的发 QQ 消息（不占每日分享/评论额度，但会算一次模型回合）。");
         if (!ok) return;
         setBusy("purpose-run");
@@ -3034,7 +3074,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     // 未安装桌宠的用户默认 QQ。同一时刻只有一个载体在发，避免两边同时收到。
     function PurposeCarrierCard({ cfg, set, busy, toast }) {
       const P = cfg?.purpose && typeof cfg.purpose === "object" ? cfg.purpose : {};
-      const carrier = P.carrier === "pet" ? "pet" : "qq";
+      const carrier = ["pet", "web"].includes(P.carrier) ? P.carrier : "qq";
       const modality = P.petModality === "voice" ? "voice" : "text";
       const [status, setStatus] = useState(null);
       useEffect(() => {
@@ -3082,7 +3122,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         : "桥接没在运行：选了也要先在「QQ」页启动";
       return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
         h("h4", null, "触发载体",
-          h("span", { className: "qbw-badge" }, carrier === "pet" ? "桌宠" : "QQ"),
+          h("span", { className: "qbw-badge" }, { pet: "桌宠", qq: "QQ", web: "鱼姬之家" }[carrier]),
           status?.ok === false ? h("span", { className: "qbw-badge warn" }, "状态读不到") : null),
         h("p", null, "目的机制只有一套（素材 → 驱动 → 目标假设 → 选择 → 回执）；这里决定这一句从哪个载体发出去。同一时刻只有一个执行者，不会桌宠和 QQ 同时收到。"),
         h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" } },
@@ -3164,7 +3204,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     function PurposeTab({ qq, setQq, unified, setUnified, overview, busy, setBusy, toast, reload, goTab }) {
       return h("div", null,
         h("div", { className: "qbw-infobox" },
-          "「目的」现在是一个独立栏目：管小肥鱼什么时候主动找你、想说什么；载体可选桌宠或 QQ。",
+          "「目的」现在是一个独立栏目：管小肥鱼什么时候主动找你、想说什么；载体可选桌宠、QQ 或鱼姬之家。",
           "没装桌宠的用户默认走 QQ；装了桌宠后可以切到桌宠，同一时间只会有一个载体收到。"),
         h(PurposeCarrierCard, { cfg: qq, set: setQq, busy, toast }),
         h(PurposeCard, { cfg: qq, set: setQq, busy, setBusy, toast, carrier: qq?.purpose?.carrier }),
@@ -7944,6 +7984,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     // ── 主组件 ──────────────────────────────────────────────────────────────
     const TABS = [
       ["overview", "概览"],
+      ["web-chat", "鱼姬之家"],
       ["characters", "角色"],
       ["purpose", "目的"],
       ["emotion", "情绪"],
@@ -8243,6 +8284,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
         if (tab === "characters") return h(CharactersTab, { overview, busy, setBusy, toast: notify, reload, goTab: setTab, unified, setUnified: setUnifiedPath });
         if (tab === "emotion") return h(EmotionTab);
+        if (tab === "web-chat") return h(WebChatTab, { reload });
         if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });

@@ -197,8 +197,8 @@ function makeRecordId(parts) {
 }
 
 function importanceForSource(source, { isOwner = false, direct = false } = {}) {
-  if (source === 'qq-owner' || source === 'pet-owner') return 75;
-  if (source === 'qq-self' || source === 'pet-self') return 20;
+  if (['qq-owner', 'pet-owner', 'web-owner'].includes(source)) return 75;
+  if (['qq-self', 'pet-self', 'web-self'].includes(source)) return 20;
   return direct || isOwner ? 55 : 30;
 }
 
@@ -214,17 +214,16 @@ export function recordsFromInboxLines(lines, { now = Date.now() } = {}) {
     const text = redactVectorText(item.text, { maxChars: 1200 });
     if (!text || text.startsWith('/') || PLACEHOLDER_RE.test(text)) continue;
     const at = timeOf(item.at, now);
-    const isPet = String(item.platform ?? '').toLowerCase() === 'pet';
+    const platform = ['pet', 'web'].includes(item.platform) ? item.platform : 'qq';
+    const scope = platform;
     const isSelf = item.isSelf === true;
     const isOwner = item.isOwner === true;
     const isPrivate = item.private === true || item.kind === 'private';
-    const source = isPet
-      ? (isSelf ? 'pet-self' : 'pet-owner')
-      : (isSelf ? 'qq-self' : (isOwner ? 'qq-owner' : 'qq-group'));
-    const platform = isPet ? 'pet' : 'qq';
-    const scope = isPet ? 'pet' : 'qq';
+    const source = platform === 'qq'
+      ? (isSelf ? 'qq-self' : (isOwner ? 'qq-owner' : 'qq-group'))
+      : platform + (isSelf ? '-self' : '-owner');
     const speaker = short(item.sender ?? (isSelf ? '角色' : (isOwner ? '主人' : '群友')), 40);
-    const prefix = isPet ? '桌宠' : (isPrivate ? '私聊' : '群聊');
+    const prefix = { web: '鱼姬之家', pet: '桌宠', qq: isPrivate ? '私聊' : '群聊' }[platform];
     const title = isOwner
       ? `${prefix} · 和主人：${short(text, 22)}`
       : (isSelf ? `${prefix} · ${speaker}说：${short(text, 22)}` : `${prefix} · ${speaker}：${short(text, 22)}`);
@@ -508,6 +507,7 @@ export function rankVectorMemories({
   const entries = index.manifest.entries;
   for (const entry of entries) {
     if (entry.sensitive) continue;
+    if (entry.scope === 'web' && !['web', 'all'].includes(platform)) continue;
     if (typeof entryFilter === 'function' && !entryFilter(entry)) continue;
     if (platform === 'bili' && entry.scope !== 'bili' && entry.scope !== 'shared') continue;
     if (platform === 'pet' && entry.scope !== 'pet' && entry.scope !== 'qq' && entry.scope !== 'shared') continue;

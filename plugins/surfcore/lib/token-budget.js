@@ -191,6 +191,7 @@ export function createTokenBudgetService({
     const learnerId = readLearnerId();
     if (learnerId && id === learnerId) return 'other';
     if (/^bili-whale(?:-|$)/.test(id)) return 'bili';
+    if (/^surfcore-web-/.test(id)) return 'other';
     const parent = header.parentSession ?? summary.parentSessionId;
     if (parent) {
       const parentCategory = sessionCategory.get(String(parent)) ?? state.sessions[String(parent)]?.category;

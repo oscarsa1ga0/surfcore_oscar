@@ -98,7 +98,7 @@ test('记忆库：只读列表/语义搜索接线，不写记录/索引', () => 
   assert.match(maintainer, /export function listVectorMemoryRecords/);
   assert.match(maintainer, /export async function searchVectorMemoryRecords/);
   assert.match(maintainer, /record\.sensitive !== true/);
-  assert.match(maintainer, /platform: 'all'/);
+  assert.match(maintainer, /searchVectorMemoryRecords\(\{[^}]*platform = 'all', entryFilter = null/);
   assert.match(maintainer, /vector\.index-missing/);
 
   const client = read('plugins/surfcore/lib/client.js');

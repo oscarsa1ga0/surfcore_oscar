@@ -65,6 +65,12 @@ import { PlatformRegistry } from './platforms.js';
 import { ExtensionHost } from './extensions.js';
 import { isLoopbackReq, json, readBody, safeEqual, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
+import { createWebChatGateway, webReplyError } from './web-chat/gateway.js';
+import { chatError, webSessionId } from './web-chat/dsh.js';
+import { ffmpegPath } from '../tools/lib/ffmpeg.mjs';
+import { renderVectorRecallBlock } from '../../../src/vector-memory.js';
+import { dialogueEmotionScope } from '../../../src/emotion-events.js';
+import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { createDiaryToolDefinitions } from './diary-tools.js';
 import { startDiaryScheduler } from './diary-scheduler.js';
 import { createRoleDispatch, dispatchError, QQ_DISPATCH_ROUTE, roleRef, validQqDispatchRequest } from './role-dispatch.js';
@@ -87,7 +93,7 @@ import {
 } from '../../../src/admin-identity.js';
 import {
   applyMemoryCardAction, compactMemoryCardNow, fullMemoryCardSnapshot, memoryCardIdle, memoryCardSnapshot,
-  memoryCardStatusNow, notifyOwnerIfNeeded, restoreMemoryCardBackup, runMemoryCardMaintenance,
+  memoryCardPromptBlock, memoryCardStatusNow, notifyOwnerIfNeeded, restoreMemoryCardBackup, runMemoryCardMaintenance,
   startMemoryCardTimer,
 } from './memory-card.js';
 import {
@@ -243,7 +249,7 @@ export function apply(ctx) {
       const qqIds = new Set(Object.values(readJson(qqFile, {})?.sessions ?? {}));
       qqIds.add(readJson(path.join(QQ_STATE_DIR(), 'slang-session.json'), {})?.sessionId);
       return items.filter(({ sessionId, projections, running, agentAvailable }) =>
-        (running || agentAvailable) && (/^(?:bili-whale|diary)(?:-|$)/.test(sessionId) || qqIds.has(sessionId)
+        (running || agentAvailable) && (/^(?:bili-whale|diary)(?:-|$)/.test(sessionId) || /^surfcore-web-/.test(sessionId) || qqIds.has(sessionId)
         || /^qq-chat(?:-|$)/.test(projections?.agentPreset ?? '')))
         .map(({ sessionId }) => sessionId);
     },
@@ -345,6 +351,102 @@ export function apply(ctx) {
   billing.start();
 
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget, emotion });
+  const webDirectory = path.join(STATE_DIR, 'web-chat');
+  const webSettings = path.join(webDirectory, 'settings.json');
+  const webCarrier = () => {
+    const value = readQqConfig().config?.purpose?.carrier;
+    return ['pet', 'web'].includes(value) ? value : 'qq';
+  };
+  function webConfig() {
+    const qq = readQqConfig().config ?? {};
+    const greeting = readJson(path.join(QQ_STATE_DIR(), 'greetings.json'), {});
+    return {
+      cwd: path.join(webDirectory, 'workspace'),
+      ffmpeg: qq.socialV2?.voice?.ffmpegPath || ffmpegPath() || 'ffmpeg',
+      proactive: qq.purpose?.carrier === 'web',
+      purpose: qq.purpose,
+      greetings: qq.greetings,
+      owner: String(qq.ownerQQ ?? ''),
+      lastQqMorningDay: greeting?.lastMorningOk ? greeting.lastMorningDate : '',
+    };
+  }
+  function webIdentity() {
+    const character = readCurrentCharacter();
+    return { role: roleRef(character), name: character?.name || petChat.roleInfo('qq-private').name };
+  }
+  function webPrompt(recall = '') {
+    const { persona } = petChat.roleInfo('qq-private');
+    const memory = memoryCardPromptBlock('web');
+    const owner = petChat.ownerInfo().name;
+    return [
+      `这是你和${owner}在鱼姬之家的私聊。你可以直接用正常对话回复，最终文字会显示在聊天里。发送本地图片可以使用 web_chat_send_image，请先把图片放到本会话工作目录。你当前说的话只给这位主人看。请保留 QQ 私聊、桌宠、B 站和日记的既有隐私边界。`,
+      persona,
+      memory,
+      recall,
+      `SurfCore B 站 CLI 的入口是 ${JSON.stringify(BILI_MJS)}。主人请你使用 B 站能力时，可先用 node 运行该入口并传 help 查命令。日记使用现有 diary_* 工具。`,
+    ].filter(Boolean).join('\n\n');
+  }
+  let webSystemContext = false;
+  const webChat = createWebChatGateway({
+    directory: webDirectory, ctx, dispatch: roleDispatch, identity: webIdentity, config: webConfig,
+    context: (_session, recall) => webSystemContext ? [] : [{ type: 'text', text: webPrompt(recall) }],
+    async recall(text) {
+      const unified = readUnified().config;
+      if (unified.memory?.mode !== 'vector' || unified.vectorMemory?.enabled === false) return '';
+      const owner = petChat.ownerInfo().qq;
+      const result = await searchVectorMemoryRecords({ query: text.slice(0, 300), limit: unified.vectorMemory?.topK ?? 5, platform: 'web',
+        entryFilter: (item) => item.scope !== 'qq' || (item.private && (item.conversationKey
+          ? item.conversationKey === `private:${owner}` : item.source === 'qq-owner')),
+      });
+      return result.ok ? renderVectorRecallBlock(result.hits, { maxChars: unified.vectorMemory?.injectMaxChars }) : '';
+    },
+    budget: tokenBudget,
+    log: (message, error) => pluginLog('[web-chat]', message, error?.code || error?.name || 'unknown'),
+    onMessage(message, run) {
+      const character = readCurrentCharacter();
+      if ((character?.id ?? 'default') !== run.chat || (character?.epoch ?? 0) !== run.epoch) return;
+      if (message.text) {
+        appendMemoryInboxEvent(activeMemoryPaths(), {
+          platform: 'web', conversationKey: 'web', senderId: message.author === 'user' ? 'web-owner' : 'web-self',
+          text: message.text, eventId: message.id, replyTo: message.turnId, at: message.at, kind: 'private',
+          isOwner: message.author === 'user', isSelf: message.author === 'assistant', direct: true,
+        });
+      }
+      if (message.author === 'assistant' && run.kind === 'purpose') {
+        emotion.record({ ...dialogueEmotionScope('web', webSessionId(run.chat), 'owner'), kind: 'proactive', key: message.id }, character);
+      }
+      if (message.author === 'user') {
+        const kind = classifyEmotionText(message.text, { media: message.attachments.length > 0 });
+        if (kind) emotion.record({ ...dialogueEmotionScope('web', webSessionId(run.chat), 'owner'), kind, key: message.id }, character);
+      }
+    },
+    readPurposeInputs(chatState) {
+      const owner = petChat.ownerInfo();
+      const qq = readJson(path.join(QQ_STATE_DIR(), 'social-v2.json'), {})?.conversations ?? {};
+      const conv = qq[`private:${owner.qq}`];
+      const browserHistory = chatState.messages.filter(({ author }) => author === 'user' || author === 'assistant')
+        .map(({ at, author, text }) => ({ at, text, isOwner: author === 'user', isSelf: author === 'assistant' }));
+      const ownerUin = owner.qq || '0';
+      return {
+        ownerName: owner.name, ownerUin, persona: petChat.roleInfo('qq-private').persona,
+        conversations: [{ key: `private:${ownerUin}`,
+          recentMessages: [...(conv?.recentMessages ?? []).slice(-30), ...browserHistory].slice(-40) }],
+        biliEntries: readJson(path.join(activePlatformStateDir(BILI_DIR), 'bili-memory.json'), {})?.entries ?? [],
+        memoryRecords: readJson(activeMemoryPaths()?.json ?? path.join(MEMORY_DIR, 'memory-card.json'), {})?.records ?? [],
+      };
+    },
+    readPurposeState: () => readJson(petChat.purposeStateFile(), {}),
+    writePurposeState: (state) => writeJsonAtomic(petChat.purposeStateFile(), state),
+    focus: () => petChat.focusEnabled(),
+    mood: () => emotion.snapshot(dialogueEmotionScope('web', webSessionId(webIdentity().role.characterId), 'owner')),
+  });
+  function webOwnerNotification(routePath, options) {
+    if (webCarrier() !== 'web' || routePath !== '/api/memory-card/notify') return callBridge(routePath, options);
+    const { percent, chars, maxChars } = options.body;
+    return Promise.resolve().then(() => webChat.notice(`记忆卡容量达到 ${percent}%（${chars}/${maxChars} 字）。可到 SurfCore → 记忆整理。`))
+      .catch(() => ({ ok: false, error: '鱼姬之家未启动。请到 SurfCore → 鱼姬之家启动后重试。' }));
+  }
+
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge, emotion });
   const petApi = createPetApiService({
     chat: petChat,
@@ -889,7 +991,7 @@ export function apply(ctx) {
 
   // 记忆卡：插件宿主是唯一维护者。启动 8 秒后整理一次（摄取桥接 inbox + B站记忆），
   // 之后每 10 分钟一次；每日衰减由 memory-card 自己按 dailyHour 判断。
-  memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge });
+  memoryCardTimer = startMemoryCardTimer({ log: pluginLog, callBridge: webOwnerNotification });
   // 向量记忆：独立存储/独立开关，默认与记忆卡并行写入；memory.mode 只影响读取。
   vectorMemoryTimer = startVectorMemoryTimer({ log: pluginLog });
 
@@ -1018,6 +1120,11 @@ export function apply(ctx) {
         },
       }));
       hasEmotionContext = true;
+      disposers.push(promptService.context({
+        name: 'surfcore-web-private', order: 1450, required: true, interpolate: false,
+        text: ({ agent }) => webChat.contextApplies(agent?.session?.id) ? webPrompt(webChat.recallFor(agent.session.id)) : '',
+      }));
+      webSystemContext = true;
       disposers.push(ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
         const decision = await next();
         if (decision.kind !== 'enter') return decision;
@@ -1061,6 +1168,20 @@ export function apply(ctx) {
   } catch (error) {
     pluginLog('日记工具注册失败：', String(error?.message ?? error));
   }
+  try {
+    const tools = ctx.tools ?? ctx.get?.('tools');
+    if (tools?.register) disposers.push(tools.register({
+      name: 'web_chat_send_image',
+      description: '将当前鱼姬之家会话工作目录下的图片发到当前网页聊天。仅可在该网页私聊回合调用。',
+      parameters: { type: 'object', properties: { file: { type: 'string' }, caption: { type: 'string' } },
+        required: ['file'], additionalProperties: false },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      execute(args, execution) {
+        try { return JSON.stringify(webChat.sendImage(args, execution)); }
+        catch (error) { return JSON.stringify({ ok: false, code: error.code, error: error.message, hint: error.hint }); }
+      },
+    }));
+  } catch (error) { pluginLog('[web-chat] 图片发送工具注册失败', error?.name || 'unknown'); }
   function route(kind, pathname, handler) {
     disposers.push(ctx.webServer.register({
       kind,
@@ -1306,11 +1427,11 @@ export function apply(ctx) {
     // 目的载体同理：切到桌宠后桥接下一次 tick 就不再自动出发（30 秒内生效），
     // 桌宠那边由 petPurpose 接手；不用重启桥接。
     if (result.saved.qq || result.saved.unified) {
-      const afterCarrier = readQqConfig().config?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
-      const beforeCarrier = currentQq?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
+      const afterCarrier = webCarrier();
+      const beforeCarrier = currentQq?.purpose?.carrier ?? 'qq';
       result.purposeCarrier = afterCarrier;
       if (afterCarrier !== beforeCarrier) {
-        result.warnings.push(afterCarrier === 'pet'
+        result.warnings.push(afterCarrier === 'web' ? '主动搭话改到鱼姬之家。' : afterCarrier === 'pet'
           ? '目的载体已切到「桌宠」：QQ 桥接不再自动主动搭话，改由桌宠气泡/语音发出（30 秒内生效，不用重启桥接）。'
           : '目的载体已切回「QQ」：桌宠不再主动搭话，改由桥接私聊你（30 秒内生效）。');
       }
@@ -1765,7 +1886,7 @@ ${body}`;
       return;
     }
     if (action === 'notify-test') {
-      const result = await notifyOwnerIfNeeded({ callBridge, config });
+      const result = await notifyOwnerIfNeeded({ callBridge: webOwnerNotification, config });
       json(res, 200, result);
       return;
     }
@@ -3284,9 +3405,20 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   async function handlePurpose(req, res, url) {
     const suffix = url.pathname.slice(`${API_PREFIX}/purpose`.length) || '/status';
     const method = String(req.method || 'GET').toUpperCase();
-    const carrier = readQqConfig().config?.purpose?.carrier === 'pet' ? 'pet' : 'qq';
-    const availability = await purposeAvailability();
+    const carrier = webCarrier();
+    const availability = { ...await purposeAvailability(), web: webChat.status() };
     try {
+      if (carrier === 'web' && suffix === '/status' && method === 'GET') {
+        json(res, 200, { ok: availability.web.running, source: 'web', carrier, availability, state: webChat.purposeStatus(),
+          modality: 'text', online: availability.web.running, focus: petChat.focusEnabled(),
+          config: readQqConfig().config?.purpose, error: availability.web.error });
+        return;
+      }
+      if (carrier === 'web' && ['/preview', '/run'].includes(suffix) && method === 'POST') {
+        const result = webChat.purposeTry({ force: true, preview: suffix === '/preview' });
+        json(res, result.ok ? 200 : 409, { ...result, source: 'web', carrier, availability });
+        return;
+      }
       if (suffix === '/status' && method === 'GET') {
         if (carrier === 'pet') {
           const st = petPurpose.status();
@@ -4542,12 +4674,44 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  async function handleWebChatSettings(req, res) {
+    try {
+      if (req.method === 'POST') {
+        const { action } = JSON.parse(await readBody(req, 2048) || '{}');
+        if (action === 'enable') {
+          await webChat.start();
+          writeJsonAtomic(webSettings, { enabled: true });
+        } else if (action === 'disable') {
+          if (roleDispatch.status().active?.source === 'web') throw chatError(409, 'WEB_DISPATCH_BUSY', '鱼姬正在处理网页回合。', '等当前回合结束后再停用。');
+          if (webCarrier() === 'web') throw chatError(409, 'WEB_PRIMARY', '先把私聊投递切回 QQ 或桌宠，再停用鱼姬之家。');
+          webChat.stop();
+          writeJsonAtomic(webSettings, { enabled: false });
+        } else if (action === 'primary' || action === 'rollback') {
+          if (action === 'primary' && !webChat.status().running) throw chatError(409, 'WEB_DISABLED', '请先启用鱼姬之家。');
+          if (roleDispatch.status().active || petPurpose.status().running) throw chatError(409, 'WEB_DISPATCH_BUSY', '鱼姬正在处理一个回合。', '等当前回合结束后再切换主私聊。');
+          if (action === 'primary' || webCarrier() === 'web') saveQqConfig({ purpose: { carrier: action === 'primary' ? 'web' : 'qq' } });
+        } else if (action === 'pair') {
+          const url = webChat.pair();
+          const opened = process.platform === 'darwin' && process.env.SURFCORE_SKIP_AUTOSTART !== '1'
+            ? await new Promise((resolve) => execFile('/usr/bin/open', [url], { timeout: 5000 }, (error) => resolve(!error)))
+            : false;
+          json(res, 200, { ok: true, url, opened });
+          return;
+        } else throw chatError(400, 'WEB_SETTINGS_ACTION', '未知的鱼姬之家操作。');
+      } else if (req.method !== 'GET') throw chatError(405, 'WEB_SETTINGS_METHOD', '操作方法无效。');
+      json(res, 200, { ok: true, ...webChat.status(), carrier: webCarrier() });
+    } catch (error) {
+      webReplyError(res, error);
+    }
+  }
+
   // ── 路由：API 前缀 ──────────────────────────────────────────────────────
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     if (pathname.startsWith(`${API_PREFIX}/role-dispatch`)) { await handleRoleDispatch(req, res, pathname); return; }
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
+    if (pathname === `${API_PREFIX}/web-chat`) { await handleWebChatSettings(req, res); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/emotion/initialize`) {
       if (req.method !== 'POST') {
@@ -4761,6 +4925,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   const petHostTimer = setInterval(() => { try { petApi.writeHostFile(false); } catch {} }, 120_000);
   petHostTimer.unref?.();
   // 目的机制（桌宠载体）：carrier=pet 时由这里每 60 秒 tick；carrier=qq 时它自己会退出。
+  if (readJson(webSettings, {})?.enabled === true) {
+    void webChat.start().catch(() => {});
+  }
   try { petPurpose.start(); } catch (error) { pluginLog('[pet-purpose] 启动失败：', String(error?.message ?? error)); }
 
   // 启动后异步做的事（不阻塞插件激活）
@@ -4785,6 +4952,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
 
   // 保存设置后如果开启了“随插件自动启动”，这里也覆盖一次。
   ctx.effect(() => () => {
+    webChat.stop();
     roleDispatch.dispose();
     try { scheduler?.stop?.(); } catch {}
     try { diaryScheduler?.stop?.(); } catch {}

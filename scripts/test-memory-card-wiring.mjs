@@ -33,7 +33,7 @@ assert.match(scheduler, /memoryCardPromptBlock\('bili'\)/, 'B站调度器没有�
 assert.match(scheduler, /memoryCardBlockForBili\(\)/, 'B站记忆卡块没有接进 identityContextLines');
 
 // 3) 插件：定时维护 + 控制台 API + 生命周期清理。
-assert.match(index, /startMemoryCardTimer\(\{ log: pluginLog, callBridge \}\)/, '插件没有启动记忆卡定时维护');
+assert.match(index, /startMemoryCardTimer\(\{ log: pluginLog, callBridge: webOwnerNotification \}\)/, '插件没有启动记忆卡定时维护');
 assert.match(index, /\/memory-card/, '插件缺少记忆卡 API 路由');
 assert.match(index, /handleMemoryCard/, '插件缺少记忆卡处理器');
 assert.match(index, /memoryCard: memoryCardStatusNow\(\)/, '概览没有记忆卡状态');

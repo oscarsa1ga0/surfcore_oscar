@@ -14,6 +14,7 @@ import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
 import * as wait from '../src/v2-wait.js';
 import * as safeFetch from '../src/safe-fetch.js';
+import { getImageDimensions } from '../src/image-dimensions.js';
 import { downloadOneBotImageStream, isProbablySafeImageFileRef, uploadOneBotStickerImage } from '../src/onebot-image-stream.js';
 import * as forward from '../src/forward.js';
 import * as selfIdentity from '../src/self-identity.js';
@@ -286,6 +287,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...qqAt, createQqRoleDispatch, usesLocalDispatch,
     ...modelOptions,
+    getImageDimensions,
     ...dshModelFollow,
     ...commandSpam,
     createOutbox, historyAllowsReplay, neverDispatched,

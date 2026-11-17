@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>鱼姬之家</title>
+  <link rel="stylesheet" href="/chat.css">
+  <script defer src="/chat.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand"><span class="mark" aria-hidden="true"></span><span>鱼姬之家</span></div>
+      <nav aria-label="鱼姬之家">
+        <a href="/" aria-current="page"><span aria-hidden="true">◌</span>聊天</a>
+      </nav>
+      <div id="connection" class="connection"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></div>
+    </aside>
+    <main>
+      <header><div><h1 id="name">鱼姬</h1><p id="status" aria-live="polite">正在连接本机服务</p></div></header>
+      <div id="alert" class="alert" role="status" hidden></div>
+      <section id="timeline" aria-label="聊天记录">
+        <button id="older" type="button" hidden>加载更早消息</button>
+        <div id="messages"></div>
+        <div id="stream" hidden></div>
+        <div id="requests"></div>
+      </section>
+      <form id="composer">
+        <div id="attachments"></div>
+        <label class="visually-hidden" for="message">消息</label>
+        <textarea id="message" placeholder="给鱼姬发消息…" rows="2" maxlength="20000"></textarea>
+        <div class="actions">
+          <label id="attach-label" class="attach" for="upload" tabindex="0">添加图片或 GIF</label>
+          <input id="upload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+          <button id="send" class="primary" type="submit" disabled>发送</button>
+        </div>
+      </form>
+    </main>
+  </div>
+  <dialog id="preview"><button id="close-preview" type="button" aria-label="关闭图片">关闭</button><img alt="会话图片"></dialog>
+</body>
+</html>

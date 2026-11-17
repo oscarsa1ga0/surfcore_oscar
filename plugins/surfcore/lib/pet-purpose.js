@@ -73,7 +73,6 @@ function clip(text, max = 120) {
  */
 export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null, emotion = null } = {}) {
   const emotionScope = dialogueEmotionScope('pet', 'desktop', 'owner');
-  let stateCache = null;
   let stateFile = '';
   let running = false;
   let lastTickAt = 0;
@@ -98,7 +97,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }, { ownerQQ: qq?.ownerQQ || '' });
     return {
       config: normalized,
-      carrier: raw.carrier === 'pet' ? 'pet' : 'qq',
+      carrier: ['pet', 'web'].includes(raw.carrier) ? raw.carrier : 'qq',
       modality: raw.petModality === 'voice' ? 'voice' : 'text',
       fallbackToQQ: raw.petFallbackToQQ !== false,
       ownerUin: String(normalized.ownerUin || qq?.ownerQQ || '').replace(/[^\d]/g, ''),
@@ -114,7 +113,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
   function loadState() {
     const nextFile = resolveStateFile();
-    if (stateCache && stateFile === nextFile) return stateCache;
     stateFile = nextFile;
     const raw = readJson(stateFile, null);
     const state = normalizePurposeState(raw, Date.now());
@@ -124,12 +122,10 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       state.nextFireAt = 0;
     }
     ensurePurposeSchedule(state, { now: Date.now(), config: purposeConfig().config });
-    stateCache = state;
     return state;
   }
 
   function saveState(state) {
-    stateCache = state;
     try {
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });
       writeJsonAtomic(stateFile, state);
