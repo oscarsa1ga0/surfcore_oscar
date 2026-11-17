@@ -17,6 +17,7 @@
 | 2026-11-17 | [dm-await 被 tail 截断](2026-11-17-dm-await-tail-truncated.md) | 明细自带发送人/时间，结论压到最后一行 | macOS 分支 |
 | 2026-11-17 | [QQ 群聊补主人身份保密](2026-11-17-qq-owner-privacy-clause.md) | 只有系统/凭据条款，缺「别说主人是谁」；两代预设各加 3.5 | macOS 分支 |
 | 2026-11-17 | [B站禁止编造经历](2026-11-17-bili-no-fabrication.md) | 出门前 4.6 硬规则：说不出时间/原话的个人经历不许写 | macOS 分支 |
+| 2026-11-17 | [晚场被 woke 标记饿死](2026-11-17-bili-woke-flag-block.md) | 第一次醒后 woke 恒真，tick 每分钟重排把 at 推到 now+1 | macOS 分支 |
 | 2026-11-15 | [QQ 空间面板未知接口](2026-11-15-qzone-panel-routes.md) | 插件补 qzone status/activity 代理路由 | macOS 分支 |
 | 2026-11-15 | [鱼姬跨平台情绪](2026-11-15-emotion.md) | 角色共享九维心境、独立情绪页、模型请求前刷新 | 待合入 |
 | 2026-11-15 | [B站唤醒被去重](2026-11-15-bili-wake-dedupe.md) | requestId 同 slot 重排后撞车被 DSH 去重；动态提醒 inSlot 作用域 | macOS 分支 |

@@ -89,6 +89,8 @@ const tests = [
   'test-local-time.mjs',
   // fans 输出：结论必须在最后一行（她习惯 | tail -2，第三位粉丝就是这样被吞掉的）。
   'test-fans-format.mjs',
+  // 生物钟：woke 没复位会把当天第二个 wake 槽饿死（11-17 22:52 晚场没醒）。
+  'test-bili-clock-woke-reset.mjs',
   // dm-await 输出：明细自带发送人/时间，结论放最后一行。
   'test-dm-format.mjs',
   'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',

@@ -137,6 +137,10 @@ function planFromSlot(state, slot, cfgNow = cfg) {
     action: slot.action,
     fired: false,
     done: false,
+    // 复位「今天已经醒过」：新版按 slot 推进，woke 是旧格式的全天标记。
+    // 不复位的话，tick 会认为"今天已经醒过"而每分钟重排一次，
+    // 把 at 推到 now+1，后面的 wake 槽永远不触发（2026-11-17 22:52 晚场就是这样丢的）。
+    woke: false,
     at: slot.at,
     atText: slot.atText,
     window: slot.window,

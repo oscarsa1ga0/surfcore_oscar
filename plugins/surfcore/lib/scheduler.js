@@ -1130,7 +1130,9 @@ export function startScheduler(ctx, opts) {
     }
 
     // ① 该重算的情形：没计划 / 跨天 / 上次已醒 / 排程走完 / 上一次轻醒已投递
-    if (!st || st.date !== t || st.woke === true || st.done === true || !st.action
+    // woke 是旧格式的「今天已醒」标记；有 slotId 时以 slot 的 status 为准，
+    // 否则第一次醒过之后每个 tick 都会重排，把 at 推到 now+1，晚场永远等不到。
+    if (!st || st.date !== t || (st.woke === true && !st.slotId) || st.done === true || !st.action
       || (st.action === 'skip' && st.fired === true)) {
       if (st && st.date === t && st.action === 'done') return   // 今天的次数用完了，别反复算
       const r = await runBili(['night', 'plan'])
