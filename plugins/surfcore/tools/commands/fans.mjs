@@ -12,6 +12,7 @@ import { biliState } from '../lib/state-paths.mjs'
 import { config } from '../lib/config.mjs'
 import { loadBiliAccount } from '../../../../src/bili-api.js'
 import { localIso } from '../../../../src/local-time.js'
+import { renderFansOutput } from '../lib/fans-format.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -88,14 +89,4 @@ if (JSONOUT) {
   process.exit(0)
 }
 
-console.log(`B站粉丝：${follower} 个 · 关注 ${following} 个`)
-if (!NEW) {
-  if (!list.length) console.log('（还没有粉丝）')
-  else for (const x of list) console.log(`- ${x.name || '（无昵称）'}  mid=${x.mid}  ${x.time ? new Date(x.time * 1000).toLocaleString('zh-CN', { hour12: false }) : ''}${x.mid === ownerMid ? '  [主人]' : ''}`)
-} else if (!fresh.length) {
-  console.log('没有新粉丝')
-} else {
-  console.log(`新粉丝 ${fresh.length} 个：`)
-  for (const x of fresh) console.log(`- ${x.name || '（无昵称）'}  mid=${x.mid}  ${x.time ? new Date(x.time * 1000).toLocaleString('zh-CN', { hour12: false }) : ''}`)
-}
-console.log(`\n水位：${Math.max(lastSeen, ...list.map((x) => x.time), 0)}`)
+for (const line of renderFansOutput({ follower, following, list, fresh, ownerMid, lastSeen, newOnly: NEW })) console.log(line)

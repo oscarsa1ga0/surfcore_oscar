@@ -87,6 +87,8 @@ const tests = [
   'test-bili-diary-inject.mjs',
   // 展示层时间：UTC ISO 一律转成本地带偏移（别再把 23:36 读成 15:36）。
   'test-local-time.mjs',
+  // fans 输出：结论必须在最后一行（她习惯 | tail -2，第三位粉丝就是这样被吞掉的）。
+  'test-fans-format.mjs',
   'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 管理员身份（QQ ⇄ B站 同一个人）+「对管理员温柔 / 绝不回嘴」提示词：
