@@ -20,8 +20,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import { createHash } from 'node:crypto'
+import { currentCharacter } from '../lib/state-paths.mjs'
+import { WEB_CHAT_API, WEB_CHAT_PORT } from '../../lib/web-chat/port.js'
 import { buildDesktopToastScript } from '../lib/desktop-toast.mjs'
-import { QQ_CONFIG, QQ_STATE_DIR } from '../../lib/paths.js'
+import { QQ_CONFIG, QQ_STATE_DIR, STATE_DIR } from '../../lib/paths.js'
 
 const argv = process.argv.slice(2)
 const DRY = argv.includes('--dry')
@@ -44,7 +47,14 @@ if (TEST) {
 if (!text) { console.error('用法: node notify.mjs "消息正文" [--title 标题] | --test'); process.exit(2) }
 
 const n = config().notify ?? { type: 'none' }
-const type = String(n.type ?? 'none')
+let type = String(n.type ?? 'none')
+if (type === 'qq') {
+  const file = process.env.SURFCORE_QQ_CONFIG || QQ_CONFIG
+  try {
+    if (JSON.parse(fs.readFileSync(file, 'utf8'))?.purpose?.carrier === 'web') type = 'web'
+  } catch {}
+}
+const notifyRole = currentCharacter()?.id || 'default'
 const payload = { title, text, at: new Date().toISOString() }
 
 /** 按域名猜服务，生成它认的报文（飞书 / 钉钉 / 企微 / WorkBuddy / 通用）。 */
@@ -134,6 +144,22 @@ async function reportTimeout(code, message, hint) {
   }
 }
 
+async function sendWeb() {
+  if (DRY) { console.log('[dry] 发送到鱼姬之家'); return }
+  let token = ''
+  try { token = fs.readFileSync(path.join(STATE_DIR, 'web-chat', 'notify-token'), 'utf8').trim() } catch {}
+  if (!token) throw new Error('鱼姬之家尚未启动，请在 SurfCore 设置页启用。')
+  const key = createHash('sha256').update(JSON.stringify([notifyRole, title, text, new Date().toDateString()])).digest('hex')
+  const id = [key.slice(0, 8), key.slice(8, 12), key.slice(12, 16), key.slice(16, 20), key.slice(20, 32)].join('-')
+  const response = await fetch(`http://127.0.0.1:${WEB_CHAT_PORT}${WEB_CHAT_API}/owner-notice`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id, role: notifyRole, text: `${title}\n${text}` }), signal: AbortSignal.timeout(10_000),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok || !result.ok) throw new Error(result.error || '鱼姬之家拒绝接收推送。')
+  console.log('鱼姬之家已收件 ✓')
+}
+
 async function sendQQ() {
   const { ownerQQ, port, token } = qqBridgeInfo()
   if (!ownerQQ) throw new Error('[QQ_NOTIFY_NO_OWNER] QQ 推送失败：config.json 未配置 ownerQQ（管理员 QQ）')
@@ -209,6 +235,8 @@ try {
     await sendDesktop()
   } else if (type === 'qq') {
     await sendQQ()
+  } else if (type === 'web') {
+    await sendWeb()
   } else if (type === 'webhook') {
     if (!n.url) throw new Error('config.notify.url 没配')
     await sendWebhook(n.url, n.template)

@@ -493,7 +493,7 @@ export function listVectorMemoryRecords({ config = vectorMemoryConfig(), limit =
 }
 
 /** 记忆库：用一句话做语义搜索（只读；不写索引/记录）。 */
-export async function searchVectorMemoryRecords({ config = vectorMemoryConfig(), query = '', limit = 20 } = {}) {
+export async function searchVectorMemoryRecords({ config = vectorMemoryConfig(), query = '', limit = 20, platform = 'all', entryFilter = null } = {}) {
   const q = String(query ?? '').trim();
   if (!q) return { ok: false, code: 'vector.query-empty', error: '请输入要搜索的内容', hint: '例如：主人最近是不是很累' };
   if (q.length > 300) return { ok: false, code: 'vector.query-too-long', error: '搜索内容太长（最多 300 字）', hint: '只输入一句关键词或短句' };
@@ -515,7 +515,8 @@ export async function searchVectorMemoryRecords({ config = vectorMemoryConfig(),
       queryVector: result.vectors[0],
       index,
       config: { ...effective, topK: Math.max(1, Math.min(50, Number(limit) || 20)), minScore: 0.2 },
-      platform: 'all',
+      platform,
+      entryFilter,
     });
     return {
       ok: true,

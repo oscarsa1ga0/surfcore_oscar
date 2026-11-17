@@ -491,6 +491,11 @@ export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now
 
 /** B站调度器 / 调试用：读现成的 B站 注入块（mtime 缓存，避免每次重复读盘）。 */
 export function memoryCardPromptBlock(platform = 'bili') {
+  if (platform === 'web') {
+    const config = memoryCardConfig();
+    if (config.enabled === false) return '';
+    return renderMemoryCard(readCardSafe(), { config, platform, maxChars: config.injectMaxChars.qq, runtimeSharing: memoryCardRuntimeSharing() });
+  }
   const paths = pathsNow();
   const file = platform === 'bili' ? paths.promptBili : paths.promptQq;
   const cacheKey = `${platform}:${paths.dir}`;

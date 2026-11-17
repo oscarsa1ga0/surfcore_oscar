@@ -12,7 +12,7 @@ const DECAY = {
   fatigue: .05, intimacy: .01, stress: .05, joy: .05,
 };
 export const EMOTION_SOURCES = Object.freeze({
-  'qq-private': 'QQ 私聊', 'qq-group': 'QQ 群聊', bili: 'B 站', diary: '日记',
+  'qq-private': 'QQ 私聊', web: '网页私聊', 'qq-group': 'QQ 群聊', bili: 'B 站', diary: '日记',
   pet: '桌宠', video: '视频创作', qzone: 'QQ 空间', native: 'DSH 角色会话',
 });
 export const MOOD_STAGES = Object.freeze({ calm: '日常', wronged: '委屈', angry: '生气', afraid: '害怕', avoidant: '回避' });
@@ -191,7 +191,7 @@ export function applyEmotionEvent(state, event) {
   }
   const effects = { ...delta };
   // QQ private chat records each incoming bubble, even when one thought is split across several.
-  if (event.source === 'qq-private' && kind === 'chat') effects.fatigue = .12;
+  if (['qq-private', 'web'].includes(event.source) && kind === 'chat') effects.fatigue = .12;
   if (partner && event.channel) {
     if (event.source === 'qq-group' && event.inbound) {
       state.speakers ??= {};
@@ -263,7 +263,7 @@ export function applyEmotionEvent(state, event) {
 export function emotionSnapshot(state, { source = '', partner = '', channel = '', now = Date.now(), aggregate = false } = {}) {
   const drives = projectEmotion(state, now);
   let conflict = partner && Object.hasOwn(state.conflicts, partner) ? decayedConflict(state.conflicts[partner], now) : null;
-  if (conflict?.channel !== channel || !['qq-private', 'qq-group', 'pet'].includes(source)) conflict = null;
+  if (conflict?.channel !== channel || !['qq-private', 'qq-group', 'pet', 'web'].includes(source)) conflict = null;
   if (source === 'qq-group' && !aggregate && state.speakers?.[channel]?.partner !== partner) conflict = null;
   const blame = conflict?.value || 0;
   const expectation = aggregate

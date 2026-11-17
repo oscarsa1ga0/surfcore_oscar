@@ -1,7 +1,7 @@
 import { validEmotionScope } from '../../../src/emotion-events.js';
 /** One DSH model turn at a time for SurfCore's current role. Only this host submits. */
 const PRIORITY = { manual: 0, interaction: 1, scheduled: 2 };
-const SOURCES = new Set(['qq', 'bili', 'diary']);
+const SOURCES = new Set(['qq', 'bili', 'diary', 'web']);
 const QQ_LEASE_MS = 90_000;
 const QQ_RECEIPT_LIMIT = 256;
 

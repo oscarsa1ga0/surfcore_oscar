@@ -39,6 +39,7 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { getImageDimensions } from './image-dimensions.js';
 import { downloadOneBotImageStream, isProbablySafeImageFileRef, uploadOneBotStickerImage } from './onebot-image-stream.js';
 import { SOURCE_DSH_DEFAULT, defaultSelectionOf, effectiveChatModel, writesGlobalDefault } from './dsh-model-follow.js';
 import { isSpamCommandText } from './command-spam.js';
@@ -1899,38 +1900,31 @@ async function main() {
     PURPOSE_FILE = path.join(STATE_DIR, 'purpose-outreach.json');
     fs.mkdirSync(STATE_DIR, { recursive: true });
   }
+  // 主动搭话载体共用状态。每次读当前配置，避免切换后旧适配器继续投递。
+  const PURPOSE_CONFIG_FILE = path.join(ROOT, 'config.json');
+  function purposeCarrierNow() {
+    try {
+      const { purpose } = JSON.parse(fs.readFileSync(PURPOSE_CONFIG_FILE, 'utf8'));
+      if (['pet', 'web'].includes(purpose?.carrier)) return purpose.carrier;
+    } catch {}
+    return 'qq';
+  }
+
   let purposeState = normalizePurposeState(readJsonSafe(PURPOSE_FILE, null));
   // 上次进程在回合中途退出：不知道她到底发没发出去。别立刻补发（会变成连发），
   // 记成 interrupted，等一个初始延迟后再来一次。
-  if (purposeState.lastOutcome === 'pending') {
+  if (purposeState.lastOutcome === 'pending' && purposeCarrierNow() === 'qq') {
     purposeState.lastOutcome = 'interrupted';
     purposeState.nextFireAt = 0;
   }
-  ensurePurposeSchedule(purposeState, { now: Date.now(), config: cfg.purpose });
   let purposeStateMtime = 0;
-  savePurposeState();
+  if (purposeCarrierNow() === 'qq') {
+    ensurePurposeSchedule(purposeState, { now: Date.now(), config: cfg.purpose });
+    savePurposeState();
+  }
   let purposeTimer = null;
   let purposeRun = null; // { runId, at, key, sessionId, planned, sentTexts, timer }
   let purposeLastLog = { at: 0, reason: '', nextFireAt: 0 };
-
-  // ── 载体：QQ / 桌宠（设置页「目的」）────────────────────────────────────
-  // 2026-10-25 用户要求：目的机制独立成一个栏目，可选择由桌宠还是 QQ 触发；
-  // 未安装桌宠的用户默认 QQ。carrier=pet 时桥接的**自动** tick 不出发，交给
-  // SurfCore 插件的 pet-purpose —— 两边共用同一套 purpose 逻辑与状态文件，
-  // 但任何时刻只有一个执行者，避免桌宠和 QQ 同时收到一条。
-  // 这里每次 tick 重读 config.json（30 秒缓存），切换载体不需要重启桥接。
-  const PURPOSE_CONFIG_FILE = path.join(ROOT, 'config.json');
-  let purposeCarrierCache = { at: 0, carrier: 'qq' };
-  function purposeCarrierNow() {
-    if (Date.now() - purposeCarrierCache.at < 30_000) return purposeCarrierCache.carrier;
-    let carrier = 'qq';
-    try {
-      const raw = readJsonSafe(PURPOSE_CONFIG_FILE, null);
-      if (raw?.purpose?.carrier === 'pet') carrier = 'pet';
-    } catch {}
-    purposeCarrierCache = { at: Date.now(), carrier };
-    return carrier;
-  }
 
   // 桌宠「专注模式」：文件由插件写（pet/focus.json），这里只读。
   // 开启后目的机制的**自动**出发全部停（QQ / 桌宠两个载体都算）；手动「试一次」不受影响。
@@ -10611,56 +10605,6 @@ async function main() {
     return fallback;
   }
 
-  // 解析常见图片宽高（PNG/JPEG/GIF；WebP 暂不解析返回 null）。
-  // 用于限制“图片炸弹”的解码像素量。
-  function getImageDimensions(buf) {
-    if (!buf || buf.length < 24) return null;
-    try {
-      if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-        return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-      }
-      if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') {
-        return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
-      }
-      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-        let offset = 2;
-        while (offset + 9 < buf.length) {
-          if (buf[offset] !== 0xff) { offset += 1; continue; }
-          const marker = buf[offset + 1];
-          if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
-          const len = buf.readUInt16BE(offset + 2);
-          if (len < 2) return null;
-          // SOF0-SOF15（排除 DHT C4、DAC CC、DNL DC、DRI DD）
-          if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-            return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
-          }
-          offset += 2 + len;
-        }
-      }
-      // WebP：解析 VP8X / VP8L / VP8 三种容器，避免“图片炸弹”绕过像素上限。
-      if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
-        const fourcc = buf.toString('ascii', 12, 16);
-        if (fourcc === 'VP8X' && buf.length >= 30) {
-          const width = 1 + buf[24] + (buf[25] << 8) + (buf[26] << 16);
-          const height = 1 + buf[27] + (buf[28] << 8) + (buf[29] << 16);
-          return { width, height };
-        }
-        if (fourcc === 'VP8L' && buf.length >= 25) {
-          const bits = [buf[21], buf[22], buf[23], buf[24]];
-          const width = 1 + (((bits[1] & 0x3f) << 8) | bits[0]);
-          const height = 1 + (((bits[3] & 0x0f) << 10) | (bits[2] << 2) | ((bits[1] & 0xc0) >> 6));
-          return { width, height };
-        }
-        if (fourcc === 'VP8 ' && buf.length >= 30) {
-          const width = buf.readUInt16LE(26) & 0x3fff;
-          const height = buf.readUInt16LE(28) & 0x3fff;
-          return { width, height };
-        }
-      }
-    } catch {}
-    return null;
-  }
-
   function base64FromMaybe(value) {
     if (typeof value !== 'string') return null;
     const s = value.trim();
@@ -13376,6 +13320,7 @@ async function main() {
   }
 
   async function runPurposeOnce({ force = false, preview = false } = {}) {
+    if (purposeCarrierNow() === 'web') return { ok: false, code: 'WEB_CARRIER_ACTIVE', error: '主动搭话由鱼姬之家投递', hint: '在 SurfCore → 鱼姬之家查看。' };
     const owner = purposeOwnerId();
     if (!owner) return { ok: false, reason: 'no-owner', error: '未配置管理员 QQ（ownerQQ）' };
     if (cfg.purpose?.enabled === false && !preview && !force) return { ok: false, reason: 'disabled' };
@@ -13548,6 +13493,7 @@ async function main() {
       };
     }
 
+    if (purposeCarrierNow() === 'web') return { ok: false, reason: 'carrier-changed', error: '主动搭话已切到鱼姬之家' };
     const runId = `${now}-${Math.random().toString(36).slice(2, 8)}`;
     purposeRun = {
       runId,
@@ -13639,7 +13585,7 @@ async function main() {
     // 机器模式没有主动性；峰时把主动搭话顺延到谷时（用户可关）。
     if (!backgroundTasksAllowed()) return;
     // 载体切到桌宠后，桥接不再自动出发（手动「立即试一次」/ 桌宠离线回落仍可走 runPurpose）。
-    if (purposeCarrierNow() === 'pet') return;
+    if (purposeCarrierNow() !== 'qq') return;
     // 桌宠专注模式：连 QQ 载体的自动主动搭话也一起停，避免用户开着专注还被私聊。
     if (petFocusEnabled()) { logPetFocusSkip(); return; }
     try {
@@ -13657,7 +13603,7 @@ async function main() {
   async function warmPurposeState() {
     if (purposeWarming) return;
     if (currentMode !== 'reserved2') return;
-    if (purposeCarrierNow() === 'pet') return;
+    if (purposeCarrierNow() !== 'qq') return;
     if (petFocusEnabled()) return;
     const owner = purposeOwnerId();
     if (!owner) return;
@@ -13703,8 +13649,11 @@ async function main() {
 
   function startPurposeLoop() {
     if (purposeTimer) return;
-    ensurePurposeSchedule(purposeState, { now: Date.now(), config: cfg.purpose });
-    savePurposeState();
+    if (purposeCarrierNow() === 'qq') {
+      reloadPurposeStateIfChanged();
+      ensurePurposeSchedule(purposeState, { now: Date.now(), config: cfg.purpose });
+      savePurposeState();
+    }
     purposeTimer = setInterval(() => { void purposeTick(); }, 60 * 1000);
     purposeTimer.unref?.();
     log(`[目的] 已启动：每 60 秒检查一次；下次 ${purposeState.nextFireAt ? new Date(purposeState.nextFireAt).toLocaleString() : '未排定'}`);
@@ -13830,6 +13779,7 @@ async function main() {
 
   async function fireMorningGreeting({ manual = false } = {}) {
     const conf = cfg.greetings?.morning;
+    if (purposeCarrierNow() === 'web' && String(conf?.uin ?? '') === String(purposeOwnerId())) return { ok: false, reason: '主人早安已切换到鱼姬之家' };
     if (!conf) return { ok: false, reason: '未配置' };
     const uin = String(conf.uin ?? '');
     const key = `private:${uin}`;
@@ -13838,6 +13788,9 @@ async function main() {
       return { ok: false, reason: '不在白名单' };
     }
     const today = localDateKey();
+    if (!manual && uin === String(purposeOwnerId()) && readJsonSafe(PURPOSE_FILE, null)?.webMorningDay === today) {
+      return { ok: true, reason: '当天早安已由鱼姬之家处理' };
+    }
     if (!manual && readGreetingsState().lastMorningDate === today) {
       log('[早安] 今天已经发过，跳过');
       return { ok: true, reason: '已发过' };
@@ -16818,6 +16771,7 @@ async function main() {
   }
 
   function scheduleProactiveCheckV2(key) {
+    const webOwnsPrivate = () => purposeCarrierNow() === 'web' && key === `private:${purposeOwnerId()}`;
     if (cfg.socialV2?.proactive?.enabled === false) return;
     // 机器模式不做主动搭话；峰时顺延（下一轮 setupSleepTimer 之后会重排）。
     if (!backgroundTasksAllowed()) return;
@@ -16833,6 +16787,7 @@ async function main() {
     const delay = Math.floor(min + Math.random() * (max - min));
     st.proactiveTimer = setTimeout(() => {
       st.proactiveTimer = null;
+      if (webOwnsPrivate()) { scheduleProactiveCheckV2(key); return; }
       ensureWakeableV2(st, { key });
       // 刚自然收尾：这一次主动机会先不发，等冷却过去再按原节奏重排。
       if (closureSuppressesWake(st.closure, 'proactiveCheck', Date.now())) {

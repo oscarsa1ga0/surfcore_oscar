@@ -250,6 +250,8 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.countToday = clampInt(raw.countToday, 0, 0, 99);
   base.sentToday = clampInt(raw.sentToday, 0, 0, 99);
   base.lastRunAt = Number(raw.lastRunAt) || 0;
+  if (typeof raw.webRunId === 'string' && /^[a-f0-9-]{36}$/.test(raw.webRunId)) base.webRunId = raw.webRunId;
+  if (typeof raw.webMorningDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.webMorningDay)) base.webMorningDay = raw.webMorningDay;
   base.lastAttemptAt = Number(raw.lastAttemptAt) || 0;
   base.lastSentAt = Number(raw.lastSentAt) || 0;
   base.lastOutcome = String(raw.lastOutcome ?? '').slice(0, 24);

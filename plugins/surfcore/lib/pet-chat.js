@@ -260,7 +260,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
           : 'low',
       },
       proactive: {
-        carrier: purpose.carrier === 'pet' ? 'pet' : 'qq',
+        carrier: ['pet', 'web'].includes(purpose.carrier) ? purpose.carrier : 'qq',
         modality: purpose.petModality === 'voice' ? 'voice' : 'text',
         fallbackToQQ: purpose.petFallbackToQQ !== false,
       },
@@ -270,7 +270,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   }
 
   // ── 角色 / 身份 / 记忆 ──────────────────────────────────────────────────
-  function roleInfo() {
+  function roleInfo(sceneId = 'pet') {
     let cur = null;
     try { cur = readCurrentCharacter(); } catch {}
     let personaFile = '';
@@ -284,12 +284,12 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
       identity: buildPersonaIdentity({ name: personaNameFromCard(fullPersona, cur?.name || '这个角色'), owner: ownerInfo().name }),
       // 拆分模式才带语气/场景/日常；整卡模式只注入整卡。
       tone: split ? readPersonaLayerText('tone') : '',
-      scene: split ? readPersonaLayerText('scene', 'pet') : '',
+      scene: split ? readPersonaLayerText('scene', sceneId) : '',
       daily: split ? readPersonaLayerText('daily') : '',
       personaMode: split ? 'tone' : 'full',
       mode: 'v2',
       maxChars: 4200,
-      sceneId: 'pet',
+      sceneId,
     }).text || fullPersona;
     let name = String(cur?.name || '').trim();
     if (!name) {
