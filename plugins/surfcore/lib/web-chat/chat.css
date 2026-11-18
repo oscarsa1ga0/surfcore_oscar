@@ -42,6 +42,12 @@ header p { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
 .bubble p { margin: 0; }
 .bubble img { display: block; object-fit: contain; max-width: min(100%, 350px); max-height: 280px; border-radius: 8px; }
 .bubble .image { display: block; border: 0; padding: 0; background: none; margin-top: 6px; }
+".quote { margin: 0 0 7px; padding: 5px 9px; border-left: 3px solid #b9d4c8; background: #f1f7f4; color: #4d6363; border-radius: 4px; font-size: 12px; white-space: pre-wrap; }
+.quote-btn { margin: 4px 4px 0; padding: 1px 8px; border: 0; background: none; color: #7b9490; font-size: 11px; }
+.quote-btn:hover { color: var(--accent); }
+.quote-bar { display: flex; align-items: center; gap: 8px; margin: 0 7px 6px; padding: 6px 9px; background: #f1f7f4; border-left: 3px solid #b9d4c8; border-radius: 4px; color: #4d6363; font-size: 12px; }
+.quote-bar .quote-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-cancel { border: 0; background: none; color: #7b9490; font-size: 15px; padding: 0 4px; }
 .note, .failure { margin: 6px 4px 0; max-width: 87%; font-size: 12px; color: var(--muted); }
 .failure { color: #8a331c; }
 .failure button { margin-left: 8px; }
@@ -71,4 +77,16 @@ dialog::backdrop { background: #14292bbb; }
   .connection { margin: 0 0 0 auto; }
   header { padding-block: 16px; }
   #composer { margin-bottom: 12px; }
+}
+
+.quote-inline {
+  border-left: 3px solid currentColor;
+  opacity: .75;
+  padding: 2px 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  border-radius: 2px;
+  background: rgba(127, 127, 127, .12);
+  white-space: pre-wrap;
+  word-break: break-word;
 }

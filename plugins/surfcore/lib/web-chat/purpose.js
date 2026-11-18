@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
-  analyzePersona, applyPurposeOutcome, collectMaterials, deriveDrives, ensurePurposeSchedule, evaluatePurposeTick,
+  analyzePersona, applyPurposeOutcome, buildPurposePrompt, collectMaterials, deriveDrives, ensurePurposeSchedule, evaluatePurposeTick,
   formGoalHypotheses, localDateKey, markPurposeDelivered, markPurposeSkip, minePurposeSeeds,
   normalizePurposeConfig, normalizePurposeState, planNextFire, rollbackPurposeDelivered, selectPurpose,
   summarizePurposeState,
 } from '../../../../src/purpose-engine.js';
 
-import { GREETING_GRACE_MS, parseGreetingTime } from '../../../../src/greeting-schedule.js';
 
 export function createWebPurpose({ store, identity, config, readInputs, readState, writeState, focus, mood, onChange }) {
   let lastCheck = 0;
@@ -48,24 +47,6 @@ export function createWebPurpose({ store, identity, config, readInputs, readStat
     if (occupied && !preview) return { ok: false, code: 'WEB_PURPOSE_BUSY', error: '鱼姬还有一轮对话待完成。', hint: '等当前回合结束后再试。' };
 
     const inputs = readInputs(store.snapshot(chat));
-    const morning = preferences.greetings?.morning;
-    const day = localDateKey(now);
-    const { hh, mm } = parseGreetingTime(morning?.time);
-    const scheduledGreeting = new Date(now).setHours(hh, mm, 0, 0);
-    // A greeting configured for a different QQ contact continues to belong to the QQ adapter.
-    if (!force && !preview && !focus() && preferences.greetings?.enabled === true && preferences.owner
-        && String(morning?.uin ?? '') === preferences.owner
-        && now >= scheduledGreeting && now - scheduledGreeting <= GREETING_GRACE_MS
-        && state.webMorningDay !== day
-        && preferences.lastQqMorningDay !== day) {
-      const id = `web-morning:${chat}:${day}`;
-      store.enqueue(chat, id, { kind: 'greeting', purpose: { prompt: `这是你原定的早安问候。请用你自己的话向${inputs.ownerName}打个招呼。` } });
-      state.webMorningDay = day;
-      writeState(state);
-      onChange();
-      return { ok: true, queued: true };
-    }
-
     const unscheduled = !state.nextFireAt;
     ensurePurposeSchedule(state, { now, config: settings });
     if (!force && !preview) {
@@ -89,7 +70,7 @@ export function createWebPurpose({ store, identity, config, readInputs, readStat
     const shared = { now, config: settings, lastMasterAt, roleName: name, materials: packet.items, drives: derived.drives,
       history: state.history, pending: state.pending, goals: state.goals, observations: state.observations, persona };
     const formed = formGoalHypotheses(shared);
-    const { purpose } = selectPurpose({ ...shared, goals: formed.goals, seeds: minePurposeSeeds(shared), emotion: mood() });
+    const { purpose, candidates } = selectPurpose({ ...shared, goals: formed.goals, seeds: minePurposeSeeds(shared), emotion: mood() });
     if (!purpose) {
       if (!preview) {
         markPurposeSkip(state, { now, reason: 'no-purpose', nextFireAt: planNextFire({ now, config: settings, lastRunAt: state.lastRunAt, countToday: state.countToday }) });
@@ -97,11 +78,12 @@ export function createWebPurpose({ store, identity, config, readInputs, readStat
       }
       return { ok: false, code: 'WEB_PURPOSE_EMPTY', error: '这轮还没有选出想说的话。', hint: '聊天或积累活动后，可以再试一次。' };
     }
-    const prompt = [
-      `这是你自己想找${inputs.ownerName}说话的一轮。你的最终回复会作为私聊消息出现。`,
-      `现在想到的是「${purpose.text}」。只使用你确实知道的经历，直接说你想对他说的话。`,
-      ...packet.items.slice(0, 6).map((item) => `近况（${item.who || item.kind}）：${String(item.text).slice(0, 180)}`),
-    ].join('\n');
+    const prompt = buildPurposePrompt({
+      now, config: settings, mode: 'web', ownerName: inputs.ownerName,
+      contextBlocks: [inputs.persona, inputs.memoryCard, inputs.biliBrief].filter(Boolean),
+      materials: packet.items, candidates, selected: purpose,
+      pending: state.pending, history: state.history, drives: derived.drives,
+    });
     if (preview) return { ok: true, selected: purpose, prompt, materials: packet.items, state: summarizePurposeState(state, { config: settings, now }) };
 
     const id = randomUUID();

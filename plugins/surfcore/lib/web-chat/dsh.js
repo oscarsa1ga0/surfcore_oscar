@@ -1,20 +1,37 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dialogueEmotionScope } from '../../../../src/emotion-events.js';
 import { WEB_IMAGE_LIMIT, parseWebImage, webImagePrompt } from './media.js';
+import { webStatusLine } from './prompt.js';
+import { imageTypeOf, pickSticker, readRawStickerStore, readStickerCatalog, readStickerNotes, stickerBytes, writeStickerNote } from './stickers.js';
+import { listVoiceFiles, readVoiceFile, synthesizeVoice } from './voice.js';
+import { markReopened, writeClosure } from './closure.js';
+import { listWorkspaceImages } from './workspace.js';
 
 const textBlocks = (blocks) => (blocks ?? []).filter((part) => part.type === 'text' && typeof part.text === 'string')
   .map((part) => part.text).join('');
 const defaultHint = '可以稍后重试，或在 DSH 中查看鱼姬之家会话。';
 export const chatError = (status, code, message, hint = defaultHint) => Object.assign(new Error(message), { status, code, hint });
-export const webSessionId = (chat) => 'surfcore-web-' + createHash('sha256').update(chat).digest('hex').slice(0, 32);
+// v2：网页私聊改用 web-chat preset（和 QQ 同一套系统提示）。preset 只能在建会话时选，换 id 让新会话生效。
+// v3：会话放进「鱼姬之家」工作区，DSH 侧栏可见。
+// 会话 id 跟着 preset 走：preset 一改就换 id，强制 DSH 新建会话；
+// 否则旧会话烘焙着旧 system prompt，DSH 会直接 blocked。
+const PRESET_PATCH_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'presets', 'web-chat.patch.yml');
+const presetDigest = (() => {
+  try { return createHash('sha256').update(fs.readFileSync(PRESET_PATCH_FILE)).digest('hex').slice(0, 8); }
+  catch { return 'v5'; }
+})();
+export const webSessionId = (chat) => `surfcore-web5-${presetDigest}-${createHash('sha256').update(chat).digest('hex').slice(0, 24)}`;
+export const WEB_PRESET = 'web-chat';
 
 export function createWebDsh({ ctx, store, dispatch, identity, config, context, recall, budget, onMessage, onChange, log }) {
   const controller = ctx.sessionController;
   const active = new Map();
   const pending = new Map();
   const lifecycle = new AbortController();
+  const diveTimers = new Map();
   const disposers = [];
 
   function current() {
@@ -30,11 +47,19 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
 
   function finish(run, state, failure = '') {
     if (!isActive(run)) return;
+    // 她发言走 web_chat_send_message（像 QQ 一样一条一条发），所以普通文字只是“思考”。
+    // 只有整轮都没调用发送工具时，才把最后一段文字当兜底显示，避免什么都看不到。
+    const text = state === 'done' && !run.sent && !run.closed ? run.parts.join('\n\n').trim() : '';
     const message = store.finalize(run.id, {
-      text: state === 'done' ? run.parts.join('\n\n').trim() : '',
+      text,
       files: state === 'done' ? run.files : [],
       state, failure, note: run.note,
+      closed: run.closed, replied: run.sent > 0,
     });
+    // 连发合并的其它轮：同生共死，结果/已读状态跟着第一轮走。
+    for (const extra of run.extraIds ?? []) {
+      store.finalize(extra, { state, failure, closed: run.closed, replied: run.sent > 0 });
+    }
     active.delete(run.session);
     closeRequests(run);
     if (message) onMessage(message, run);
@@ -171,10 +196,63 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
     return controller.events({ address: { kind: 'session', sessionId: session }, maxMessages: 50 }, AbortSignal.timeout(5000));
   }
 
+  // 网页会话挂进 DSH 的「鱼姬之家」工作区，否则侧栏看不到这段对话。
+  let workspaceId = null;
+  let workspaceBusy = null;
+  async function ensureWorkspace() {
+    if (workspaceId) return workspaceId;
+    if (workspaceBusy) return workspaceBusy;
+    workspaceBusy = (async () => {
+      try {
+        const controller = ctx.get?.('workspaceController') ?? ctx.workspaceController;
+        if (!controller?.create) return null;
+        const dir = config().cwd;
+        fs.mkdirSync(dir, { recursive: true });
+        const value = await controller.create({ path: dir });
+        const workspace = value?.workspace ?? value?.data?.workspace ?? value;
+        const id = String(workspace?.workspaceId ?? '').trim();
+        if (!id) return null;
+        workspaceId = id;
+        if (value?.created && typeof controller.rename === 'function') {
+          try { await controller.rename({ workspaceId: id, title: '鱼姬之家' }); } catch {}
+        }
+        return id;
+      } catch (error) {
+        log('网页私聊工作区创建失败，退回 cwd', error);
+        workspaceBusy = null;
+        return null;
+      }
+    })();
+    return workspaceBusy;
+  }
+
+  async function sessionPreset() {
+    try {
+      const service = ctx.get?.('agentPresets') ?? ctx.agentPresets;
+      const listed = typeof service?.list === 'function' ? await service.list() : null;
+      const rows = Array.isArray(listed) ? listed : (Array.isArray(listed?.presets) ? listed.presets : []);
+      return rows.some((row) => String(row?.id ?? '') === WEB_PRESET) ? WEB_PRESET : '';
+    } catch { return ''; }
+  }
+
   async function ensureSession(session) {
     try { return await history(session); }
     catch (error) { if (error?.code !== 'session/not-found') throw error; }
-    await controller.create({ sessionId: session, cwd: config().cwd });
+    const params = { sessionId: session };
+    const id = await ensureWorkspace();
+    if (id) params.workspaceId = id;
+    else params.cwd = config().cwd;
+    const preset = await sessionPreset();
+    if (preset) params.agentPreset = preset;
+    try {
+      await controller.create(params);
+    } catch (error) {
+      // preset 还没随 bundle 生效（或被人删了）时不能让网页直接不可用。
+      if (!params.agentPreset) throw error;
+      log(`网页私聊 preset ${WEB_PRESET} 不可用，回退默认 preset`, error);
+      delete params.agentPreset;
+      await controller.create(params);
+    }
     return history(session);
   }
 
@@ -184,30 +262,56 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
       if (current().role.epoch !== role.epoch || current().chat !== run.chat) {
         throw chatError(409, 'WEB_ROLE_CHANGED', '角色已切换。');
       }
-      if (job.kind !== 'user' && !config().proactive) throw chatError(409, 'WEB_CARRIER_CHANGED', '主动投递已切换。');
+      if (job.kind !== 'user' && !job.dive && !config().proactive) throw chatError(409, 'WEB_CARRIER_CHANGED', '主动投递已切换。');
       if ((await budget?.block('other'))?.blocked) throw chatError(429, 'WEB_BUDGET', '已达到模型用量上限。', '在 SurfCore 用量页检查预算，再重试。');
-      const user = store.message(job.id);
+      const userJobs = run.jobs ?? [job];
       const content = [];
+      const imageBlocks = [];
+      const snapshotMessages = [];
+      let lastText = '';
       if (job.kind !== 'user') content.push({ type: 'text', text: job.purpose.prompt });
       else {
-        if (user.text) content.push({ type: 'text', text: user.text });
-        for (const { id } of user.attachments) {
-          const file = store.attachment(run.chat, id);
-          const { blocks, note } = await webImagePrompt(file, config());
-          content.push(...blocks);
-          if (note) run.note = note;
+        for (const item of userJobs) {
+          const user = store.message(item.id);
+          if (!user) continue;
+          const media = (user.attachments ?? []).map((_, index) => ({ kind: 'image', subType: '0', index: index + 1 }));
+          snapshotMessages.push({
+            seq: user.seq, messageId: user.id, sender: '私聊', userId: 'web-owner',
+            text: user.text || '', isOwner: true,
+            ...(user.quote ? { quote: { author: user.quote.author, text: user.quote.text, id: user.quote.id } } : {}),
+            ...(media.length ? { media, hasMedia: true } : {}),
+            time: user.at,
+          });
+          if (user.text) lastText = user.text;
+          for (const { id } of user.attachments) {
+            const file = store.attachment(run.chat, id);
+            const { blocks, note } = await webImagePrompt(file, config());
+            imageBlocks.push(...blocks);
+            if (note) run.note = note;
+          }
         }
+        if (snapshotMessages.length) {
+          const snapshot = {
+            conversationKey: `web:${run.session}`, messages: snapshotMessages,
+            unreadCount: snapshotMessages.length,
+            readThroughSeq: Math.max(...snapshotMessages.map((message) => Number(message.seq) || 0)),
+            partial: false,
+          };
+          content.push({ type: 'text', text: `【本次消息快照】\n${JSON.stringify(snapshot)}\n以上消息已提供，无需重复查询；先处理当前消息；回复前如需确认后续补充，用 web_chat_wait(purpose=\"reply\") 补足短静默，已安静够久会立即返回，不要先长等。` });
+        }
+        content.push(...imageBlocks);
       }
-      run.recall = user?.text ? await recall?.(user.text) : '';
+      run.recall = lastText ? await recall?.(lastText) : '';
       const previous = await ensureSession(run.session);
       signal.throwIfAborted();
       run.seq = Number(previous.cursor);
       if (!Number.isSafeInteger(run.seq)) throw chatError(502, 'WEB_DSH_EVENTS', '无法读取 DSH 会话游标。');
-      store.update(job.id, 'submitted', { cursor: run.seq, note: run.note, epoch: role.epoch });
+      for (const item of userJobs) store.update(item.id, 'submitted', { cursor: run.seq, note: run.note, epoch: role.epoch });
       run.phase = 'starting';
       onChange();
       try {
-        const result = await send({ sessionId: run.session, content: [...content, ...context(run.session, run.recall)],
+        const head = job.kind === 'user' ? context(run.session, run.recall) : [];
+        const result = await send({ sessionId: run.session, content: [...head, ...content],
           emotion: dialogueEmotionScope('web', run.session, 'owner') }, signal);
         const receipt = result?.result?.value ?? result;
         if (result?.result?.ok === false || !(receipt?.accepted === true || receipt?.command)) {
@@ -262,8 +366,19 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
       const id = store.queue(chat);
       if (!id) return;
       const job = store.turn(id);
+      // 连发合并：等最后一条消息安静 batchMs 再开始；这期间的新消息并进同一轮。
+      const batchMs = Math.max(0, Number(config().batchMs) || 0);
+      let jobs = [job];
+      if (job.state === 'queued' && batchMs > 0 && job.kind === 'user') {
+        const queued = store.queuedUserTurns(chat);
+        const window = queued.length ? queued : [job];
+        const lastAt = Math.max(...window.map((item) => Number(item.at) || 0));
+        if (Date.now() - lastAt < batchMs) return;
+        jobs = queued.length ? queued : [job];
+      }
       const run = { id, chat, session, kind: job.kind, epoch: job.epoch ?? role.epoch, parts: [], files: [], draft: '', note: job.note || '',
-        phase: job.state === 'queued' ? 'queued' : 'recovering', seq: job.cursor ?? -1, tool: '', checkAfter: 0 };
+        jobs, extraIds: jobs.slice(1).map((item) => item.id),
+        sent: 0, closed: false, phase: job.state === 'queued' ? 'queued' : 'recovering', seq: job.cursor ?? -1, tool: '', checkAfter: 0 };
       active.set(session, run);
       if (job.state === 'submitted') {
         run.checkAfter = Date.now();
@@ -294,15 +409,314 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
     throw error;
   }
 
+  // 只有当前网页回合能发言/收尾；和 sendImage 同一把锁（chat + 角色 epoch + admitted）。
+  function runFor(execution, code, message, { optional = false } = {}) {
+    const run = active.get(execution?.agent?.session?.id);
+    const { chat, role } = current();
+    if (!run?.admitted || run.chat !== chat || run.epoch !== role.epoch) {
+      if (optional) return null;
+      throw chatError(403, code, message);
+    }
+    return run;
+  }
+
+  /**
+   * web_chat_send_message：和 QQ 的 qq_send_message 同一个语义——
+   * 一次调用发 1~8 条，条与条之间按随机间隔落库（页面通过 SSE 逐条出现）。
+   * 普通的文字输出只是思考，不会显示。
+   */
+  // 和 QQ 的 burstIntervalMin/Max + longGap 一致：条间 1~3 秒，10% 概率 2.5~5 秒。
+  function nextGap() {
+    if (Math.random() < 0.1) return 2500 + Math.round(Math.random() * 2500);
+    return 1000 + Math.round(Math.random() * 2000);
+  }
+
+  async function sendMessages({ messages, gaps, replyTo } = {}, execution) {
+    const run = runFor(execution, 'WEB_MESSAGE_SCOPE', '只有当前网页私聊回合可以发言。');
+    const list = (Array.isArray(messages) ? messages : [messages])
+      .map((text) => String(text ?? '').trim().slice(0, 500)).filter(Boolean).slice(0, 8);
+    if (!list.length) throw chatError(400, 'WEB_MESSAGE_EMPTY', '消息不能为空。');
+    for (let index = 0; index < list.length; index += 1) {
+      if (index > 0) {
+        const asked = Number(gaps?.[index - 1]);
+        const wait = Number.isFinite(asked) && asked >= 0
+          ? Math.min(asked, 10000)
+          : nextGap();
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      if (!isActive(run) || !run.admitted) throw chatError(409, 'WEB_TURN_ENDED', '这一轮已经结束，消息没有发出。');
+      let quote = null;
+      if (index === 0 && replyTo) {
+        const target = store.messageOf(run.chat, String(replyTo));
+        if (target) quote = { id: target.id, author: target.author, text: String(target.text || '').slice(0, 200) };
+      }
+      const message = store.reply(run.chat, run.id, list[index], quote);
+      run.sent += 1;
+      onMessage(message, run);
+      onChange();
+    }
+    return {
+      ok: true, count: list.length,
+      // QQ preset 原文（qq-chat-v2 第 88 行），只换工具名；放在发送结果里，避免她发完直接停。
+      reminder: '【回复后】先判断这段是不是已经自然收尾：双方都收尾了就直接 web_chat_close，不用再等；还想聊、或要等对方补充，才用 web_chat_wait(purpose="messages") 等可能的回复。普通等待约 30 秒，最长 10 分钟；这个用途单传 quietMs 不会缩短没人补充时的总等待。timeout=true 只表示这次没等到消息，不是错误，不必因此重复查询。看返回的 newMessages，确需更多/更新消息才补查。可以继续等待、接话或主动发新内容，不要只等几秒就放弃。',
+    };
+  }
+
+  /** web_chat_list_stickers：给她看收藏表情的编号/情绪/内容。 */
+  function listStickers() {
+    // 和 QQ 的 qq_list_stickers 同一个数据源、同一组字段（usage/desc/localNote/useCount 都带上）。
+    const raw = readRawStickerStore();
+    const notes = readStickerNotes(config().stickerNotes);
+    const labels = { happy: '开心', funny: '搞笑', proud: '得意', mock: '嘲讽', tsundere: '傲娇', shy: '害羞', cute: '卖萌', wronged: '委屈', sad: '难过', angry: '生气', speechless: '无语', lazy: '摆烂', comfort: '安慰', agree: '赞同', surprise: '惊讶', goodbye: '告别', hungry: '馋饿', fear: '害怕', plain: '平淡' };
+    return { ok: true, stickers: raw.map((row) => {
+      const note = notes[String(row.no)] || notes[String(row.md5)] || {};
+      return {
+        no: Number(row.no) || 0,
+        emotion: note.emotion || labels[String(row.emotion)] || String(row.emotion || ''),
+        content: note.content || String(row.content ?? row.desc ?? row.localNote ?? ''),
+        keywords: note.keywords || (Array.isArray(row.keywords) ? row.keywords : []),
+        description: String(row.desc ?? ''), localNote: String(row.localNote ?? ''),
+        usage: String(row.usage ?? ''), useCount: Number(row.useCount) || 0,
+      };
+    }) };
+  }
+
+  /** web_collect_sticker：把聊天里的一张图收进网页表情（只影响网页）。 */
+  function collectSticker({ messageId, emotion, content, keywords } = {}) {
+    const { chat } = current();
+    const message = store.messageOf(chat, String(messageId || ''));
+    if (!message?.attachments?.length) throw chatError(400, 'WEB_STICKER_EMPTY', '这条消息没有图片。');
+    const attachment = message.attachments[0];
+    const file = store.attachment(chat, attachment.id);
+    if (!file) throw chatError(400, 'WEB_STICKER_EMPTY', '图片读不出来。');
+    const id = 'web-' + createHash('sha256').update(JSON.stringify([messageId, file.bytes.length])).digest('hex').slice(0, 16);
+    const dir = config().stickersCollected;
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const ext = file.type.includes('png') ? '.png' : file.type.includes('gif') ? '.gif' : file.type.includes('webp') ? '.webp' : '.jpg';
+    const pathFile = path.join(dir, id + ext);
+    if (!fs.existsSync(pathFile)) fs.writeFileSync(pathFile, file.bytes, { mode: 0o600 });
+    const notesFile = config().stickersWeb;
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(notesFile, 'utf8')); } catch {}
+    if (!Array.isArray(list)) list = [];
+    if (!list.some((row) => row.id === id)) {
+      list.push({ no: 100 + list.length, id, file: pathFile, emotion: String(emotion || ''), content: String(content || ''), keywords: Array.isArray(keywords) ? keywords : [] });
+      fs.writeFileSync(notesFile, JSON.stringify(list, null, 2) + '\n', { mode: 0o600 });
+    }
+    return { ok: true, sticker: id };
+  }
+
+  /** web_sticker_note：网页侧的表情备注（QQ 看不到）。 */
+  function noteSticker({ sticker, emotion, content, keywords } = {}) {
+    const saved = writeStickerNote(config().stickerNotes, sticker, { emotion, content, keywords });
+    return { ok: true, note: saved };
+  }
+
+  /** web_chat_send_sticker：发一张收藏表情（图片附件，一条只能一张）。 */
+  async function sendSticker({ sticker }, execution) {
+    const run = runFor(execution, 'WEB_STICKER_SCOPE', '只有当前网页私聊回合可以发表情。');
+    let catalog = readStickerCatalog();
+    let webStickers = [];
+    try { webStickers = JSON.parse(fs.readFileSync(config().stickersWeb, 'utf8')); } catch {}
+    if (Array.isArray(webStickers) && webStickers.length) catalog = [...catalog, ...webStickers];
+    const entry = pickSticker(catalog, sticker);
+    if (!entry) throw chatError(404, 'WEB_STICKER_NOT_FOUND', '没有这张表情。', '先用 web_chat_list_stickers 查编号。');
+    let file;
+    try {
+      if (entry.file && fs.existsSync(entry.file)) file = { type: imageTypeOf(fs.readFileSync(entry.file)) || 'image/png', bytes: fs.readFileSync(entry.file) };
+      else file = await stickerBytes(entry, { dir: config().stickers });
+    }
+    catch (error) { throw chatError(502, 'WEB_STICKER_FETCH', '这张表情暂时取不到。', String(error?.message ?? error)); }
+    const id = 'web-sticker-' + createHash('sha256').update(JSON.stringify([run.id, entry.md5 || entry.no, run.sent])).digest('hex');
+    store.publishImage(run.chat, run.id, id, file, '');
+    run.sent += 1;
+    onChange();
+    return { ok: true, sticker: entry.no };
+  }
+
+  /** web_chat_wait：对方可能没说完，等 newMessages 或超时（对应 QQ 的 qq_wait_for_messages）。 */
+  async function waitMessages({ timeoutMs, quietMs, purpose } = {}, execution) {
+    const run = runFor(execution, 'WEB_WAIT_SCOPE', '只有当前网页私聊回合可以等待。');
+    const mode = purpose === 'reply' ? 'reply' : 'messages';
+    const limit = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 600000);
+    const quiet = Math.min(Math.max(Number(quietMs) || 10000, 10000), 60000);
+    const startedAt = Date.now();
+    // 从「这一轮已经处理过的最后一条消息」往后等：发送间隔/生成期间进来的消息不能被跳过。
+    let lastSeq = 0;
+    for (const item of (run.jobs ?? [])) {
+      const message = store.message(item.id);
+      if (message) lastSeq = Math.max(lastSeq, Number(message.seq) || 0);
+    }
+    for (const id of (run.extraIds ?? [])) {
+      const message = store.message(id);
+      if (message) lastSeq = Math.max(lastSeq, Number(message.seq) || 0);
+    }
+    let lastAt = mode === 'reply' ? Number(store.lastUserAt(run.chat)) || 0 : 0;
+    const found = [];
+    // reply：从最后来信计时；已安静够久立即返回。messages：等新消息，收到后等静默。
+    if (mode === 'reply' && (!lastAt || Date.now() - lastAt >= quiet)) {
+      return { ok: true, timeout: false, quiet: true, messages: [], newMessages: [] };
+    }
+    while (Date.now() - startedAt < limit) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!isActive(run)) break;
+      const fresh = store.userMessagesAfter(run.chat, lastSeq);
+      if (fresh.length) {
+        lastSeq = fresh[fresh.length - 1].seq;
+        found.push(...fresh);
+        lastAt = Date.now();
+        for (const message of fresh) {
+          if (message.turnId && !run.extraIds.includes(message.turnId)) {
+            run.extraIds.push(message.turnId);
+            // 已经在这一轮里处理过的消息，把它的 queued 回合收掉，避免之后再单独开一轮重复回复。
+            try { if (store.turn(message.turnId)?.state === 'queued') store.update(message.turnId, 'done', {}); } catch {}
+          }
+        }
+      }
+      if (lastAt && Date.now() - lastAt >= quiet) break;
+    }
+    const list = found.map(({ author, text, at }) => ({ author, text, at }));
+    return found.length
+      ? { ok: true, timeout: false, quiet: false, messages: list, newMessages: list }
+      : { ok: true, timeout: true, quiet: false, messages: [], newMessages: [] };
+  }
+
+  /** web_chat_get_context_snapshot：往前/往后补读聊天记录（对应 QQ 的 qq_get_context_snapshot）。 */
+  function getContextSnapshot({ afterSeq, beforeSeq, limit, textChars } = {}, execution) {
+    // 只读：没有活跃网页回合时也允许读（比如 DSH 里手动续跑），chat 取当前角色。
+    const activeRun = runFor(execution, 'WEB_CONTEXT_SCOPE', '读聊天记录失败。', { optional: true });
+    const chat = activeRun?.chat ?? current().chat;
+    const after = Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : null;
+    const before = Number.isFinite(Number(beforeSeq)) ? Number(beforeSeq) : null;
+    const chars = Math.min(Math.max(Number(textChars) || 400, 40), 2000);
+    const take = Math.min(Math.max(Number(limit) || 200, 1), 500);
+    const rows = before !== null
+      ? store.history(chat, { before, limit: take })
+      : store.snapshot(chat, after !== null ? { after } : {}).messages.slice(-take);
+    return {
+      ok: true,
+      readThroughSeq: store.cursor(chat),
+      hasMore: rows.length >= take,
+      count: rows.length,
+      messages: rows.map((message) => ({
+        seq: message.seq, id: message.id, author: message.author,
+        text: String(message.text ?? '').slice(0, chars),
+        at: message.at, ...(message.quote ? { quote: message.quote } : {}),
+        ...(message.attachments?.length ? { media: message.attachments.length } : {}),
+      })),
+    };
+  }
+
+  /** web_chat_list_voices：列语音库里的音频。 */
+  function listVoices() {
+    try { return { ok: true, voices: listVoiceFiles(config().audioDir) }; }
+    catch { return { ok: true, voices: [] }; }
+  }
+
+  /** web_chat_list_images：看看工作目录里有哪些图可以发。 */
+  function listImages() {
+    return { ok: true, images: listWorkspaceImages(config().cwd) };
+  }
+
+  /** web_chat_send_voice：现场合成一条语音（像“说一句”），存成音频附件。 */
+  async function sendVoice({ text, tone, intensity, voice: voiceFile }, execution) {
+    const run = runFor(execution, 'WEB_VOICE_SCOPE', '只有当前网页私聊回合可以发语音。');
+    let voice;
+    if (voiceFile) {
+      try { voice = readVoiceFile(config().audioDir, voiceFile); }
+      catch (error) { throw chatError(400, 'WEB_VOICE_FILE', '语音库里没有这个文件。', String(error?.message ?? error)); }
+    } else {
+      try { voice = await synthesizeVoice(String(text ?? ''), { outDir: config().voice, tone, intensity }); }
+      catch (error) { throw chatError(502, 'WEB_VOICE_FAILED', '语音合成失败，改打字吧。', String(error?.message ?? error)); }
+    }
+    const id = 'web-voice-' + createHash('sha256').update(JSON.stringify([run.id, voice.bytes.length, run.sent])).digest('hex');
+    store.publishImage(run.chat, run.id, id, { type: voice.type, bytes: voice.bytes }, '');
+    run.sent += 1;
+    onChange();
+    return { ok: true, durationMs: voice.durationMs };
+  }
+
+  /** 潜水/晚点回来：这轮不回；过 minutes 分钟主动回来说一句（对应 QQ 的 set_wake_config + 主动搭话）。 */
+  function dive({ minutes, summary } = {}, execution) {
+    const run = runFor(execution, 'WEB_DIVE_SCOPE', '只有当前网页私聊回合可以潜水。');
+    run.closed = true;
+    const wait = Math.min(Math.max(Number(minutes) || 0, 0), 24 * 60);
+    const { chat, role } = current();
+    if (wait > 0) {
+      clearTimeout(diveTimers.get(chat));
+      const id = 'dive-' + createHash('sha256').update(JSON.stringify([chat, role.epoch, Date.now()])).digest('hex');
+      const timer = setTimeout(() => {
+        diveTimers.delete(chat);
+        try {
+          if (current().chat !== chat || current().role.epoch !== role.epoch) return;
+          store.enqueue(chat, id, {
+            kind: 'purpose', dive: true,
+            purpose: { prompt: '【晚点回来】你之前说晚点再来找主人，现在到时间了。主动说一句，接着上次的话或问他在干嘛；不要提“定时/系统”，也不要编造刚才发生的事。' },
+          });
+          onChange();
+        } catch (error) { log('晚点回来安排失败', error); }
+      }, wait * 60_000);
+      timer.unref?.();
+      diveTimers.set(chat, timer);
+    }
+    return { ok: true, returnAt: wait > 0 ? Date.now() + wait * 60_000 : 0, summary: String(summary ?? '') };
+  }
+
+  /** web_chat_poke：网页版拍一拍（一条 notice，不产生她的发言）。 */
+  function poke(_args, execution) {
+    const run = runFor(execution, 'WEB_POKE_SCOPE', '只有当前网页私聊回合可以戳。');
+    store.notice(run.chat, 'web-poke-' + Date.now(), '（她戳了戳你）');
+    onChange();
+    return { ok: true };
+  }
+
+  /** web_chat_close：这段聊完了/不想接。不产生消息，只是不硬回。 */
+  function closeTurn(args = {}, execution) {
+    const run = runFor(execution, 'WEB_CLOSE_SCOPE', '只有当前网页私聊回合可以收尾。');
+    if (run.closed) return { ok: true, alreadyClosed: true };
+    run.closed = true;
+    let record = null;
+    try { record = writeClosure(config().closure, { reason: args.reason, summary: args.summary, nextOpening: args.nextOpening }); } catch (error) { log('收尾记录保存失败', error); }
+    return { ok: true, closure: record };
+  }
+
+  /** 主人又开口：冷却期内标记 reopenedAt。 */
+  function onUserMessage() {
+    try { markReopened(config().closure); } catch (error) { log('收尾重开标记失败', error); }
+  }
+
   return {
     session: () => webSessionId(current().chat),
     recallFor: (id) => active.get(id)?.recall || '',
+    // 每轮注入的此刻状态：和 QQ 的【此刻状态】同形，数据源是网页自己的消息。
+    contextLine() {
+      try { return webStatusLine({ messages: store.snapshot(current().chat, {}).messages }); }
+      catch { return ''; }
+    },
+    contextMessages() {
+      try { return store.snapshot(current().chat, {}).messages; }
+      catch { return []; }
+    },
+    getContextSnapshot,
     knownSession(id) {
       const run = active.get(id);
       if (!run) return false;
       const { chat, role } = current();
       return Boolean(chat === run.chat && role.epoch === run.epoch);
     },
+    sendMessages,
+    waitMessages,
+    dive,
+    listStickers,
+    noteSticker,
+    collectSticker,
+    sendSticker,
+    sendVoice,
+    poke,
+    onUserMessage,
+    listVoices,
+    listImages,
+    closeTurn,
     sendImage({ file, caption }, execution) {
       const run = active.get(execution?.agent?.session?.id);
       const { chat, role } = current();
@@ -336,12 +750,18 @@ export function createWebDsh({ ctx, store, dispatch, identity, config, context, 
     status(chat) {
       const run = active.get(webSessionId(chat));
       const requests = [...pending.values()].filter((item) => item.run === run).map((item) => item.card);
-      if (!run) return { phase: store.queue(chat) ? 'queued' : 'idle', requests };
+      if (!run) {
+        const last = store.lastTurn?.(chat);
+        const read = Boolean(last && last.state === 'done' && last.replied === false);
+        return { phase: store.queue(chat) ? 'queued' : 'idle', read, requests };
+      }
       return { id: run.id, phase: requests.length ? 'approval' : run.phase, tool: run.tool,
-        draft: [...run.parts, run.draft].filter(Boolean).join('\n\n'), note: run.note, requests };
+        draft: '', note: run.note, requests };
     },
     dispose() {
       lifecycle.abort();
+      for (const timer of diveTimers.values()) clearTimeout(timer);
+      diveTimers.clear();
       for (const dispose of disposers) dispose?.();
       for (const request of pending.values()) request.finish(request.fallback);
       active.clear();

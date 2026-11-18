@@ -190,10 +190,16 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
       if (parsed.some((item) => !item) || parsed.reduce((sum, item) => sum + item.bytes.length, 0) > WEB_IMAGE_LIMIT) {
         throw chatError(400, 'WEB_IMAGE_INVALID', '图片格式、尺寸或文件大小不支持。', '请发送 PNG、JPEG、GIF 或 WebP，单条附件合计最多 8 MB。');
       }
-      const result = store.enqueue(chat, data.id, { text, files: parsed });
+      let quote = null;
+      if (typeof data.quoteId === 'string' && data.quoteId) {
+        const quoted = store.messageOf(chat, data.quoteId);
+        if (!quoted) throw chatError(400, 'WEB_QUOTE_INVALID', '要引用的消息不存在。', '刷新后再试。');
+        quote = { id: quoted.id, author: quoted.author, text: String(quoted.text || '').slice(0, 200) };
+      }
+      const result = store.enqueue(chat, data.id, { text, files: parsed, quote });
       if (result.conflict) throw chatError(409, 'WEB_MESSAGE_CONFLICT', '该消息标识已有不同内容。', '刷新页面后重新编辑发送。');
       const message = store.message(data.id);
-      if (!result.duplicate) onMessage(message, { chat, epoch: profile.role.epoch });
+      if (!result.duplicate) { onMessage(message, { chat, epoch: profile.role.epoch }); agent?.onUserMessage?.(); }
       onChange();
       void tick();
       json(res, result.duplicate ? 200 : 202, { ok: true, message });
@@ -299,9 +305,63 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     stop,
     recallFor: (session) => agent?.recallFor(session) || '',
     contextApplies: (session) => agent?.knownSession(session) || false,
+    contextLine: () => agent?.contextLine?.() || '',
+    contextMessages: () => agent?.contextMessages?.() || [],
     sendImage(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.sendImage(args, execution);
+    },
+    getContextSnapshot(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.getContextSnapshot(args, execution);
+    },
+    sendMessages(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.sendMessages(args, execution);
+    },
+    collectSticker(args) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.collectSticker(args);
+    },
+    noteSticker(args) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.noteSticker(args);
+    },
+    listStickers() {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.listStickers();
+    },
+    sendSticker(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.sendSticker(args, execution);
+    },
+    dive(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.dive(args, execution);
+    },
+    waitMessages(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.waitMessages(args, execution);
+    },
+    listImages() {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.listImages();
+    },
+    poke(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.poke(args, execution);
+    },
+    listVoices() {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.listVoices();
+    },
+    sendVoice(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.sendVoice(args, execution);
+    },
+    closeTurn(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.closeTurn(args, execution);
     },
     status: () => ({ running: Boolean(server?.listening), url: origin ?? '', error: lastError ?? '' }),
     pair() {

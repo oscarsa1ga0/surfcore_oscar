@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import {
-  BUNDLE_DIR, DIARY_GUARD_SPECIFIER, GUARD_SPECIFIER, PRESETS, REPO_ROOT,
+  BUNDLE_DIR, DIARY_GUARD_SPECIFIER, GUARD_SPECIFIER, WEB_GUARD_SPECIFIER, PRESETS, REPO_ROOT,
   buildPatches, patchFileFor, presetRowId, rewriteRowName,
 } from './build-agent-preset-patches.mjs';
 
@@ -65,8 +65,10 @@ for (const name of PRESETS) {
 console.log('## 3. 守卫行引用方式：只用「profile 目录可解析」的裸说明符');
 for (const name of PRESETS) {
   const row = load(patchFileFor(name))[0].insert[0];
-  const guardId = name === 'surfcore-diary' ? 'diary-tool-guard' : 'qq-tool-restrict';
-  const guardSpec = name === 'surfcore-diary' ? DIARY_GUARD_SPECIFIER : GUARD_SPECIFIER;
+  const [guardId, guardSpec] = {
+    'surfcore-diary': ['diary-tool-guard', DIARY_GUARD_SPECIFIER],
+    'web-chat': ['web-tool-guard', WEB_GUARD_SPECIFIER],
+  }[name] ?? ['qq-tool-restrict', GUARD_SPECIFIER];
   const guard = row.config.plugins.find((r) => r.id === guardId);
   ok(guard !== undefined, `${name}: 有 ${guardId} 守卫行`);
   ok(guard?.name === guardSpec, `${name}: 守卫行 name = ${guardSpec}`);

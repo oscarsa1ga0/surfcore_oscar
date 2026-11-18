@@ -53,10 +53,10 @@ export function openWebChatStore(directory) {
     const row = db.prepare('SELECT id, chat, kind, state, detail FROM turns WHERE id = ?').get(id);
     return row ? { ...row, ...JSON.parse(row.detail) } : null;
   };
-  function insertMessage({ chat, turnId = null, id = randomUUID(), author, text, files, note = '', at = Date.now() }) {
+  function insertMessage({ chat, turnId = null, id = randomUUID(), author, text, files, note = '', quote = null, at = Date.now() }) {
     const seq = Number(db.prepare('INSERT INTO events(chat) VALUES (?)').run(chat).lastInsertRowid);
     const attachments = files.map(({ type }) => ({ id: randomUUID(), type }));
-    const message = { id, seq, turnId, author, text, attachments, note, at };
+    const message = { id, seq, turnId, author, text, attachments, note, at, ...(quote ? { quote } : {}) };
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?)').run(seq, id, chat, turnId, JSON.stringify(message));
     const put = db.prepare('INSERT INTO attachments VALUES (?, ?, ?, ?)');
     for (let i = 0; i < attachments.length; i++) {
@@ -73,18 +73,22 @@ export function openWebChatStore(directory) {
 
   return {
     turn,
-    enqueue(chat, id, { text = '', files = [], kind = 'user', purpose = null }) {
+    enqueue(chat, id, { text = '', files = [], kind = 'user', purpose = null, quote = null, dive = false }) {
       const key = fingerprint(text, files);
       return transaction(() => {
         const existing = db.prepare('SELECT chat, fingerprint FROM turns WHERE id = ?').get(id);
         if (existing) return { duplicate: true, conflict: existing.chat !== chat || existing.fingerprint !== key };
         const at = Date.now();
         db.prepare('INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?)').run(id, chat, kind, 'queued', key,
-          JSON.stringify({ at, purpose }));
-        if (kind === 'user') insertMessage({ chat, turnId: id, id, author: 'user', text, files, at });
+          JSON.stringify({ at, purpose, ...(quote ? { quote } : {}), ...(dive ? { dive: true } : {}) }));
+        if (kind === 'user') insertMessage({ chat, turnId: id, id, author: 'user', text, files, quote, at });
         else touch(chat);
         return { duplicate: false, conflict: false };
       });
+    },
+    queuedUserTurns(chat) {
+      return db.prepare("SELECT id, detail FROM turns WHERE chat = ? AND kind = 'user' AND state = 'queued' ORDER BY rowid")
+        .all(chat).map((row) => ({ id: row.id, ...JSON.parse(row.detail) }));
     },
     queue(chat) {
       return db.prepare("SELECT id FROM turns WHERE chat = ? AND state IN ('queued', 'submitted') ORDER BY rowid LIMIT 1")
@@ -93,7 +97,7 @@ export function openWebChatStore(directory) {
     update(id, state, updates = {}) {
       transaction(() => patch(turn(id), state, updates));
     },
-    finalize(id, { text = '', files = [], failure = '', state = failure ? 'failed' : 'done', note = '' } = {}) {
+    finalize(id, { text = '', files = [], failure = '', state = failure ? 'failed' : 'done', note = '', closed = false, replied = false } = {}) {
       return transaction(() => {
         const job = turn(id);
         if (!job || !['queued', 'submitted'].includes(job.state)) return null;
@@ -103,7 +107,7 @@ export function openWebChatStore(directory) {
         if (failure && job.kind !== 'user') {
           insertMessage({ chat: job.chat, turnId: id, author: 'notice', text: '主动消息暂未送达。' + failure, files: [] });
         }
-        patch(job, state, { failure, outcomePending: job.kind === 'purpose', replyText: text });
+        patch(job, state, { failure, outcomePending: job.kind === 'purpose', replyText: text, closed, replied });
         return message;
       });
     },
@@ -116,6 +120,11 @@ export function openWebChatStore(directory) {
         const existing = db.prepare('SELECT 1 FROM messages WHERE id = ?').get(id);
         return existing ? null : insertMessage({ id, chat, turnId, author: 'assistant', text, files: [file] });
       });
+    },
+    // 她通过 web_chat_send_message 说的一句话：和 QQ 一样按“一条消息”立即落库，
+    // 页面通过 SSE 逐条收到；一条回复可以落多条。
+    reply(chat, turnId, text, quote = null) {
+      return transaction(() => insertMessage({ chat, turnId, author: 'assistant', text, files: [], quote }));
     },
     notice(chat, id, text) {
       return transaction(() => {
@@ -135,12 +144,37 @@ export function openWebChatStore(directory) {
       if (more) messages.shift();
       return { chat, cursor, messages, more, reset: after !== null && (messages.length > 300 || after > cursor) };
     },
+    history(chat, { before = null, limit = 200 } = {}) {
+      const take = Math.min(Math.max(Number(limit) || 200, 1), 500);
+      const rows = db.prepare('SELECT payload FROM messages WHERE chat = ? AND seq < ? ORDER BY seq DESC LIMIT ?')
+        .all(chat, before ?? Number.MAX_SAFE_INTEGER, take).reverse();
+      return rows.map((row) => JSON.parse(row.payload));
+    },
+    lastTurn(chat) {
+      const row = db.prepare('SELECT id, kind, state, detail FROM turns WHERE chat = ? AND kind = \'user\' ORDER BY rowid DESC LIMIT 1').get(chat);
+      if (!row) return null;
+      const detail = JSON.parse(row.detail);
+      return { id: row.id, kind: row.kind, state: row.state, replied: detail.replied === true, closed: detail.closed === true };
+    },
     recentTurns(chat) {
       return db.prepare("SELECT id, state, json_extract(detail, '$.failure') AS failure FROM turns WHERE chat = ? AND kind = 'user' ORDER BY rowid DESC LIMIT 65")
         .all(chat);
     },
+    cursor(chat) {
+      return Number(db.prepare('SELECT coalesce(max(seq), 0) AS seq FROM messages WHERE chat = ?').get(chat).seq);
+    },
+    userMessagesAfter(chat, seq) {
+      return db.prepare("SELECT payload FROM messages WHERE chat = ? AND seq > ? ORDER BY seq")
+        .all(chat, Number(seq) || 0)
+        .map((row) => JSON.parse(row.payload))
+        .filter((message) => message.author === 'user');
+    },
     message(id) {
       const row = db.prepare('SELECT payload FROM messages WHERE id = ?').get(id);
+      return row ? JSON.parse(row.payload) : null;
+    },
+    messageOf(chat, id) {
+      const row = db.prepare('SELECT payload FROM messages WHERE id = ? AND chat = ?').get(id, chat);
       return row ? JSON.parse(row.payload) : null;
     },
     attachment(chat, id) {

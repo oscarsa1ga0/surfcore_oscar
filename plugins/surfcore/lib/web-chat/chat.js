@@ -8,6 +8,7 @@ const send = element('send');
 const notice = element('alert');
 const rows = new Map();
 let attachments = [];
+let quoted = null;
 let payload = null;
 let streamConnection;
 let chat;
@@ -52,8 +53,20 @@ function addMessage(message, prepend = false) {
   const who = { assistant: element('name').textContent, user: '你', notice: '通知' }[message.author];
   row.append(make('div', who + ' · ' + time.format(message.at), 'meta'));
   const bubble = make('div', '', 'bubble');
+  if (message.quote?.text) {
+    const quote = make('div', '', 'quote-inline');
+    quote.append(make('span', '引用 ' + (message.quote.author === 'user' ? '你' : whoOf()) + '：' + message.quote.text));
+    bubble.append(quote);
+  }
   if (message.text) bubble.append(make('p', message.text));
-  for (const attachment of message.attachments) {
+  for (const attachment of message.attachments || []) {
+    if (String(attachment.type || '').startsWith('audio/')) {
+      const audio = make('audio');
+      audio.controls = true;
+      audio.src = API + 'attachment/' + attachment.id;
+      bubble.append(audio);
+      continue;
+    }
     const link = make('button', '', 'image');
     link.type = 'button';
     link.setAttribute('aria-label', '查看图片');
@@ -74,12 +87,48 @@ function addMessage(message, prepend = false) {
   failure.hidden = true;
   row.append(failure);
   rows.set(message.id, { row, message, failure });
+  // 引用：手机上长按、桌面双击/右键，都能选中这一条（对应 QQ 的长按引用）。
+  if (message.author === 'user' || message.author === 'assistant') {
+    let pressTimer = 0;
+    const beginPress = () => {
+      clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => pickQuote(message), 450);
+    };
+    const endPress = () => clearTimeout(pressTimer);
+    row.addEventListener('pointerdown', beginPress);
+    row.addEventListener('pointerup', endPress);
+    row.addEventListener('pointerleave', endPress);
+    row.addEventListener('pointercancel', endPress);
+    row.addEventListener('dblclick', (event) => { event.preventDefault(); pickQuote(message); });
+    row.addEventListener('contextmenu', (event) => { event.preventDefault(); pickQuote(message); });
+  }
+
   if (prepend) messages.prepend(row);
   else {
     const following = [...rows.values()].filter((entry) => entry.message.seq > message.seq)
       .sort((left, right) => left.message.seq - right.message.seq)[0];
     messages.insertBefore(row, following?.row ?? null);
   }
+}
+function whoOf() {
+  return element('name').textContent || '鱼姬';
+}
+function pickQuote(message) {
+  quoted = { id: message.id, author: message.author, text: String(message.text || '').slice(0, 80) };
+  renderQuote();
+  input.focus();
+}
+function renderQuote() {
+  const bar = element('quote');
+  bar.replaceChildren();
+  if (!quoted) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.append(make('span', '引用 ' + (quoted.author === 'user' ? '你' : whoOf()) + '：' + quoted.text, 'quote-text'));
+  const cancel = make('button', '×', 'quote-cancel');
+  cancel.type = 'button';
+  cancel.setAttribute('aria-label', '取消引用');
+  cancel.onclick = () => { quoted = null; renderQuote(); };
+  bar.append(cancel);
 }
 function updateTurns(turns) {
   for (const turn of turns) {
@@ -100,7 +149,8 @@ function updateTurns(turns) {
           if (!response.ok) throw new Error('无法重新读取附件。');
           return fileData(await response.blob());
         }));
-        await api('messages', { id: crypto.randomUUID(), chat, text: entry.message.text, images });
+        await api('messages', { id: crypto.randomUUID(), chat, text: entry.message.text, images,
+          ...(entry.message.quote ? { quoteId: entry.message.quote.id } : {}) });
         button.textContent = '已重新发送';
         showAlert();
       } catch (error) {
@@ -187,11 +237,11 @@ function apply(value, initial = false) {
   const source = { bili: 'B 站', diary: '日记', qq: 'QQ' }[value.occupied];
   const states = {
     idle: '在线', queued: source ? '等候中 · ' + source + '回合进行中' : '消息已保存，等待本轮',
-    starting: '正在启动 DSH 回合', running: run.draft ? '正在回复' : '思考中',
+    starting: '正在启动 DSH 回合', running: '正在输入…',
     tool: ['正在使用工具', run.tool].filter(Boolean).join(' · '), approval: '等你确认',
     recovering: '正在恢复上一轮',
   };
-  element('status').textContent = states[run.phase] ?? '在线';
+  element('status').textContent = run.read ? '已读' : (states[run.phase] ?? '在线');
   const draft = element('stream');
   draft.hidden = !run.draft && !run.note;
   if (!draft.hidden) {
@@ -257,15 +307,18 @@ composer.onsubmit = async (event) => {
   try {
     const text = input.value.trim();
     const images = await Promise.all(attachments.map(fileData));
-    if (!payload || payload.chat !== chat || payload.text !== text || JSON.stringify(payload.images) !== JSON.stringify(images)) {
-      payload = { id: crypto.randomUUID(), chat, text, images };
+    const quoteId = quoted?.id || '';
+    if (!payload || payload.chat !== chat || payload.text !== text || payload.quoteId !== quoteId || JSON.stringify(payload.images) !== JSON.stringify(images)) {
+      payload = { id: crypto.randomUUID(), chat, text, images, ...(quoteId ? { quoteId } : {}) };
     }
     const result = await api('messages', payload);
     addMessage(result.message);
     timeline.scrollTop = timeline.scrollHeight;
     payload = null;
     attachments = [];
+    quoted = null;
     renderAttachments();
+    renderQuote();
     input.value = '';
     showAlert();
   } catch (error) {

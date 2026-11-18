@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createWebChatGateway } from '../lib/web-chat/gateway.js';
+import { openWebChatStore } from '../lib/web-chat/store.js';
 import { webSessionId } from '../lib/web-chat/dsh.js';
 import { createRoleDispatch } from '../lib/role-dispatch.js';
 import { WEB_CHAT_API } from '../lib/web-chat/port.js';
@@ -20,7 +21,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-web-chat-'));
 const role = { characterId: 'fish', epoch: 1 };
 const sessionId = webSessionId(role.characterId);
 const identity = () => ({ role, name: '鱼姬' });
-const prefs = { cwd: path.join(dir, 'workspace'), proactive: false, purpose: { enabled: true } };
+const prefs = { cwd: path.join(dir, 'workspace'), proactive: false, purpose: { enabled: true }, batchMs: 0 };
 const handlers = new Map();
 const logs = [];
 const captures = [];
@@ -33,10 +34,16 @@ const host = {
     handlers.set(name, listeners);
     return () => listeners.delete(handler);
   },
+  created: [],
+  get(name) {
+    if (name === 'agentPresets') return { list: async () => ({ presets: [{ id: 'standard' }, { id: 'web-chat' }] }) };
+    return undefined;
+  },
   sessionController: {
-    async create({ sessionId: id, cwd }) {
-      assert.equal(cwd, prefs.cwd);
-      sessions.set(id, []);
+    async create(params) {
+      assert.equal(params.cwd, prefs.cwd);
+      host.created.push(params);
+      sessions.set(params.sessionId, []);
     },
     async events({ address }) {
       const events = sessions.get(address.sessionId);
@@ -154,9 +161,10 @@ try {
   assert.equal((await call('/attachment/' + first.json.message.attachments[0].id, { headers })).data.toString('base64'), png);
 
   const secondId = randomUUID();
-  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: secondId, text: '还想问一句' }, headers })).status, 202);
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: secondId, text: '还想问一句', quoteId: first.json.message.id }, headers })).status, 202);
   await until(() => captures.length === 1);
   assert.equal(captures[0].requestId, id);
+  assert.equal(host.created[0]?.agentPreset, 'web-chat', '网页会话要用 web-chat preset');
   assert.ok(captures[0].content.some((part) => part.type === 'image' && part.mediaType === 'image/png'));
   admit(id, 1);
   const agent = { session: { id: sessionId } };
@@ -166,7 +174,9 @@ try {
     handle({ agent, frame: { type: 'chunk', attemptId: 'a1', turn: 1, chunk: { type: 'reasoning-delta', text: 'private' } } });
     handle({ agent, frame: { type: 'chunk', attemptId: 'a1', turn: 1, chunk: { type: 'text-delta', text: '你' } } });
   }
-  await until(() => eventStream.output.includes('"draft":"你"'));
+  // 网页私聊和 QQ 一样：文字输出只是思考，不往页面推草稿。
+  await until(() => eventStream.output.includes('"phase":"running"'));
+  assert.ok(!eventStream.output.includes('"draft":"你"'));
   assert.ok(!eventStream.output.includes('private'));
   assert.equal(captures.length, 1);
 
@@ -192,11 +202,18 @@ try {
   gateway.sendImage({ file: 'picture.png' }, { agent, callId: 'call1' });
   gateway.sendImage({ file: 'picture.png' }, { agent, callId: 'call1' });
   assert.throws(() => gateway.sendImage({ file: '../chat.sqlite' }, { agent, callId: 'call2' }), { code: 'WEB_IMAGE_FILE' });
-  reply(1, '你好，我在。');
-  assert.equal((await call('/state', { headers })).json.messages.filter((item) => item.author === 'assistant').length, 2);
+  // 发言走 web_chat_send_message：一次两条，逐条落库；整轮有发言时兜底文字不再追加。
+  const sent = await gateway.sendMessages({ messages: ['你好，我在。', '刚在看水'], gaps: [0, 0] }, { agent });
+  assert.equal(sent.count, 2);
+  reply(1, '这段文字只是思考，不该显示。');
+  const turnOne = (await call('/state', { headers })).json.messages.filter((item) => item.author === 'assistant');
+  assert.equal(turnOne.length, 3);
+  assert.deepEqual(turnOne.slice(1).map((item) => item.text), ['你好，我在。', '刚在看水']);
   eventStream.destroy();
   await until(() => captures.length === 2);
   assert.equal(captures[1].requestId, secondId);
+  // 引用：快照里带着被引用的原话。
+  assert.match(captures[1].content.find((part) => part.type === 'text').text, /"quote":\{[^}]*"你好"/);
   admit(secondId, 2, false);
   reply(2, '重开后能读到。', false);
   gateway.stop();
@@ -222,12 +239,67 @@ try {
   const recovered = (await call('/state', { headers })).json;
   assert.ok(recovered.messages.some((item) => item.text === '有一件事想跟你聊。'));
   assert.ok(recovered.messages.some((item) => item.author === 'notice' && item.text === 'B 站通知'));
+
+  // 连发合并：窗口内的两条消息并成一轮，模型一次看到两句。
+  prefs.batchMs = 120;
+  const batch1 = randomUUID();
+  const batch2 = randomUUID();
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: batch1, text: '第一句' }, headers })).status, 202);
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: batch2, text: '第二句' }, headers })).status, 202);
+  await until(() => captures.length === 4);
+  const mergedText = captures[3].content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+  assert.match(mergedText, /第一句/);
+  assert.match(mergedText, /第二句/);
+  admit(captures[3].requestId, 4);
+  reply(4, '一起回。');
+  await until(() => messages.some((item) => item.text === '一起回。'));
+
+  // 等待：轮内等主人补发的消息，补发的那条不再单独开一轮。
+  const wait1 = randomUUID();
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: wait1, text: '等一下' }, headers })).status, 202);
+  await until(() => captures.length === 5);
+  admit(captures[4].requestId, 5);
+  const waiting = gateway.waitMessages({ timeoutMs: 1500, quietMs: 50 }, { agent });
+  await delay(30);
+  const wait2 = randomUUID();
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: wait2, text: '补一句' }, headers })).status, 202);
+  const waited = await waiting;
+  assert.equal(waited.timeout, false);
+  assert.ok(waited.messages.some((item) => item.text === '补一句'));
+  reply(5, '等到了。');
+  await delay(200);
+  assert.equal(captures.length, 5, '等待期间收到的消息不应再开一轮');
+
+  // 潜水/晚点回来：这轮不回，到点主动回来一轮。
+  const diveMsg = randomUUID();
+  assert.equal((await call('/messages', { method: 'POST', data: { chat: role.characterId, id: diveMsg, text: '我先去忙' }, headers })).status, 202);
+  await until(() => captures.length === 6);
+  admit(captures[5].requestId, 6);
+  gateway.dive({ minutes: 0.006, summary: '他去忙了' }, { agent });
+  reply(6, '');
+  await until(() => captures.length === 7);
+  assert.match(captures[6].content.find((part) => part.type === 'text').text, /晚点回来/);
+  admit(captures[6].requestId, 7);
+  reply(7, '忙完了？');
+  await until(() => messages.some((item) => item.text === '忙完了？'));
   assert.deepEqual(logs, []);
 } finally {
   gateway.stop();
   dispatch.dispose();
   fs.rmSync(dir, { recursive: true, force: true });
 }
+// 收尾/已读：她只调 web_chat_close、一条没发时，lastTurn 记 replied=false，页面显示“已读”。
+{
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-store-'));
+  const s = openWebChatStore(storeDir);
+  s.enqueue('c', 't1', { text: 'hi' });
+  s.finalize('t1', { closed: true, replied: false });
+  assert.equal(s.lastTurn('c').replied, false);
+  assert.equal(s.lastTurn('c').closed, true);
+  s.close();
+  fs.rmSync(storeDir, { recursive: true, force: true });
+}
+
 const at = Date.now();
 const inbox = [
   { platform: 'web', text: '网页私密回忆测试', isOwner: true, private: true, at, eventId: 'm-web' },

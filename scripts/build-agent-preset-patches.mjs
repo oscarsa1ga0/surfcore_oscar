@@ -24,7 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
 
 /** 由桥接托管的 preset（顺序即 patch 层顺序）。 */
-export const PRESETS = ['qq-chat', 'qq-chat-v2', 'surfcore-diary'];
+export const PRESETS = ['qq-chat', 'qq-chat-v2', 'surfcore-diary', 'web-chat'];
 
 /** preset 行 id：与 config.id（桥接解析的 preset 名）区分开，方便在 profile patch 里按行定位。 */
 export function presetRowId(name) {
@@ -43,11 +43,14 @@ export function presetRowId(name) {
 export const GUARD_SPECIFIER = 'surfcore/qq-tool-restrict.mjs';
 /** 日记 preset 的守卫：同一套隐藏名单 + 只允许日记工具/安全搜索。 */
 export const DIARY_GUARD_SPECIFIER = 'surfcore/diary-tool-guard.mjs';
+/** 网页私聊 preset 的守卫：隐藏 QQ 桥接工具。 */
+export const WEB_GUARD_SPECIFIER = 'surfcore/web-tool-guard.mjs';
 
 /** 源里允许出现的相对行名 → 新机制下的等价引用。其它相对名一律报错（避免静默装不上）。 */
 const RELATIVE_ROW_REWRITES = new Map([
   ['./qq-tool-restrict.mjs', GUARD_SPECIFIER],
   ['./diary-tool-guard.mjs', DIARY_GUARD_SPECIFIER],
+  ['./web-tool-guard.mjs', WEB_GUARD_SPECIFIER],
 ]);
 
 /** 每个 preset 必须包含的安全/人格行；缺了就不允许生成 patch。 */
@@ -55,6 +58,7 @@ const REQUIRED_ROWS = {
   'qq-chat': ['persona', 'qq-tool-restrict'],
   'qq-chat-v2': ['persona', 'qq-tool-restrict'],
   'surfcore-diary': ['persona', 'diary-tool-guard'],
+  'web-chat': ['persona', 'web-tool-guard'],
 };
 
 export const BUNDLE_DIR = path.join(REPO_ROOT, 'plugins', 'surfcore');
