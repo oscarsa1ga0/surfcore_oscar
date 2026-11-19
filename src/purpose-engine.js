@@ -2178,13 +2178,14 @@ export function buildPurposePrompt({
   lines.push('   - 不要每句都提问；不要复述素材原文。');
   lines.push('3) 像突然想起来一样自然。不要写「定时 / 机制 / 任务 / 我刚醒 / 系统提示」，也不要说「我刚看到你的消息」（根本没有消息）。');
   if (String(mode) === 'web') {
-    lines.push('4) 发送方式：必须真的用工具发出去 —— 调用 web_chat_send_message（messages 字符串或数组，条间自动停顿）；只输出文字不会发到网页。');
+    lines.push('4) 发送方式：必须真的用工具发出去 —— 调用 web_chat_send_message（messages 字符串数组，条间自动停顿）；只输出文字不会发到网页。');
   } else if (String(mode) === 'reserved2') {
     lines.push(`4) 发送方式：必须真的用工具发出去 —— 调用 qq_send_private_message，参数 userId 填 ${uin || '<主人QQ>'}、${token ? `token 填 ${token}、` : 'token 必填、'}message 填你要说的话；也可以用 qq_send_message，key 填 private:${uin || '<主人QQ>'}。只输出文字不会发到 QQ。`);
   } else {
     lines.push('4) 直接输出你要发的话（当前模式会自动转发），不要解释、不要加引号。');
   }
-  lines.push('5) 发完在回合最后另起一段写「内部备忘」——这段不会发到 QQ，千万别写进 message：');
+  const surface = String(mode) === 'web' ? '网页' : 'QQ';
+  lines.push('5) 发完在回合最后另起一段写「内部备忘」——这段只用于内部结算，不发到' + surface + '，不要传给发送工具。');
   lines.push('【目的】一句话说清你这次想做什么');
   lines.push('【需求】玩 / 学 / 装 / 陪 / 关心 / 分享 / 自我 / 创作 / 体验');
   lines.push('【情绪】一句话（可选；不用硬编）');

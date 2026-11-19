@@ -8,6 +8,19 @@ const send = element('send');
 const notice = element('alert');
 const rows = new Map();
 let attachments = [];
+let audioFile = null;
+let audioPreview = '';
+let selectedSticker = null;
+let stickerCatalog = [];
+let recorder = null;
+let recordingTimer;
+let recordingGeneration = 0;
+let pendingPoke = null;
+let unread = 0;
+let pendingAcceptance;
+let transcriptionEnabled = false;
+let historyRequest = 0;
+let nextSearchPage = null;
 let quoted = null;
 let payload = null;
 let streamConnection;
@@ -21,12 +34,22 @@ let backoff;
 const time = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 async function api(route, data) {
-  const response = await fetch(API + route, data === undefined ? undefined : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  const signal = AbortSignal.timeout(data?.audio || data?.images?.length ? 30_000 : 15_000);
+  let response;
+  try {
+    response = await fetch(API + route, data === undefined ? { signal } : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), signal,
+    });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    throw new Error('本机服务暂未返回。若消息已经出现就无需重发，否则请重试。');
+  }
+  const value = await response.json().catch(() => {
+    if (signal.aborted) throw new Error('本机服务暂未返回完整回执。请核对气泡后重试。');
+    return {};
   });
-  const value = await response.json();
-  if (!response.ok || value.ok === false) {
-    throw Object.assign(new Error([value.error, value.hint].filter(Boolean).join(' ')), { status: response.status, code: value.code });
+  if (!response.ok || value.ok !== true) {
+    throw Object.assign(new Error([value.error, value.hint].filter(Boolean).join(' ') || '本机服务未返回有效结果。请稍后再试。'), { status: response.status, code: value.code });
   }
   return value;
 }
@@ -45,17 +68,38 @@ function setConnection(label, online) {
   connected = online;
   element('connection-label').textContent = label;
   element('connection').dataset.online = String(online);
-  send.disabled = !online || submitted;
+  send.disabled = !online || submitted || Boolean(recorder);
 }
-function addMessage(message, prepend = false) {
-  if (rows.has(message.id)) return;
+function addMessage(message, prepend = false, destination = null) {
+  if (!destination && rows.has(message.id)) return;
   const row = make('div', '', 'row ' + message.author);
-  const who = { assistant: element('name').textContent, user: '你', notice: '通知' }[message.author];
-  row.append(make('div', who + ' · ' + time.format(message.at), 'meta'));
+  row.dataset.seq = String(message.seq);
+  row.dataset.action = message.action ?? '';
+  const body = make('div', '', 'body');
+  if (message.author === 'assistant') {
+    const avatar = make('img', '', 'avatar');
+    avatar.src = API + 'avatar';
+    avatar.alt = '';
+    avatar.loading = 'lazy';
+    avatar.onerror = () => avatar.remove();
+    row.append(avatar);
+  }
+  row.append(body);
+  const who = { assistant: whoOf(), user: '你', notice: '通知' }[message.author];
+  const meta = make('div', who + ' · ' + time.format(message.at), 'meta');
+  if (message.author !== 'notice') {
+    const quoteButton = make('button', '引用', 'quote-message');
+    quoteButton.type = 'button';
+    quoteButton.onclick = () => pickQuote(message);
+    meta.append(quoteButton);
+  }
+  body.append(meta);
   const bubble = make('div', '', 'bubble');
-  if (message.quote?.text) {
-    const quote = make('div', '', 'quote-inline');
-    quote.append(make('span', '引用 ' + (message.quote.author === 'user' ? '你' : whoOf()) + '：' + message.quote.text));
+  if (message.quote) {
+    const quote = make('button', '', 'quote-inline');
+    quote.type = 'button';
+    quote.append(make('span', '引用 ' + (message.quote.author === 'user' ? '你' : whoOf()) + '：' + (message.quote.text || '[附件]')));
+    quote.onclick = () => void jumpToMessage(message.quote.id);
     bubble.append(quote);
   }
   if (message.text) bubble.append(make('p', message.text));
@@ -63,6 +107,8 @@ function addMessage(message, prepend = false) {
     if (String(attachment.type || '').startsWith('audio/')) {
       const audio = make('audio');
       audio.controls = true;
+      audio.preload = 'none';
+      audio.addEventListener('error', () => showAlert('语音无法播放。可以刷新后再试。'));
       audio.src = API + 'attachment/' + attachment.id;
       bubble.append(audio);
       continue;
@@ -81,40 +127,34 @@ function addMessage(message, prepend = false) {
     };
     bubble.append(link);
   }
-  row.append(bubble);
-  if (message.note) row.append(make('p', message.note, 'note'));
+  body.append(bubble);
+  if (message.note) body.append(make('p', message.note, 'note'));
   const failure = make('div', '', 'failure');
   failure.hidden = true;
-  row.append(failure);
-  rows.set(message.id, { row, message, failure });
-  // 引用：手机上长按、桌面双击/右键，都能选中这一条（对应 QQ 的长按引用）。
-  if (message.author === 'user' || message.author === 'assistant') {
-    let pressTimer = 0;
-    const beginPress = () => {
-      clearTimeout(pressTimer);
-      pressTimer = setTimeout(() => pickQuote(message), 450);
-    };
-    const endPress = () => clearTimeout(pressTimer);
-    row.addEventListener('pointerdown', beginPress);
-    row.addEventListener('pointerup', endPress);
-    row.addEventListener('pointerleave', endPress);
-    row.addEventListener('pointercancel', endPress);
-    row.addEventListener('dblclick', (event) => { event.preventDefault(); pickQuote(message); });
-    row.addEventListener('contextmenu', (event) => { event.preventDefault(); pickQuote(message); });
+  body.append(failure);
+  if (destination) {
+    destination.append(row);
+    return row;
   }
-
+  rows.set(message.id, { row, message, failure });
   if (prepend) messages.prepend(row);
   else {
-    const following = [...rows.values()].filter((entry) => entry.message.seq > message.seq)
-      .sort((left, right) => left.message.seq - right.message.seq)[0];
-    messages.insertBefore(row, following?.row ?? null);
+    const last = messages.lastElementChild;
+    const next = last && Number(last.dataset.seq) > message.seq
+      ? [...messages.children].find((entry) => Number(entry.dataset.seq) > message.seq)
+      : null;
+    messages.insertBefore(row, next ?? null);
   }
+  return true;
 }
 function whoOf() {
   return element('name').textContent || '鱼姬';
 }
 function pickQuote(message) {
-  quoted = { id: message.id, author: message.author, text: String(message.text || '').slice(0, 80) };
+  const type = message.attachments?.[0]?.type ?? '';
+  const preview = message.action === 'sticker' ? '[表情]' : type === 'image/gif' ? '[GIF]'
+    : type.startsWith('audio/') ? '[语音]' : type.startsWith('image/') ? '[图片]' : '[消息]';
+  quoted = { id: message.id, author: message.author, text: String(message.text || preview).slice(0, 80) };
   renderQuote();
   input.focus();
 }
@@ -134,23 +174,22 @@ function updateTurns(turns) {
   for (const turn of turns) {
     const entry = rows.get(turn.id);
     if (!entry) continue;
-    if (entry.failure.dataset.state === turn.state) continue;
-    entry.failure.dataset.state = turn.state;
-    entry.failure.hidden = turn.state !== 'failed';
-    if (turn.state !== 'failed') continue;
-    entry.failure.textContent = turn.failure || '发送失败，可重试。';
-    const button = make('button', '重新发送');
+    const status = JSON.stringify([turn.state, turn.failure, turn.retryable, turn.note]);
+    if (entry.failure.dataset.state === status) continue;
+    entry.failure.dataset.state = status;
+    entry.failure.hidden = turn.state !== 'failed' && !turn.note;
+    entry.failure.classList.toggle('failure', turn.state === 'failed');
+    entry.failure.classList.toggle('note', turn.state !== 'failed');
+    entry.failure.textContent = [turn.failure || (turn.state === 'failed' ? '这轮处理失败，请到 DSH 查看。' : ''), turn.note].filter(Boolean).join(' ');
+    if (turn.state !== 'failed' || !turn.retryable) continue;
+    const button = make('button', '重试');
     button.type = 'button';
     button.onclick = async () => {
       button.disabled = true;
+      const sentChat = chat;
       try {
-        const images = await Promise.all(entry.message.attachments.map(async ({ id }) => {
-          const response = await fetch(API + 'attachment/' + id);
-          if (!response.ok) throw new Error('无法重新读取附件。');
-          return fileData(await response.blob());
-        }));
-        await api('messages', { id: crypto.randomUUID(), chat, text: entry.message.text, images,
-          ...(entry.message.quote ? { quoteId: entry.message.quote.id } : {}) });
+        const result = await api('retry', { id: entry.message.id, chat: sentChat });
+        if (chat === sentChat) addMessage(result.message);
         button.textContent = '已重新发送';
         showAlert();
       } catch (error) {
@@ -216,54 +255,129 @@ function updateRequests(requests) {
     list.append(card);
   }
 }
+const nearLatest = () => timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 130;
+
+function updateUnread() {
+  const button = element('jump-latest');
+  button.hidden = !unread && nearLatest();
+  button.textContent = unread ? unread + ' 条新消息' : '回到最新';
+  document.title = unread && document.hidden ? '(' + unread + ') 鱼姬之家' : '鱼姬之家';
+}
+
+function scrollToLatest() {
+  timeline.scrollTop = timeline.scrollHeight;
+  if (!document.hidden) unread = 0;
+  updateUnread();
+}
+
+element('jump-latest').onclick = scrollToLatest;
+timeline.addEventListener('scroll', () => {
+  if (!document.hidden && nearLatest()) unread = 0;
+  updateUnread();
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && nearLatest()) unread = 0;
+  updateUnread();
+});
+
 function apply(value, initial = false) {
-  const nearEnd = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 130;
-  if (chat !== value.chat || value.reset || initial) {
+  const nearEnd = nearLatest();
+  if (chat !== value.chat || value.reset) {
+    const switched = Boolean(chat && chat !== value.chat);
     rows.clear();
     messages.replaceChildren();
-    if (chat && chat !== value.chat) {
+    unread = 0;
+    if (switched) {
+      pendingAcceptance?.reject(new Error('角色已切换。'));
+      historyRequest++;
+      nextSearchPage = null;
+      for (const id of ['history-search', 'history-context']) if (element(id).open) element(id).close();
       payload = null;
+      pendingPoke = null;
       attachments = [];
-      renderAttachments();
-      showAlert('角色已切换。请核对要发送的消息。');
+      selectedSticker = null;
+      quoted = null;
+      renderQuote();
+      cancelRecording();
+      setAudio(null);
+      if (element('sticker-picker').open) element('sticker-picker').close();
+      showAlert('角色已切换。请核对输入框里的文字。');
     }
     element('older').hidden = !value.more;
   }
   chat = value.chat;
+  if (typeof value.transcriptionEnabled === 'boolean' && transcriptionEnabled !== value.transcriptionEnabled) {
+    transcriptionEnabled = value.transcriptionEnabled;
+    if (audioFile) renderAttachments();
+  }
   cursor = value.cursor;
   element('name').textContent = value.name || '鱼姬';
-  for (const message of value.messages) addMessage(message);
+  for (const message of value.messages) {
+    if (pendingAcceptance?.id === message.id && pendingAcceptance.chat === chat && message.author === 'user') {
+      pendingAcceptance.resolve({ message });
+    }
+    if (addMessage(message) && !initial && !value.reset && message.author !== 'user' && (!nearEnd || document.hidden)) unread++;
+  }
   const { run } = value;
   const source = { bili: 'B 站', diary: '日记', qq: 'QQ' }[value.occupied];
   const states = {
-    idle: '在线', queued: source ? '等候中 · ' + source + '回合进行中' : '消息已保存，等待本轮',
-    starting: '正在启动 DSH 回合', running: '正在输入…',
-    tool: ['正在使用工具', run.tool].filter(Boolean).join(' · '), approval: '等你确认',
-    recovering: '正在恢复上一轮',
+    idle: run.read ? '已读' : '在线',
+    queued: source ? '等候中 · ' + source + '回合进行中' : '消息已保存，等待本轮',
+    starting: '正在接收消息', running: '正在输入…',
+    tool: run.tool === 'web_chat_wait' ? '等你接着说…' : '正在处理消息', approval: '等你确认',
+    recovering: '正在核对上一轮',
   };
-  element('status').textContent = run.read ? '已读' : (states[run.phase] ?? '在线');
-  const draft = element('stream');
-  draft.hidden = !run.draft && !run.note;
-  if (!draft.hidden) {
-    const row = make('div', '', 'row assistant');
-    if (run.draft) row.append(make('div', run.draft, 'bubble'));
-    if (run.note) row.append(make('div', run.note, 'note'));
-    draft.replaceChildren(row);
-  }
+  element('status').textContent = states[run.phase] ?? '在线';
+  const runNote = [run.recovery?.error, run.recovery?.hint, run.note].filter(Boolean).join(' ');
+  element('run-note').textContent = runNote;
+  element('run-note').hidden = !runNote;
   updateTurns(value.turns);
   updateRequests(run.requests);
   showAlert(value.error, false);
-  if (nearEnd || initial || value.reset) requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+  if (nearEnd || initial || value.reset) requestAnimationFrame(scrollToLatest);
+  else updateUnread();
 }
+
 function renderAttachments() {
   const container = element('attachments');
   container.replaceChildren();
-  for (const [index, file] of attachments.entries()) {
-    const button = make('button', file.name + ' ×');
+  const removeButton = (label, action) => {
+    const button = make('button', label + ' ×');
     button.type = 'button';
-    button.onclick = () => { attachments.splice(index, 1); renderAttachments(); };
+    button.disabled = submitted;
+    button.onclick = action;
     container.append(button);
+  };
+  for (const [index, file] of attachments.entries()) {
+    removeButton(file.name, () => { attachments.splice(index, 1); renderAttachments(); });
   }
+  if (selectedSticker) removeButton('表情 #' + selectedSticker.no, () => { selectedSticker = null; renderAttachments(); });
+  if (audioFile) {
+    const audio = make('audio');
+    audio.controls = true;
+    audio.src = audioPreview;
+    audio.preload = 'metadata';
+    const hint = make('span', transcriptionEnabled ? '' : '语音转写尚未配置，可以附上一句文字。', 'note');
+    audio.addEventListener('loadedmetadata', () => {
+      if (transcriptionEnabled && audio.duration > 90) hint.textContent = '语音超过 90 秒。鱼姬只会收到前 90 秒的转写。';
+    });
+    container.append(audio, hint);
+    removeButton('移除语音', () => setAudio(null));
+  }
+  input.placeholder = audioFile ? '可附一句文字，方便她理解语音…' : '给鱼姬发消息…';
+  const recordButton = element('record');
+  const recordLabel = recorder ? '结束录音' : '录音';
+  recordButton.setAttribute('aria-label', recordLabel);
+  recordButton.title = recordLabel;
+  recordButton.setAttribute('aria-pressed', String(Boolean(recorder)));
+  send.disabled = !connected || submitted || Boolean(recorder);
+}
+
+function setAudio(file) {
+  if (audioPreview) URL.revokeObjectURL(audioPreview);
+  audioFile = file;
+  audioPreview = file ? URL.createObjectURL(file) : '';
+  renderAttachments();
 }
 function fileData(file) {
   return new Promise((resolve, reject) => {
@@ -273,63 +387,212 @@ function fileData(file) {
     reader.readAsDataURL(file);
   });
 }
-element('upload').onchange = (event) => {
-  const files = [...attachments, ...event.target.files];
-  if (files.length > 4 || files.reduce((sum, file) => sum + file.size, 0) > 8 * 1024 * 1024) {
-    showAlert('每条消息最多 4 张图片，附件合计上限为 8 MB。');
-  } else {
-    attachments = files;
-    renderAttachments();
-    showAlert();
+function attachImages(files) {
+  if (submitted || recorder) return;
+  if (audioFile || selectedSticker) { showAlert('请先发送或移除当前语音或表情。'); return; }
+  const next = [...attachments, ...files];
+  if (next.length > 4 || next.reduce((sum, file) => sum + file.size, 0) > 8 * 1024 * 1024) {
+    showAlert('每条消息最多 4 张图片，附件合计最多 8 MB。');
+    return;
   }
+  attachments = next;
+  renderAttachments();
+  showAlert();
+}
+
+element('attach-image').onclick = () => element('upload').click();
+element('upload').onchange = (event) => {
+  attachImages(event.target.files);
   event.target.value = '';
 };
 input.onpaste = (event) => {
   const images = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
   if (!images.length) return;
   if (!event.clipboardData.getData('text/plain')) event.preventDefault();
-  const next = [...attachments, ...images];
-  if (next.length > 4 || next.reduce((sum, file) => sum + file.size, 0) > 8 * 1024 * 1024) showAlert('粘贴后超过 4 张图片或 8 MB。');
-  else { attachments = next; renderAttachments(); }
+  attachImages(images);
 };
-element('attach-label').onkeydown = (event) => {
-  if (event.key !== 'Enter' && event.key !== ' ') return;
-  event.preventDefault();
-  element('upload').click();
+
+function canAddVoice() {
+  if (submitted) return false;
+  if (attachments.length || selectedSticker) { showAlert('请先发送或移除当前图片或表情。'); return false; }
+  return true;
+}
+
+element('attach-audio').onclick = () => { if (!recorder && canAddVoice()) element('audio-upload').click(); };
+element('audio-upload').onchange = (event) => {
+  const file = event.target.files[0];
+  if (file && !recorder && canAddVoice()) {
+    if (file.size > 8 * 1024 * 1024) showAlert('这份音频超过 8 MB，请选一段较短的音频。');
+    else { setAudio(file); showAlert(); }
+  }
+  event.target.value = '';
 };
-composer.onsubmit = async (event) => {
-  event.preventDefault();
-  if (submitted || !chat || !connected) return;
-  if (!input.value.trim() && !attachments.length) return;
-  submitted = true;
-  send.disabled = true;
-  input.readOnly = true;
+
+function cancelRecording() {
+  recordingGeneration++;
+  clearTimeout(recordingTimer);
+  if (!recorder) return;
+  const current = recorder;
+  recorder = null;
+  if (current.state !== 'inactive') current.stop();
+  for (const track of current.stream.getTracks()) track.stop();
+}
+
+element('record').onclick = async () => {
+  if (recorder) { if (recorder.state !== 'inactive') recorder.stop(); return; }
+  if (!canAddVoice() || !chat) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showAlert('此浏览器无法使用麦克风录音。可以选择音频文件。');
+    return;
+  }
+  const generation = ++recordingGeneration;
+  const recordingChat = chat;
+  const button = element('record');
+  button.disabled = true;
+  let stream;
   try {
-    const text = input.value.trim();
-    const images = await Promise.all(attachments.map(fileData));
-    const quoteId = quoted?.id || '';
-    if (!payload || payload.chat !== chat || payload.text !== text || payload.quoteId !== quoteId || JSON.stringify(payload.images) !== JSON.stringify(images)) {
-      payload = { id: crypto.randomUUID(), chat, text, images, ...(quoteId ? { quoteId } : {}) };
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (generation !== recordingGeneration || chat !== recordingChat || !canAddVoice()) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
     }
-    const result = await api('messages', payload);
-    addMessage(result.message);
-    timeline.scrollTop = timeline.scrollHeight;
-    payload = null;
-    attachments = [];
-    quoted = null;
+    const current = new MediaRecorder(stream);
+    const chunks = [];
+    current.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    current.onerror = () => {
+      if (recorder !== current) return;
+      cancelRecording();
+      renderAttachments();
+      showAlert('录音中断了。请检查麦克风，或改用音频文件。');
+    };
+    current.onstop = () => {
+      for (const track of stream.getTracks()) track.stop();
+      if (recorder !== current) return;
+      clearTimeout(recordingTimer);
+      recorder = null;
+      const clip = new Blob(chunks, { type: current.mimeType });
+      if (clip.size && clip.size <= 8 * 1024 * 1024) setAudio(clip);
+      else { renderAttachments(); showAlert('录音为空或超过 8 MB，请重新录制。'); }
+    };
+    current.start();
+    recorder = current;
+    recordingTimer = setTimeout(() => { if (current.state !== 'inactive') current.stop(); }, 60_000);
     renderAttachments();
-    renderQuote();
-    input.value = '';
     showAlert();
-  } catch (error) {
-    showAlert(error.message || '本机服务暂不可用。重连后再点击发送。');
+  } catch {
+    for (const track of stream?.getTracks() ?? []) track.stop();
+    showAlert('没有录到声音。请检查麦克风权限，或选择音频文件。');
   } finally {
-    submitted = false;
-    input.readOnly = false;
-    send.disabled = !connected;
-    input.focus();
+    button.disabled = false;
   }
 };
+window.addEventListener('pagehide', cancelRecording);
+
+function renderStickers() {
+  const query = element('search-stickers').value.trim().toLowerCase().replace(/^#/, '');
+  const grid = element('sticker-grid');
+  grid.replaceChildren();
+  for (const sticker of stickerCatalog) {
+    if (query && ![sticker.no, sticker.content, sticker.emotion, ...sticker.keywords].join(' ').toLowerCase().includes(query)) continue;
+    const option = make('button');
+    option.type = 'button';
+    option.title = sticker.content || sticker.emotion || '#' + sticker.no;
+    const image = make('img');
+    image.src = API + 'sticker/' + encodeURIComponent(sticker.id || String(sticker.no));
+    image.loading = 'lazy';
+    image.alt = option.title;
+    image.onerror = () => image.remove();
+    option.append(image, make('span', '#' + sticker.no));
+    option.onclick = () => {
+      if (submitted || recorder || attachments.length || audioFile) return;
+      selectedSticker = sticker;
+      renderAttachments();
+      element('sticker-picker').close();
+      input.focus();
+    };
+    grid.append(option);
+  }
+  element('sticker-status').textContent = grid.childElementCount ? '' : '没有符合条件的表情。';
+}
+
+element('search-stickers').oninput = renderStickers;
+element('close-stickers').onclick = () => element('sticker-picker').close();
+element('open-stickers').onclick = async () => {
+  if (submitted || recorder || !connected || attachments.length || audioFile) {
+    showAlert('连上鱼姬之家并移除当前图片或语音后，再选表情。');
+    return;
+  }
+  const picker = element('sticker-picker');
+  if (picker.open) return;
+  element('search-stickers').value = '';
+  element('sticker-grid').replaceChildren();
+  element('sticker-status').textContent = '正在加载…';
+  picker.showModal();
+  try { stickerCatalog = (await api('stickers')).stickers; renderStickers(); }
+  catch (error) { element('sticker-status').textContent = error.message; }
+};
+
+async function sendMessage(draft, makePayload, onAccepted) {
+  if (submitted || !chat || !connected || recorder) return;
+  const sentChat = chat;
+  submitted = true;
+  input.readOnly = true;
+  renderAttachments();
+  try {
+    const request = await makePayload(sentChat);
+    if (chat !== sentChat) return;
+    const cached = rows.get(request.id)?.message;
+    const accepted = new Promise((resolve, reject) => { pendingAcceptance = { id: request.id, chat: sentChat, resolve, reject }; });
+    const result = cached ? { message: cached } : await Promise.race([api('messages', request), accepted]);
+    if (chat !== sentChat) return;
+    addMessage(result.message);
+    onAccepted();
+    scrollToLatest();
+    showAlert();
+  } catch (error) {
+    if (chat === sentChat && draft()?.id && rows.has(draft().id)) {
+      onAccepted();
+      scrollToLatest();
+      showAlert();
+    } else if (chat === sentChat) showAlert(error.message || '本机服务暂不可用。重连后可点击重试。');
+  } finally {
+    pendingAcceptance = null;
+    submitted = false;
+    input.readOnly = false;
+    renderAttachments();
+    input.focus();
+  }
+}
+
+composer.onsubmit = (event) => {
+  event.preventDefault();
+  if (!input.value.trim() && !attachments.length && !audioFile && !selectedSticker) return;
+  const text = input.value.trim();
+  const quotedId = quoted?.id ?? '';
+  const sticker = selectedSticker?.id || (selectedSticker ? String(selectedSticker.no) : '');
+  const imagesToSend = [...attachments];
+  const audioToSend = audioFile;
+  return sendMessage(() => payload, async (sentChat) => {
+    const images = await Promise.all(imagesToSend.map(fileData));
+    const audio = audioToSend ? await fileData(audioToSend) : '';
+    const next = { chat: sentChat, text, images, quoteId: quotedId, sticker, audio };
+    if (!payload || JSON.stringify(payload.body) !== JSON.stringify(next)) payload = { id: crypto.randomUUID(), body: next };
+    return { id: payload.id, ...next };
+  }, () => {
+    payload = null;
+    attachments = [];
+    selectedSticker = null;
+    quoted = null;
+    input.value = '';
+    renderQuote();
+    setAudio(null);
+  });
+};
+
+element('poke').onclick = () => sendMessage(() => pendingPoke, (sentChat) => {
+  if (pendingPoke?.chat !== sentChat) pendingPoke = { id: crypto.randomUUID(), chat: sentChat, action: 'poke' };
+  return pendingPoke;
+}, () => { pendingPoke = null; });
 input.onkeydown = (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -347,22 +610,120 @@ element('older').onclick = async () => {
     if (value.chat !== chat) return;
     const before = timeline.scrollHeight;
     for (const message of [...value.messages].reverse()) addMessage(message, true);
+    updateTurns(value.turns);
     button.hidden = !value.more;
     timeline.scrollTop += timeline.scrollHeight - before;
   } catch (error) { showAlert(error.message); }
   finally { button.disabled = false; }
 };
+function jumpHighlight(row) {
+  row.classList.add('history-target');
+  row.scrollIntoView({ block: 'center' });
+  setTimeout(() => row.classList.remove('history-target'), 3200);
+}
+
+async function jumpToMessage(id, fromSearch = false) {
+  if (!id || !chat) return;
+  const search = element('history-search');
+  const context = element('history-context');
+  const visible = !fromSearch && !context.open && rows.get(id)?.row;
+  if (visible) { jumpHighlight(visible); return; }
+  const currentChat = chat;
+  const request = ++historyRequest;
+  try {
+    const value = await api('around?' + new URLSearchParams({ chat: currentChat, id }));
+    if (value.chat !== chat || request !== historyRequest) return;
+    if (search.open) search.close();
+    const container = element('history-messages');
+    container.replaceChildren();
+    let target;
+    for (const message of value.messages) {
+      const row = addMessage(message, false, container);
+      if (message.id === value.target) target = row;
+    }
+    if (!context.open) context.showModal();
+    if (target) requestAnimationFrame(() => jumpHighlight(target));
+  } catch (error) {
+    if (request !== historyRequest) return;
+    if (search.open) element('history-status').textContent = error.message;
+    else showAlert(error.message);
+  }
+}
+
+async function searchHistory(older = false) {
+  const request = ++historyRequest;
+  const results = element('history-results');
+  const notice = element('history-status');
+  const more = element('history-more');
+  const position = older ? nextSearchPage : null;
+  const options = new URLSearchParams(position?.options ?? {
+    chat, q: element('history-query').value.trim(), kind: element('history-kind').value,
+  });
+  if (position) options.set('before', String(position.before));
+  if (!older) {
+    nextSearchPage = null;
+    results.replaceChildren();
+  }
+  more.hidden = true;
+  if (!options.get('q') && !options.get('kind')) {
+    notice.textContent = '输入关键词，或按图片、语音和表情找消息。';
+    return;
+  }
+  notice.textContent = '正在搜索…';
+  try {
+    const value = await api('search?' + options);
+    if (value.chat !== chat || request !== historyRequest) return;
+    for (const message of value.messages) {
+      const type = message.attachments?.[0]?.type ?? '';
+      const preview = message.text || (type.startsWith('audio/') ? '[语音]' :
+        message.action === 'sticker' ? '[表情]' : type.startsWith('image/') ? '[图片]' : '[消息]');
+      const button = make('button', time.format(message.at) + ' · ' + preview.slice(0, 140));
+      button.type = 'button';
+      button.onclick = () => void jumpToMessage(message.id, true);
+      results.append(button);
+    }
+    notice.textContent = results.childElementCount ? '' : '没有找到消息。';
+    nextSearchPage = value.more ? { options, before: value.messages.at(-1).seq } : null;
+    more.hidden = !nextSearchPage;
+  } catch (error) {
+    if (request !== historyRequest) return;
+    notice.textContent = error.message;
+    more.hidden = !nextSearchPage;
+  }
+}
+
+element('open-history').onclick = () => {
+  if (!chat) return;
+  const dialog = element('history-search');
+  if (!dialog.open) dialog.showModal();
+  element('history-query').focus();
+};
+for (const id of ['history-search', 'history-context']) {
+  const dialog = element(id);
+  dialog.oncancel = () => { historyRequest++; };
+  element('close-' + id).onclick = () => { historyRequest++; dialog.close(); };
+}
+element('history-form').onsubmit = (event) => { event.preventDefault(); void searchHistory(); };
+element('history-more').onclick = () => void searchHistory(true);
+
 element('close-preview').onclick = () => element('preview').close();
 async function connect() {
   clearTimeout(backoff);
   streamConnection?.close();
   try {
-    const initial = await api('state');
-    apply(initial, true);
+    if (!chat) {
+      const initial = await api('state');
+      apply(initial, true);
+    } else {
+      // Distinguish a lost connection from expired browser pairing without resetting the timeline.
+      await api('state?before=1');
+    }
     streamConnection = new EventSource(API + 'events?chat=' + encodeURIComponent(chat) + '&after=' + cursor);
     streamConnection.onmessage = (event) => {
       setConnection('已连接', true);
-      apply(JSON.parse(event.data));
+      clearTimeout(backoff);
+      try { apply(JSON.parse(event.data)); }
+      catch { showAlert('聊天更新未能载入。可刷新后重新连接。'); }
     };
     streamConnection.onerror = () => {
       setConnection('正在重连', false);

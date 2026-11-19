@@ -1,14 +1,15 @@
 // 网页私聊的表情包：读 QQ 桥接的收藏表情库（state/stickers.json），按需把图片缓存到网页数据目录。
 // 不依赖桥接进程；快照过的表情断网也能用。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rankStickers } from '../../../../src/sticker-semantics.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 // 优先读网页自己的快照（~/.dsh/surfcore/web-chat/stickers.json），没有才退回 QQ 的库。
-const WEB_STICKER_FILE = path.join(process.env.HOME || '', '.dsh', 'surfcore', 'web-chat', 'stickers.json');
-export const STICKER_FILE = fs.existsSync(WEB_STICKER_FILE) ? WEB_STICKER_FILE : path.join(ROOT, 'state', 'stickers.json');
+const WEB_STICKER_FILE = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'surfcore', 'web-chat', 'stickers.json');
+const stickerFile = () => fs.existsSync(WEB_STICKER_FILE) ? WEB_STICKER_FILE : path.join(ROOT, 'state', 'stickers.json');
 
 const EMOTION_LABEL = {
   happy: '开心', funny: '搞笑', proud: '得意', mock: '嘲讽', tsundere: '傲娇', shy: '害羞',
@@ -17,7 +18,7 @@ const EMOTION_LABEL = {
 };
 
 /** 原始表情条目（rankStickers 需要 emotion/keywords/tags/useCount 等完整字段）。 */
-export function readRawStickerStore(file = STICKER_FILE) {
+export function readRawStickerStore(file = stickerFile()) {
   try {
     const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
     return Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
@@ -33,7 +34,41 @@ export function matchStickers(text, { topK = 2, minScore, entries } = {}) {
     : rankStickers(list, text, { topK });
 }
 
-export function readStickerCatalog(file = STICKER_FILE) {
+export function webStickerEntries(config = {}) {
+  const original = readRawStickerStore();
+  const collected = config.stickersWeb ? readRawStickerStore(config.stickersWeb) : [];
+  const notes = config.stickerNotes ? readStickerNotes(config.stickerNotes) : {};
+  return [...original, ...collected].map((row) => {
+    const note = notes[String(row.no)] || notes[String(row.md5)] || notes[String(row.id)] || {};
+    return { ...row, id: String(row.id ?? row.resId ?? ''), no: Number(row.no) || 0, ...note };
+  });
+}
+
+export function webStickerCatalog(config) {
+  return webStickerEntries(config).map((row) => ({
+    no: Number(row.no) || 0, id: row.id, md5: row.md5,
+    emotion: EMOTION_LABEL[row.emotion] ?? String(row.emotion ?? ''),
+    content: String(row.content ?? row.desc ?? row.localNote ?? ''),
+    keywords: Array.isArray(row.keywords) ? row.keywords : [],
+    description: String(row.desc ?? ''), localNote: String(row.localNote ?? ''),
+    usage: String(row.usage ?? ''), useCount: Number(row.useCount) || 0,
+  }));
+}
+
+export async function loadWebSticker(config, key) {
+  const entry = pickSticker(webStickerEntries(config), key);
+  if (!entry) return null;
+  if (!entry.file) return stickerBytes(entry, { dir: config.stickers });
+  const root = fs.realpathSync(config.stickersCollected);
+  const file = fs.realpathSync(entry.file);
+  if (!file.startsWith(root + path.sep) || fs.statSync(file).size > 8 * 1024 * 1024) throw new Error('sticker-file-invalid');
+  const bytes = fs.readFileSync(file);
+  const type = imageTypeOf(bytes);
+  if (!type) throw new Error('sticker-type');
+  return { type, bytes };
+}
+
+export function readStickerCatalog(file = stickerFile()) {
   try {
     const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!Array.isArray(rows)) return [];
@@ -72,7 +107,7 @@ export function imageTypeOf(bytes) {
 /** 取表情图片字节：优先本地缓存，没有再下载并写缓存。 */
 export async function stickerBytes(entry, { dir, fetchImpl = fetch, timeoutMs = 8000 } = {}) {
   if (!entry?.url) throw new Error('sticker-url-missing');
-  const key = (entry.md5 || entry.no || 'sticker').replace(/[^a-z0-9_-]/gi, '') || 'sticker';
+  const key = String(entry.md5 || entry.id || entry.no || 'sticker').replace(/[^a-z0-9_-]/gi, '') || 'sticker';
   const base = path.join(dir, key);
   for (const ext of ['.png', '.gif', '.jpg', '.webp']) {
     try {
@@ -82,7 +117,14 @@ export async function stickerBytes(entry, { dir, fetchImpl = fetch, timeoutMs = 
   }
   const response = await fetchImpl(entry.url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`sticker-http-${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const parts = [];
+  let total = 0;
+  for await (const chunk of response.body ?? []) {
+    total += chunk.length;
+    if (total > 8 * 1024 * 1024) throw new Error('sticker-size');
+    parts.push(chunk);
+  }
+  const bytes = Buffer.concat(parts);
   const type = imageTypeOf(bytes);
   if (!type) throw new Error('sticker-type');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

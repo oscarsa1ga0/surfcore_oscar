@@ -497,7 +497,7 @@ export function cosine(a, b) {
  * platform='bili' 只允许 bili/shared；完整卡（QQ）允许其他平台，但排除 sensitive。
  */
 export function rankVectorMemories({
-  query = '', queryVector, index, config = {}, platform = 'qq', now = Date.now(), entryFilter = null,
+  query = '', queryVector, index, config = {}, platform = 'qq', now = Date.now(), entryFilter = null, ownerPrivate = false,
 } = {}) {
   const cfg = normalizeVectorMemoryConfig(config);
   if (!index || !index.manifest || !index.vectors) return [];
@@ -507,7 +507,8 @@ export function rankVectorMemories({
   const entries = index.manifest.entries;
   for (const entry of entries) {
     if (entry.sensitive) continue;
-    if (entry.scope === 'web' && !['web', 'all'].includes(platform)) continue;
+    if (entry.scope === 'web' && !['web', 'all'].includes(platform)
+        && !(platform === 'qq' && ownerPrivate === true)) continue;
     if (typeof entryFilter === 'function' && !entryFilter(entry)) continue;
     if (platform === 'bili' && entry.scope !== 'bili' && entry.scope !== 'shared') continue;
     if (platform === 'pet' && entry.scope !== 'pet' && entry.scope !== 'qq' && entry.scope !== 'shared') continue;

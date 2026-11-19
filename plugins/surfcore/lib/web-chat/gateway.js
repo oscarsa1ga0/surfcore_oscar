@@ -1,11 +1,12 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { json, safeEqual } from '../http-guard.js';
 import { chatError, createWebDsh } from './dsh.js';
 import { openWebChatStore, webId } from './store.js';
-import { parseWebImage, WEB_IMAGE_LIMIT } from './media.js';
+import { parseWebImage, parseWebAudio, WEB_IMAGE_LIMIT, webQuote } from './media.js';
+import { imageTypeOf, loadWebSticker, webStickerCatalog } from './stickers.js';
 import { createWebPurpose } from './purpose.js';
 
 import { WEB_CHAT_API, WEB_CHAT_PORT } from './port.js';
@@ -15,6 +16,8 @@ const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/chat.css', ['chat.css', 'text/css; charset=utf-8']],
   ['/chat.js', ['chat.js', 'text/javascript; charset=utf-8']],
+  ['/fish-cottage.webp', ['fish-cottage.webp', 'image/webp']],
+  ['/fish-seabed.webp', ['fish-seabed.webp', 'image/webp']],
 ]);
 
 export function webReplyError(res, error) {
@@ -45,13 +48,34 @@ async function body(req, limit = 16_384) {
 
 const baseStyle = {
   'X-Content-Type-Options': 'nosniff',
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' blob: data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'Referrer-Policy': 'no-referrer',
   'Cache-Control': 'no-store',
 };
 
+function sendAttachment(req, res, file) {
+  const bytes = Buffer.from(file.bytes);
+  const headers = { 'Content-Type': file.type, 'Content-Length': bytes.length, 'Accept-Ranges': 'bytes' };
+  const range = req.headers.range;
+  if (!range) {
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : bytes);
+    return;
+  }
+  const parts = /^bytes=(\d*)-(\d*)$/.exec(range);
+  const start = parts?.[1] ? Number(parts[1]) : Math.max(0, bytes.length - Number(parts?.[2]));
+  const end = parts?.[1] && parts[2] ? Math.min(Number(parts[2]), bytes.length - 1) : bytes.length - 1;
+  if (!parts || !(parts[1] || parts[2]) || !Number.isSafeInteger(start) || start < 0 || start > end || start >= bytes.length) {
+    res.setHeader('Content-Range', 'bytes */' + bytes.length);
+    throw chatError(416, 'WEB_MEDIA_RANGE', '无法读取请求的附件范围。', '刷新页面后重试播放。');
+  }
+  const chunk = bytes.subarray(start, end + 1);
+  res.writeHead(206, { ...headers, 'Content-Length': chunk.length, 'Content-Range': 'bytes ' + start + '-' + end + '/' + bytes.length });
+  res.end(req.method === 'HEAD' ? undefined : chunk);
+}
+
 export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dispatch, identity, config, context, recall, budget,
-  onMessage, log, readPurposeInputs, readPurposeState, writePurposeState, focus, mood, createServer = http.createServer }) {
+  onMessage, log, guardOutput, makeHandoff, readPurposeInputs, readPurposeState, writePurposeState, focus, mood, notifyDesktop, createServer = http.createServer }) {
   let server;
   let store;
   let agent;
@@ -62,8 +86,32 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
   let origin;
   let token;
   let lastError;
+  let notificationError = '';
+  let notificationTimer;
+  let arrivals = 0;
+
+  function newArrival() {
+    if (!notifyDesktop || !config().desktopNotifications || subscribers.size || focus?.()) return;
+    arrivals++;
+    if (notificationTimer) return;
+    notificationTimer = setTimeout(async () => {
+      notificationTimer = undefined;
+      const count = arrivals;
+      arrivals = 0;
+      if (!store || !config().desktopNotifications || subscribers.size || focus?.()) return;
+      try {
+        await notifyDesktop(count);
+        notificationError = '';
+      } catch (error) {
+        notificationError = '桌面通知发送失败。请检查 macOS 的通知设置。';
+        log('网页桌面通知失败', error);
+      }
+    }, 1000);
+    notificationTimer.unref?.();
+  }
   const pendingPairs = new Map();
   const subscribers = new Set();
+  const imageTickets = new Map();
 
   function onChange() {
     if (changeTimer || !store) return;
@@ -77,12 +125,15 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
   function snapshot(chat, options) {
     const current = store.snapshot(chat, options);
     const role = dispatch.status();
-    return { ...current, name: identity().name, turns: store.recentTurns(chat), run: agent.status(chat),
+    const { executable, model } = config().transcription ?? {};
+    return { ...current, transcriptionEnabled: Boolean(executable && model), name: identity().name, turns: store.messageTurns(chat, current.messages, { live: options?.before == null }), run: agent.status(chat),
       occupied: role.active?.source, error: lastError ?? '' };
   }
 
   function push(subscriber) {
     if (subscriber.res.destroyed) return;
+    if (subscriber.draining) { subscriber.dirty = true; return; }
+    if (!store.hasBrowserSession(subscriber.cookie)) { subscriber.res.destroy(); return; }
     if (subscriber.res.writableLength > 2_000_000) {
       subscriber.res.destroy();
       return;
@@ -95,7 +146,15 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     }
     subscriber.chat = chat;
     subscriber.cursor = value.cursor;
-    subscriber.res.write(`id: ${value.cursor}\ndata: ${JSON.stringify(value)}\n\n`);
+    const writable = subscriber.res.write(`id: ${value.cursor}\ndata: ${JSON.stringify(value)}\n\n`);
+    if (writable === false) {
+      subscriber.draining = true;
+      subscriber.dirty = value.pending;
+      subscriber.res.once('drain', () => {
+        subscriber.draining = false;
+        if (subscriber.dirty) safePush(subscriber);
+      });
+    } else if (value.pending) onChange();
   }
 
   function safePush(subscriber) {
@@ -112,13 +171,26 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     const route = api ? url.pathname.slice(WEB_CHAT_API.length) : url.pathname;
     if (req.method === 'GET' && files.has(route)) {
       const [file, type] = files.get(route);
+      const contents = fs.readFileSync(new URL(`./${file}`, import.meta.url));
       res.writeHead(200, { 'Content-Type': type });
-      res.end(fs.readFileSync(new URL(`./${file}`, import.meta.url)));
+      res.end(contents);
+      return;
+    }
+    if (api && req.method === 'POST' && route === '/model-images' && !req.headers.origin
+        && safeEqual(req.headers.authorization, `Bearer ${token}`)) {
+      const { ticket } = await body(req) ?? {};
+      const access = imageTickets.get(ticket);
+      imageTickets.delete(ticket);
+      if (!access || access.expires <= Date.now()) {
+        throw chatError(403, 'WEB_IMAGE_TICKET', '看图凭证已用过或超时。', '回到当前网页回合重新获取凭证。');
+      }
+      const blocks = await access.read();
+      json(res, 200, { ok: true, blocks });
       return;
     }
     if (api && req.method === 'POST' && route === '/owner-notice' && !req.headers.origin && safeEqual(req.headers.authorization, `Bearer ${token}`)) {
       const input = await body(req, 48_000);
-      if (!config().proactive) throw chatError(409, 'WEB_CARRIER_CHANGED', '网页不是当前主私聊投递目标。');
+      if (!(config().primary ?? config().proactive)) throw chatError(409, 'WEB_CARRIER_CHANGED', '网页不是当前主私聊投递目标。');
       if (input.role && input.role !== identity().role.characterId) {
         throw chatError(409, 'WEB_ROLE_CHANGED', '通知所属的角色已切换。');
       }
@@ -126,7 +198,7 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
         throw chatError(400, 'WEB_NOTICE_INVALID', '通知内容无效。');
       }
       const id = webId(input.id) ? input.id : randomUUID();
-      store.notice(identity().role.characterId, id, input.text);
+      if (store.notice(identity().role.characterId, id, input.text)) newArrival();
       onChange();
       json(res, 201, { ok: true, id });
       return;
@@ -159,50 +231,128 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
       json(res, 200, { ok: true, ...snapshot(chat, { before: Number.isSafeInteger(before) && before > 0 ? before : null }) });
       return;
     }
+    if (req.method === 'GET' && (route === '/search' || route === '/around')) {
+      if (url.searchParams.get('chat') !== chat) throw chatError(409, 'WEB_ROLE_CHANGED', '聊天角色已切换。', '请在当前聊天里重新打开历史。');
+      if (route === '/search') {
+        const query = (url.searchParams.get('q') ?? '').trim();
+        const kind = url.searchParams.get('kind') ?? '';
+        const before = Number(url.searchParams.get('before'));
+        if (query.length > 100 || !['', 'image', 'audio', 'sticker'].includes(kind) || (!query && !kind)) {
+          throw chatError(400, 'WEB_SEARCH_QUERY', '请填写关键词或选择附件类型。', '关键词最多 100 字。');
+        }
+        const result = store.search(chat, query, { kind, before: Number.isSafeInteger(before) && before > 0 ? before : null });
+        json(res, 200, { ok: true, chat, ...result });
+      } else {
+        const id = url.searchParams.get('id');
+        const result = id && id.length <= 200 ? store.around(chat, id) : null;
+        if (!result) throw chatError(404, 'WEB_HISTORY_MISSING', '当前聊天中找不到那条原消息。', '可以用聊天搜索找附近的记录。');
+        json(res, 200, { ok: true, chat, ...result });
+      }
+      return;
+    }
     if (req.method === 'GET' && route === '/events') {
       const cursor = Number(req.headers['last-event-id'] ?? url.searchParams.get('after') ?? 0);
       if (subscribers.size >= 20) throw chatError(429, 'WEB_STREAM_LIMIT', '打开的聊天页太多。', '关闭几个重复的聊天标签页。');
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-      const subscriber = { res, chat: url.searchParams.get('chat'), cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0 };
+      const subscriber = { res, cookie, chat: url.searchParams.get('chat'), cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0 };
       subscribers.add(subscriber);
       res.once('close', () => subscribers.delete(subscriber));
       safePush(subscriber);
       return;
     }
-    if (req.method === 'GET' && route.startsWith('/attachment/')) {
-      const file = store.attachment(chat, route.slice('/attachment/'.length));
-      if (!file) throw chatError(404, 'WEB_IMAGE_MISSING', '图片不存在或不属于当前角色。');
-      res.writeHead(200, { 'Content-Type': file.type, 'Content-Length': file.bytes.length });
-      res.end(file.bytes);
+    if (req.method === 'GET' && route === '/avatar') {
+      const avatarFile = config().avatar ?? path.join(directory, 'avatar.bin');
+      let bytes;
+      try { bytes = fs.readFileSync(avatarFile); } catch { throw chatError(404, 'WEB_AVATAR_MISSING', '头像不存在。'); }
+      res.writeHead(200, { 'Content-Type': imageTypeOf(bytes) || 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'no-store' });
+      res.end(bytes);
       return;
     }
-    if (req.method === 'POST' && route === '/messages') {
-      const data = await body(req, Math.ceil(WEB_IMAGE_LIMIT / 3) * 4 + 120_000);
-      if (data?.chat !== chat || identity().role.characterId !== chat || identity().role.epoch !== profile.role.epoch) {
+    if (['GET', 'HEAD'].includes(req.method) && route.startsWith('/attachment/')) {
+      const file = store.attachment(chat, route.slice('/attachment/'.length));
+      if (!file) throw chatError(404, 'WEB_IMAGE_MISSING', '图片不存在或不属于当前角色。');
+      sendAttachment(req, res, file);
+      return;
+    }
+    if (req.method === 'GET' && route === '/stickers') {
+      json(res, 200, { ok: true, stickers: webStickerCatalog(config()) });
+      return;
+    }
+    if (req.method === 'GET' && route.startsWith('/sticker/')) {
+      let image;
+      try { image = await loadWebSticker(config(), decodeURIComponent(route.slice('/sticker/'.length))); }
+      catch { throw chatError(502, 'WEB_STICKER_FETCH', '表情图暂时取不到。', '稍后再试或换一张。'); }
+      if (!image) throw chatError(404, 'WEB_STICKER_NOT_FOUND', '这张表情已不在目录中。', '重新打开表情面板。');
+      res.writeHead(200, { 'Content-Type': image.type, 'Content-Length': image.bytes.length });
+      res.end(image.bytes);
+      return;
+    }
+
+    function checkRole(requestChat) {
+      const active = identity().role;
+      if (requestChat !== chat || active.characterId !== chat || active.epoch !== profile.role.epoch) {
         throw chatError(409, 'WEB_ROLE_CHANGED', '鱼姬之家当前角色已切换。', '刷新页面后再发送。');
       }
-      const text = typeof data?.text === 'string' ? data.text.trim() : '';
-      const uploads = data?.images ?? [];
-      if (!webId(data?.id) || text.length > 20_000 || !Array.isArray(uploads) || uploads.length > 4 || (!text && !uploads.length)) {
-        throw chatError(400, 'WEB_MESSAGE_INVALID', '请输入文字或添加图片。', '每条最多 20,000 字符和 4 张图片。');
-      }
-      const parsed = uploads.map(parseWebImage);
-      if (parsed.some((item) => !item) || parsed.reduce((sum, item) => sum + item.bytes.length, 0) > WEB_IMAGE_LIMIT) {
-        throw chatError(400, 'WEB_IMAGE_INVALID', '图片格式、尺寸或文件大小不支持。', '请发送 PNG、JPEG、GIF 或 WebP，单条附件合计最多 8 MB。');
-      }
-      let quote = null;
-      if (typeof data.quoteId === 'string' && data.quoteId) {
-        const quoted = store.messageOf(chat, data.quoteId);
-        if (!quoted) throw chatError(400, 'WEB_QUOTE_INVALID', '要引用的消息不存在。', '刷新后再试。');
-        quote = { id: quoted.id, author: quoted.author, text: String(quoted.text || '').slice(0, 200) };
-      }
-      const result = store.enqueue(chat, data.id, { text, files: parsed, quote });
-      if (result.conflict) throw chatError(409, 'WEB_MESSAGE_CONFLICT', '该消息标识已有不同内容。', '刷新页面后重新编辑发送。');
-      const message = store.message(data.id);
-      if (!result.duplicate) { onMessage(message, { chat, epoch: profile.role.epoch }); agent?.onUserMessage?.(); }
+    }
+
+    function acceptMessage(id, data) {
+      const result = store.enqueue(chat, id, data);
+      if (result.conflict) throw chatError(409, 'WEB_MESSAGE_CONFLICT', '该消息标识已有不同内容。', '重新编辑后再发送。');
+      const message = store.message(id);
+      if (!result.duplicate) { onMessage(message, { chat, epoch: profile.role.epoch }); agent.onUserMessage(); }
       onChange();
       void tick();
       json(res, result.duplicate ? 200 : 202, { ok: true, message });
+    }
+
+    if (req.method === 'POST' && route === '/messages') {
+      const data = await body(req, Math.ceil(WEB_IMAGE_LIMIT / 3) * 4 + 120_000);
+      checkRole(data?.chat);
+      const text = typeof data?.text === 'string' ? data.text.trim() : '';
+      const uploads = data.images ?? [];
+      const sticker = typeof data.sticker === 'string' ? data.sticker : '';
+      const audio = data.audio;
+      const poke = data.action === 'poke';
+      if (!webId(data.id) || text.length > 20_000 || !Array.isArray(uploads) || uploads.length > 4
+          || (!text && !uploads.length && !sticker && !audio && !poke)
+          || (Number(Boolean(sticker)) + Number(Boolean(audio)) + Number(poke) + Number(uploads.length > 0) > 1)
+          || (data.action !== undefined && !poke)) {
+        throw chatError(400, 'WEB_MESSAGE_INVALID', '消息内容无效。', '使用文字、最多四张图片、一条语音、一个表情或拍一拍。');
+      }
+      const files = uploads.map(parseWebImage);
+      if (audio) files.push(parseWebAudio(audio));
+      if (files.some((item) => !item) || files.reduce((sum, item) => sum + item.bytes.length, 0) > WEB_IMAGE_LIMIT) {
+        throw chatError(400, audio ? 'WEB_AUDIO_INVALID' : 'WEB_IMAGE_INVALID', '图片或音频格式、尺寸或文件大小不支持。', '附件合计最多 8 MB。图片用 PNG、JPEG、GIF、WebP，音频可尝试 MP3、WAV、M4A 或 WebM。');
+      }
+      if (sticker) {
+        let image;
+        try { image = await loadWebSticker(config(), sticker); }
+        catch { throw chatError(502, 'WEB_STICKER_FETCH', '表情图暂时取不到。', '稍后再试或换一张。'); }
+        checkRole(data.chat);
+        if (!image) throw chatError(404, 'WEB_STICKER_NOT_FOUND', '这张表情已经不在目录中。', '重新打开表情面板。');
+        files.push(image);
+      }
+      let quote = null;
+      if (typeof data.quoteId === 'string' && data.quoteId) {
+        const target = store.messageOf(chat, data.quoteId);
+        if (!target) throw chatError(400, 'WEB_QUOTE_INVALID', '要引用的消息不存在。', '刷新后再试。');
+        quote = webQuote(target);
+      }
+      acceptMessage(data.id, { text: poke ? '（你戳了戳她）' : text, files, quote, action: poke ? 'poke' : sticker ? 'sticker' : '' });
+      return;
+    }
+    if (req.method === 'POST' && route === '/retry') {
+      const data = await body(req);
+      checkRole(data?.chat);
+      const message = store.messageOf(chat, data.id);
+      const [original] = message ? store.messageTurns(chat, [message]) : [];
+      if (original?.state !== 'failed' || !original.retryable) {
+        throw chatError(409, 'WEB_RETRY_UNCERTAIN', '这一轮可能已经执行了操作。', '请在 DSH 核对结果，再发起新消息。');
+      }
+      const id = 'web-retry-' + createHash('sha256').update(message.id).digest('hex');
+      const files = message.attachments.map(({ id: attachmentId }) => store.attachment(chat, attachmentId));
+      if (files.some((file) => !file)) throw chatError(404, 'WEB_RETRY_ATTACHMENT', '重试所需的附件已找不到。', '重新选择附件后发起新消息。');
+      acceptMessage(id, { text: message.text, files, quote: message.quote, action: message.action });
       return;
     }
     if (req.method === 'POST' && route === '/answer') {
@@ -243,7 +393,12 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
         catch (error) { if (error.code !== 'EEXIST') throw error; }
         token = fs.readFileSync(tokenPath, 'utf8').trim();
         if (!/^[a-f0-9]{64}$/.test(token)) throw chatError(503, 'WEB_NOTIFY_TOKEN', '本地通知令牌不可读取。');
-        agent = createWebDsh({ ctx, store, dispatch, identity, config, context, recall, budget, onMessage, onChange, log });
+        agent = createWebDsh({ ctx, store, dispatch, identity, config, context, recall, budget, onChange, log, guardOutput, makeHandoff,
+          onMessage(message, run) {
+            if (message.author === 'assistant') newArrival();
+            onMessage(message, run);
+          },
+        });
         purpose = createWebPurpose({ store, identity, config, readInputs: readPurposeInputs, readState: readPurposeState,
           writeState: writePurposeState, focus, mood, onChange });
         server = createServer((req, res) => {
@@ -281,9 +436,13 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
 
   function stop() {
     clearInterval(timer);
+    clearTimeout(notificationTimer);
+    notificationTimer = undefined;
+    arrivals = 0;
     clearTimeout(changeTimer);
     changeTimer = undefined;
     pendingPairs.clear();
+    imageTickets.clear();
     for (const { res } of subscribers) res.destroy();
     subscribers.clear();
     server?.close();
@@ -305,11 +464,24 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     stop,
     recallFor: (session) => agent?.recallFor(session) || '',
     contextApplies: (session) => agent?.knownSession(session) || false,
-    contextLine: () => agent?.contextLine?.() || '',
-    contextMessages: () => agent?.contextMessages?.() || [],
+    contextMessages: (throughSeq) => agent?.contextMessages(throughSeq) || [],
     sendImage(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.sendImage(args, execution);
+    },
+    imageTicket(args, execution) {
+      if (!agent || !server?.listening) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      const read = agent.imageAccess(args, execution);
+      const now = Date.now();
+      for (const [key, entry] of imageTickets) if (entry.expires <= now) imageTickets.delete(key);
+      if (imageTickets.size >= 32) throw chatError(429, 'WEB_IMAGE_BUSY', '待取的图片太多。', '先读已取得的凭证或稍后再试。');
+      const ticket = randomBytes(32).toString('hex');
+      imageTickets.set(ticket, { read, expires: now + 60_000 });
+      return { ok: true, ticket };
+    },
+    setAvatar(args, execution) {
+      if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
+      return agent.setAvatar(args, execution);
     },
     getContextSnapshot(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
@@ -319,17 +491,17 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.sendMessages(args, execution);
     },
-    collectSticker(args) {
+    collectSticker(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      return agent.collectSticker(args);
+      return agent.collectSticker(args, execution);
     },
-    noteSticker(args) {
+    noteSticker(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      return agent.noteSticker(args);
+      return agent.noteSticker(args, execution);
     },
-    listStickers() {
+    listStickers(execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      return agent.listStickers();
+      return agent.listStickers(execution);
     },
     sendSticker(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
@@ -343,17 +515,17 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.waitMessages(args, execution);
     },
-    listImages() {
+    listImages(execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      return agent.listImages();
+      return agent.listImages(execution);
     },
     poke(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.poke(args, execution);
     },
-    listVoices() {
+    listVoices(execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      return agent.listVoices();
+      return agent.listVoices(execution);
     },
     sendVoice(args, execution) {
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
@@ -363,7 +535,7 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
       if (!agent) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
       return agent.closeTurn(args, execution);
     },
-    status: () => ({ running: Boolean(server?.listening), url: origin ?? '', error: lastError ?? '' }),
+    status: () => ({ running: Boolean(server?.listening), url: origin ?? '', error: lastError ?? '', notificationError }),
     pair() {
       if (!server?.listening) throw chatError(503, 'WEB_DISABLED', '请先启用鱼姬之家。');
       for (const [code, expires] of pendingPairs) if (expires < Date.now()) pendingPairs.delete(code);
@@ -381,7 +553,7 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     },
     notice(text, id = randomUUID()) {
       if (!store || !server?.listening) throw chatError(503, 'WEB_DISABLED', '鱼姬之家未启动。');
-      store.notice(identity().role.characterId, id, text);
+      if (store.notice(identity().role.characterId, id, text)) newArrival();
       onChange();
       return { ok: true, data: { ok: true, messageId: id } };
     },

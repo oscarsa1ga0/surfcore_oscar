@@ -26,7 +26,7 @@ export const BUDGET_VERSION = 1;
 /** 80% 触发提醒；100% 才拦截。 */
 export const ALERT_RATIO = 0.8;
 export const SCOPES = Object.freeze(['qq', 'bili', 'other', 'total']);
-export const CATEGORY_SCOPES = Object.freeze(['qq', 'bili', 'other']);
+export const CATEGORY_SCOPES = Object.freeze(['qq', 'bili', 'other', 'web']);
 export const UNIT_KEYS = Object.freeze(['cny', 'tokens']);
 export const SCOPE_LABELS = Object.freeze({ qq: 'QQ', bili: 'B站', other: '其他', total: '总额' });
 export const UNIT_LABELS = Object.freeze({ cny: '元', tokens: 'token' });
@@ -171,23 +171,24 @@ export function normalizeUsagePair(input) {
   };
 }
 
-/** 三类之和 = 总额。 */
-export function totalsOf(usage) {
-  const qq = normalizeUsagePair(usage?.qq);
-  const bili = normalizeUsagePair(usage?.bili);
-  const other = normalizeUsagePair(usage?.other);
-  return {
-    cost: qq.cost + bili.cost + other.cost,
-    tokens: qq.tokens + bili.tokens + other.tokens
-  };
+function addUsage(left, right) {
+  return { cost: left.cost + right.cost, tokens: left.tokens + right.tokens };
 }
 
-/** 统一成 `{qq,bili,other,total}`（每个都带 cost/tokens）。 */
+export function totalsOf(usage) {
+  return CATEGORY_SCOPES.reduce((total, scope) => addUsage(total, normalizeUsagePair(usage?.[scope])), { cost: 0, tokens: 0 });
+}
+
 export function normalizeUsage(input) {
   const out = {};
   for (const scope of CATEGORY_SCOPES) out[scope] = normalizeUsagePair(input?.[scope]);
   out.total = totalsOf(out);
   return out;
+}
+
+// 网页保留独立的显示统计，仍消耗现有的「其他」和总额度。
+function usageForLimit(usage, scope) {
+  return scope === 'other' ? addUsage(usage.other, usage.web) : usage[scope];
 }
 
 export function localDayStart(now = Date.now()) {
@@ -280,7 +281,7 @@ export function readDailyUsage(dir, day = localDayKey()) {
   };
 }
 
-/** 写当天用量快照；total 永远由三类相加得出，避免调用方漏算。 */
+/** 写当天用量快照；total 永远由各渠道相加得出，避免调用方漏算。 */
 export function writeDailyUsage(dir, usage, { day = localDayKey(), at = Date.now(), source = 'surfcore-plugin', sessions } = {}) {
   const normalized = normalizeUsage(usage);
   const record = {
@@ -290,6 +291,7 @@ export function writeDailyUsage(dir, usage, { day = localDayKey(), at = Date.now
     qq: normalized.qq,
     bili: normalized.bili,
     other: normalized.other,
+    web: normalized.web,
     total: normalized.total,
     sessions: isPlainObject(sessions) ? sessions : {}
   };
@@ -316,7 +318,7 @@ export function allRatios(usage, limits) {
   const normalized = normalizeUsage(usage);
   const out = {};
   for (const scope of SCOPES) {
-    out[scope] = limitRatios(normalized[scope], limits?.[scope]);
+    out[scope] = limitRatios(usageForLimit(normalized, scope), limits?.[scope]);
   }
   return out;
 }
@@ -363,7 +365,7 @@ export function collectHits(usage, limits, { threshold = 1, scopes = SCOPES } = 
   const out = [];
   for (const scope of SCOPES) {
     if (!scopes.includes(scope)) continue;
-    const usedPair = normalized[scope];
+    const usedPair = usageForLimit(normalized, scope);
     const limitPair = normalizeLimitPair(limits?.[scope]);
     for (const unit of UNIT_KEYS) {
       const limit = limitPair[unit];

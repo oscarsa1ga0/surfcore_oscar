@@ -19,6 +19,7 @@ const tests = [
   // scripts/test-dsh-session-retire.mjs）。
   'test-dsh-inbox-projection.mjs', 'test-role-dispatch.mjs',
   '../plugins/surfcore/scripts/test-web-chat.mjs',
+  '../plugins/surfcore/scripts/test-web-memory-sync.mjs', '../plugins/surfcore/scripts/test-web-browser.mjs', '../plugins/surfcore/scripts/test-web-recovery.mjs',
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
   // DSH 端口漂移兜底：401/200+SERVER 才算 DSH、别的 Web 服务不算、回环之外不覆盖。
   'test-dsh-port.mjs',

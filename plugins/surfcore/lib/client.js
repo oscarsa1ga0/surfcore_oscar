@@ -1989,18 +1989,23 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const [error, setError] = useState("");
       const [working, setWorking] = useState(false);
       const [pair, setPair] = useState("");
-      const load = () => api("/web-chat").then(setStatus).catch((e) => setError(e.message));
+      const [transcription, setTranscription] = useState({ executable: "", model: "" });
+      const load = () => api("/web-chat").then((result) => {
+        setStatus(result);
+        setTranscription(result.transcription || {});
+      }).catch((e) => setError(e.message));
       useEffect(() => { void load(); }, []);
-      const update = async (action) => {
+      const update = async (action, fields = {}) => {
         setWorking(true);
         setError("");
         setPair("");
         try {
-          const result = await api("/web-chat", { method: "POST", body: { action } });
+          const result = await api("/web-chat", { method: "POST", body: { action, ...fields } });
           if (action === "pair") {
             if (!result.opened) setPair(result.url);
           } else {
             setStatus(result);
+            if (action === "transcription") setTranscription(result.transcription || {});
             if (['primary', 'rollback'].includes(action)) await reload();
           }
         } catch (e) { setError([e.message, e.hint].filter(Boolean).join(" · ")); }
@@ -2018,6 +2023,19 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("rollback"), disabled: working }, "切回 QQ 私聊投递")
             : active ? h(Btn, { kind: "qbw-btn2", onClick: () => update("primary"), disabled: working }, "切换到网页私聊投递") : null,
           active && !primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("disable"), disabled: working }, "停用本机聊天") : null),
+        status?.desktopSupported ? h("div", { className: "qbw-actions" },
+          h(Btn, { kind: "qbw-btn2", disabled: working, onClick: () => update("notifications", { enabled: !status.desktopNotifications }) },
+            status.desktopNotifications ? "关闭关页到达通知" : "开启关页到达通知"),
+          h("span", null, "网页关闭、DSH 运行时可收到 macOS 通知。")) : null,
+        status?.notificationError ? h("div", { className: "qbw-warnbox", role: "alert" }, status.notificationError) : null,
+        h("details", null,
+          h("summary", null, "本地语音转写"),
+          h("p", null, "配置 whisper-cli 和多语种模型后，鱼姬可以阅读语音转写。留空时可发送语音并附上文字。"),
+          ...[["executable", "whisper-cli 绝对路径"], ["model", "模型文件绝对路径"]].map(([key, label]) =>
+            h("label", { key }, label, h("input", { type: "text", value: transcription[key] ?? "", disabled: working,
+              onChange: (event) => setTranscription({ ...transcription, [key]: event.target.value }) }))),
+          h("div", { className: "qbw-actions" },
+            h(Btn, { onClick: () => update("transcription", transcription), disabled: working || !status }, "保存转写设置"))),
         pair ? h("a", { href: pair, target: "_blank", rel: "noreferrer" }, "在浏览器打开一次性配对链接") : null,
         error || status?.error ? h("div", { className: "qbw-warnbox", role: "alert" }, error || status.error) : null);
     }
@@ -3807,6 +3825,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         const k = String(c.key ?? "");
         if (k.startsWith("group:")) return `群 ${k.slice(6)}`;
         if (k.startsWith("private:")) return `私聊 ${k.slice(8)}`;
+        if (k === "web") return "网页";
         return k;
       };
 
@@ -6489,6 +6508,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       // 旧写法点了只改 unified.__biliToQqToggle，checked 却读 qq 快照 → 点完立刻弹回（PITFALLS #16）。
       const biliToQqDraft = typeof unified?.__biliToQqToggle === "boolean" ? unified.__biliToQqToggle : biliToQq;
       const qqToBili = unified?.memory?.qqToBili ?? {};
+      const webPrimary = qq?.purpose?.carrier === "web";
       const setQqToBili = (key, value) => setUnified(["memory", "qqToBili", key], value);
       const syncNow = async () => {
         setBusy("sync");
@@ -6600,16 +6620,16 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "QQ 号/群号/B站 mid 不写进记忆正文；生成后还要过一遍 assertSafeOutput，命中就拒绝落盘。"),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
-            h("h4", null, "B站 → QQ"),
+            h("h4", null, webPrimary ? "B站 → 鱼姬之家" : "B站 → QQ"),
             h("p", null, "默认开启，保持原行为。B站只读公开打分/评论/收藏/公开动态/日记公开见闻；不读任何私信。"),
-            h(Row, { label: "同步 B站记忆到 QQ", hint: "关掉 = QQ 侧的她不提 B站经历" },
+            h(Row, { label: "同步 B站记忆", hint: "控制聊天中是否注入 B 站简报和相关回忆" },
               h("input", { className: "qbw-switch", type: "checkbox", checked: biliToQqDraft, onChange: (e) => {
                 // 保存时由 normalizedQq 落到 biliBridge.memory.enabled（见主组件）。
                 setUnified(["__biliToQqToggle"], e.target.checked);
               } })),
             h("div", { className: "qbw-hint" }, `状态：${biliToQqDraft ? "开" : "关"} · 简报 ${status.biliToQq?.briefChars ?? 0} 字 · ${fmtTime(status.biliToQq?.generatedAt)}`),
             h("div", { className: "qbw-kv" }, h("span", null, "隐私复检"), h("span", null, status.biliToQq?.blocked ? "命中拦截" : "通过")),
-            h("div", { className: "qbw-hint" }, "保存后需重启 QQ 桥接才生效（底部「保存并重启 QQ 桥接」）。"),
+            h("div", { className: "qbw-hint" }, webPrimary ? "保存后由 SurfCore 更新 B 站简报。" : "保存后重启 QQ 桥接即可生效。"),
             h("div", { className: "qbw-actions" },
               h(Btn, { kind: "qbw-btn2", onClick: async () => {
                 setBusy("refresh-bili");
@@ -6617,14 +6637,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               }, disabled: !!busy }, "立即刷新"))),
           h("div", { className: "qbw-card" },
             h("h4", null, "QQ → B站"),
-            h("p", null, "默认关闭。只读白名单群里的公开消息；私信、命令、媒体消息不会进入。"),
+            h("p", null, webPrimary ? "网页主聊期间，B 站接续鱼姬之家近况。QQ 群近况同步暂停。" : "默认关闭。只读白名单群里的公开消息。"),
             h(Row, { label: "同步 QQ 记忆到 B站", hint: "开启后 B站每次醒来会看到群里的近况（已脱敏）" },
               h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.enabled === true, onChange: (e) => setQqToBili("enabled", e.target.checked) })),
             h("div", { className: "qbw-kv" }, h("span", null, "上次同步"), h("span", null, fmtTime(status.qqToBili?.last?.at))),
             h("div", { className: "qbw-kv" }, h("span", null, "保留条数 / 字数"), h("span", null, `${status.qqToBili?.last?.kept ?? 0} 条 / ${status.qqToBili?.chars ?? 0} 字`)),
             h("div", { className: "qbw-kv" }, h("span", null, "丢弃（隐私/命令/媒体）"), h("span", null, status.qqToBili?.last?.dropped ?? 0)),
             h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: syncNow, disabled: !!busy || qqToBili.enabled !== true }, busy === "sync" ? "同步中…" : "立即同步"),
+              h(Btn, { onClick: syncNow, disabled: !!busy || webPrimary || qqToBili.enabled !== true }, busy === "sync" ? "同步中…" : "立即同步"),
               h(Btn, { kind: "qbw-btn2", onClick: scan, disabled: !!busy }, "扫描身份候选"),
               h(Btn, { kind: "qbw-btn2", onClick: purge, disabled: !!busy }, busy === "purge" ? "清理中…" : "清空 QQ→B站 记忆")))),
         h(AdvancedSettings, { note: "记忆卡规则 / 最近记忆 / 全量卡 / 同步范围 / 注入预览 / 审计：展开后同样可改" },
@@ -7569,6 +7589,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         return h("div", { className: "qbw-hint" }, "正在读取额度与今日用量…");
       }
       const usage = budget.usage ?? {};
+      const otherUsage = {
+        cost: (Number(usage.other?.cost) || 0) + (Number(usage.web?.cost) || 0),
+        tokens: (Number(usage.other?.tokens) || 0) + (Number(usage.web?.tokens) || 0),
+      };
       const ratios = budget.ratios ?? {};
       const blocked = budget.blocked ?? {};
       const totalPair = limits.total ?? { cny: null, tokens: null };
@@ -7589,7 +7613,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("b", null, fmtMoney(usage.total?.cost)),
               h("span", null, `${fmtTokenNum(usage.total?.tokens)} token`)),
             h("div", { className: "qbw-hint" },
-              "数据来源：DSH session/event 实时累计（QQ + B站 + 黑话学习等）。",
+              "数据来源：DSH session/event 实时累计（QQ + 鱼姬之家 + B站 + 黑话学习等）。",
               totalPair.cny != null || totalPair.tokens != null
                 ? ` 总额度已用 ${fmtPercent(totalRatio)}。`
                 : " 还没设总额度。")),
@@ -7624,8 +7648,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(BudgetScopeCard, {
             scope: "other",
             title: "其他花费",
-            subtitle: "黑话学习 / 黑话研究等后台任务；也计入 SurfCore 总额。",
-            usage: usage.other,
+            subtitle: "鱼姬之家、黑话学习等共用其他额度，也计入 SurfCore 总额。",
+            usage: otherUsage,
             limits,
             ratios: ratios.other,
             blocked: blocked.other,

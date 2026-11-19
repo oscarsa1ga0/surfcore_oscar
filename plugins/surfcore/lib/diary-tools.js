@@ -59,9 +59,9 @@ function textTool(name, description, parameters, handler) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args) {
+    async execute(args, execution) {
       try {
-        const result = await handler(args && typeof args === 'object' ? args : {});
+        const result = await handler(args && typeof args === 'object' ? args : {}, execution);
         return JSON.stringify(result);
       } catch (error) {
         return JSON.stringify({ ok: false, error: String(error?.message ?? error) });
@@ -86,7 +86,7 @@ function resolveCurrent(args) {
   return { ...current, diaryDir: path.join(current.dir, 'diary') };
 }
 
-export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => ({}), recordEmotion = () => {} } = {}) {
+export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => ({}), sourceForExecution = () => '', recordEmotion = () => {} } = {}) {
   const feeling = {
     type: 'string', enum: ['reflected', 'relieved', 'unsettled'],
     description: '仅在写完这段确实有了新的感受时填写：有了新想法、释怀、或更在意。用的是写作带来变化，避免重新计算日记里记述的经历。',
@@ -110,10 +110,10 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
         tags: TAGS,
         visibility: { type: 'string', enum: ['private', 'shareable'], description: '默认 private（只给自己）；shareable 表示这篇你愿意整篇给主人看。追加时沿用原篇的可见性。' },
         afterWriting: feeling,
-        source: { type: 'string', description: '来源标记，如 qq/bili/pet/manual；默认 manual。' },
+        source: { type: 'string', description: '来源标记，如 web/qq/bili/pet/manual；网页会自动标记。' },
         characterId: CHARACTER_ID,
       },
-      (args) => {
+      (args, execution) => {
         const current = resolveCurrent(args);
         const day = pickString(args, 'date', 10) || localDay();
         // 默认「一天一篇」：当天已经有日记就追加到最后一篇，避免她每次想到什么都新开一篇。
@@ -141,7 +141,7 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
           date: pickString(args, 'date', 10),
           tags: args.tags,
           visibility: args.visibility,
-          source: pickString(args, 'source', 32) || 'manual',
+          source: sourceForExecution(execution) || pickString(args, 'source', 32) || 'manual',
           characterId: current.id,
         });
         return noteFeeling(current, localizeResult(result), args.afterWriting);
@@ -153,17 +153,17 @@ export function createDiaryToolDefinitions({ log = () => {}, getConfig = () => (
       '把今天值得以后回顾的一件事暂存成候选（一句话即可），晚上整理时再决定写不写。普通寒暄、重复信息不用记；不要每轮都记。',
       {
         note: { type: 'string', description: '一句话：发生了什么、为什么值得留（最多 500 字）。', required: true },
-        source: { type: 'string', description: '来源标记，如 qq/bili/pet；默认 qq。' },
+        source: { type: 'string', description: '来源标记，如 web/qq/bili/pet；网页会自动标记。' },
         tags: TAGS,
         characterId: CHARACTER_ID,
       },
-      (args) => {
+      (args, execution) => {
         const current = resolveCurrent(args);
         const cfg = getConfig() ?? {};
         if (cfg.captureEnabled === false) throw new Error('自主暂存候选已关闭（设置 → SurfCore → 日记 → 允许自主暂存候选）');
         return captureCandidate(current.diaryDir, {
           note: args.note,
-          source: pickString(args, 'source', 32) || 'qq',
+          source: sourceForExecution(execution) || pickString(args, 'source', 32) || 'qq',
           tags: args.tags,
           characterId: current.id,
         });

@@ -332,6 +332,8 @@ export function createEmptyCard(now = Date.now()) {
     meta: {
       inboxSeen: [],
       sourceSeen: [],
+      manuallyForgottenBili: [],
+      biliCapacityRecovered: false,
       firstOwnerRecordId: '',
       // 「最初」窗口从第一次和主人互动开始；firstMet* 是用户可指定的“初次相遇”事件。
       firstOwnerAt: '',
@@ -386,17 +388,12 @@ export function normalizeCard(raw) {
   };
   card.meta.inboxSeen = asArray(card.meta.inboxSeen).map(String).slice(-5000);
   card.meta.sourceSeen = asArray(card.meta.sourceSeen).map(String).slice(-5000);
+  card.meta.manuallyForgottenBili = asArray(card.meta.manuallyForgottenBili).map(String).filter(Boolean);
   card.meta.firstMetRecordIds = asArray(card.meta.firstMetRecordIds).map(String).filter(Boolean).slice(0, 20);
   card.alerts.lastNotified = asObject(card.alerts.lastNotified);
   for (const item of asArray(input.records)) {
     const rec = normalizeRecord(item);
     if (rec) card.records.push(rec);
-  }
-  if (card.records.length > 2000) {
-    // 超大手写/迁移卡：先保 pinned（最早的事、主人锚点），再留最近的部分。
-    const pinned = card.records.filter((record) => record.pinned);
-    const rest = card.records.filter((record) => !record.pinned).slice(-Math.max(0, 2000 - pinned.length));
-    card.records = [...pinned, ...rest].sort((a, b) => timeOf(a.createdAt, 0) - timeOf(b.createdAt, 0));
   }
   // 旧卡没有「最初」字段：读盘时按首次主人互动补齐（确定性，不会每次刷新随机变）。
   refreshInitialState(card);
@@ -1292,6 +1289,23 @@ function findDuplicate(card, record) {
     && Math.abs(timeOf(item.createdAt, created) - created) <= windowMs) ?? null;
 }
 
+function protectedMemory(record, cfg) {
+  return record.pinned || record.isInitial || ownerImportant(record, cfg);
+}
+
+function priorityOrder(a, b) {
+  return (b.importance - a.importance) || (timeOf(b.createdAt, 0) - timeOf(a.createdAt, 0));
+}
+
+function biliReserveSize(cfg) {
+  return Math.max(10, Math.ceil(cfg.maxRecords / 8));
+}
+
+function biliReserve(records, cfg) {
+  return new Set(records.filter((record) => record.platform === 'bili' && !record.sensitive)
+    .sort(priorityOrder).slice(0, biliReserveSize(cfg)).map(({ id }) => id));
+}
+
 /** 加入一条记录；重复的只刷新 lastSeenAt，不重复占容量。 */
 export function addMemoryRecord(card, input, config = {}, now = Date.now()) {
   const cfg = normalizeMemoryCardConfig(config);
@@ -1307,16 +1321,17 @@ export function addMemoryRecord(card, input, config = {}, now = Date.now()) {
   card.records.push(record);
   card.stats.ingested = (Number(card.stats.ingested) || 0) + 1;
   card.updatedAt = iso(now);
-  // 条数上限：先丢最不重要、最老的（pinned / 主人重要记忆不动）。
   if (card.records.length > cfg.maxRecords) {
-    const removable = card.records
-      .filter((item) => !item.pinned && !item.isInitial && !(item.tags.includes('owner') && item.importance >= cfg.minOwnerImportance))
-      .sort((a, b) => (a.importance - b.importance) || (timeOf(a.createdAt, 0) - timeOf(b.createdAt, 0)));
-    while (card.records.length > cfg.maxRecords && removable.length) {
-      const victim = removable.shift();
-      card.records = card.records.filter((item) => item.id !== victim.id);
-      card.stats.forgotten = (Number(card.stats.forgotten) || 0) + 1;
-    }
+    // 主人锚点占满时，仍为 B 站经历保留一小段空间。正常情况下预留占用原预算。
+    const reserve = biliReserve(card.records, cfg);
+    const fixed = card.records.filter((item) => protectedMemory(item, cfg) || reserve.has(item.id));
+    const ids = new Set(fixed.map(({ id }) => id));
+    const room = Math.max(0, cfg.maxRecords - fixed.length);
+    const retained = card.records.filter((item) => !ids.has(item.id)).sort(priorityOrder).slice(0, room);
+    for (const item of retained) ids.add(item.id);
+    const before = card.records.length;
+    card.records = card.records.filter((item) => ids.has(item.id));
+    card.stats.forgotten = (Number(card.stats.forgotten) || 0) + before - card.records.length;
   }
   return { added: true, record };
 }
@@ -1374,7 +1389,7 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
         const recent = card.records
           .filter((record) => record.source === `${privatePlatform}-owner`
             && !record.botReply
-            && (privatePlatform !== 'web' || (item.replyTo && record.sourceId === `web:${item.replyTo}`))
+            && (privatePlatform !== 'web' || (item.replyTo && [`web:${item.replyTo}`, `web:${item.replyTo}:audio`].includes(record.sourceId)))
             && Math.abs(at - timeOf(record.createdAt, 0)) <= cutoff)
           .sort((a, b) => timeOf(b.createdAt, 0) - timeOf(a.createdAt, 0))[0];
         if (recent) {
@@ -1545,12 +1560,14 @@ export function ingestBiliEntries(card, entries, config = {}, now = Date.now()) 
   const cfg = normalizeMemoryCardConfig(config);
   let added = 0;
   const seen = new Set(card.meta.sourceSeen);
+  const forgotten = new Set(card.meta.manuallyForgottenBili);
   const list = asArray(entries);
+
   for (const entry of list) {
     if (added >= 300) break;
     if (!entry || typeof entry !== 'object') continue;
     const sourceId = String(entry.id ?? '').trim();
-    if (!sourceId || seen.has(sourceId)) continue;
+    if (!sourceId || seen.has(sourceId) || forgotten.has(sourceId)) continue;
     seen.add(sourceId);
     const ownVideo = (entry.own === true && entry.ownKind === 'video') || (entry.type === 'video' && entry.source === 'video-project');
     const type = ownVideo ? 'video' : String(entry.type ?? 'video');
@@ -1736,9 +1753,8 @@ export function compactMemoryCard(card, config = {}, { targetRatio = 0.85, now =
   while (guard++ < 5000) {
     const chars = renderMemoryCard(card, { config: cfg, full: true, now }).length;
     if (chars <= targetChars) break;
-    const candidates = card.records.filter((record) => !record.pinned
-      && !record.isInitial
-      && !(record.tags.includes('owner') && record.importance >= cfg.minOwnerImportance));
+    const reserve = biliReserve(card.records, cfg);
+    const candidates = card.records.filter((record) => !protectedMemory(record, cfg) && !reserve.has(record.id));
     if (!candidates.length) break;
     candidates.sort((a, b) => {
       const importance = (Number(a.importance) || 0) - (Number(b.importance) || 0);
@@ -1830,7 +1846,13 @@ function allowedGroupIdsFor(conversationKey, sharing) {
   return allowed;
 }
 
-function visibleFor(card, platform, cfg, conversationKey = '', runtimeSharing = {}) {
+/** While web is primary, leave recent QQ events out of new prompts. Historical records remain on disk. */
+export function isRecentQqMemory(record, recentDays, now = Date.now()) {
+  return (record.platform === 'qq' || record.scope === 'qq') && record.source !== 'manual'
+    && timeOf(record.createdAt, 0) >= now - recentDays * DAY_MS;
+}
+
+function visibleFor(card, platform, cfg, conversationKey = '', runtimeSharing = {}, now = Date.now()) {
   const current = String(conversationKey ?? '').trim();
   const currentGroup = /^group:(\d+)$/.exec(current)?.[1] ?? '';
   const currentPrivate = current.startsWith('private:');
@@ -1842,12 +1864,15 @@ function visibleFor(card, platform, cfg, conversationKey = '', runtimeSharing = 
     // 完整卡（platform='all'）保留敏感条目供管理员查看；注入提示词的 QQ / B站 两版都排除。
     if (record.sensitive) return platform === 'all';
     if (platform === 'web') {
+      if (sharing.excludeRecentQq && isRecentQqMemory(record, cfg.recentDays, now)) return false;
       if (['web', 'pet', 'shared', 'bili'].includes(record.scope)) return true;
       if (!recordIsPrivate(record)) return false;
       const key = String(record.conversationKey ?? '');
       return key ? key === sharing.ownerPrivateKey : (record.isOwner === true || record.source === 'qq-owner');
     }
-    if (record.scope === 'web' || record.platform === 'web') return platform === 'all';
+    if (record.scope === 'web' || record.platform === 'web') {
+      return platform === 'all' || (platform === 'qq' && currentPrivate && current === sharing.ownerPrivateKey);
+    }
     if (platform === 'bili') {
       if (record.scope === 'bili' || record.scope === 'shared') return true;
       return cfg.includeQqInBili && record.scope === 'qq';
@@ -1895,7 +1920,7 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
   const cfg = normalizeMemoryCardConfig(config);
   const sharing = { ...(cfg.sharing ?? {}), ...(runtimeSharing ?? {}) };
   const current = String(conversationKey ?? '').trim();
-  const visible = visibleFor(card, platform, cfg, conversationKey, runtimeSharing);
+  const visible = visibleFor(card, platform, cfg, conversationKey, runtimeSharing, now);
   const firstMet = [];
   const anchors = [];
   const privateGroup = [];
@@ -2162,7 +2187,7 @@ export function saveMemoryCardOutputs(paths, card, config = {}, now = Date.now()
   }
   // 主人私聊即使还没有自己的记录，也要生成块；否则开启“私聊读群记忆”后第一句私聊读不到。
   const ownerKey = String(sharing.ownerPrivateKey ?? '');
-  if (sharing.privateReadsGroups === true && /^private:\d+$/.test(ownerKey)) keys.add(ownerKey);
+  if (/^private:\d+$/.test(ownerKey)) keys.add(ownerKey);
   const blocks = {};
   for (const key of keys) {
     blocks[key] = renderMemoryCard(card, {
@@ -2215,6 +2240,19 @@ export function maintainMemoryCard({
   const fullCfg = normalizeMemoryCardConfig(fullConfig ?? config);
   let card = loadMemoryCard(paths) || createEmptyCard(now);
   let changed = false;
+  // 旧版容量淘汰会留下去重标记。只在可确认的挤空状态下补回最近的公开索引。
+  if (!card.meta.biliCapacityRecovered && card.records.length >= cfg.maxRecords
+      && card.records.every((record) => protectedMemory(record, cfg))
+      && Number(card.stats.fromBili) > 0 && biliEntries.length) {
+    const cutoff = now - cfg.recentDays * DAY_MS;
+    const recent = biliEntries.filter((entry) => entry?.shareable === true && timeOf(entry.at, timeOf(entry.date, 0)) >= cutoff);
+    const recoverable = new Set(recent.map(({ id }) => String(id ?? '')));
+    if (recoverable.size) {
+      card.meta.sourceSeen = card.meta.sourceSeen.filter((id) => !recoverable.has(id));
+      card.meta.biliCapacityRecovered = true;
+      changed = true;
+    }
+  }
   const bili = ingestBiliEntries(card, biliEntries, cfg, now);
   if (bili.added) changed = true;
   const qq = ingestInboxLines(card, inboxLines, cfg, now);

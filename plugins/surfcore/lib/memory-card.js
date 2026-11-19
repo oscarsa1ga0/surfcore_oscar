@@ -412,6 +412,10 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
     } else if (action === 'forget') {
       const id = String(payload.id ?? '');
       const before = card.records.length;
+      const record = card.records.find((item) => item.id === id);
+      if (record?.platform === 'bili' && record.sourceId) {
+        card.meta.manuallyForgottenBili = [...new Set([...card.meta.manuallyForgottenBili, record.sourceId])];
+      }
       card.records = card.records.filter((item) => item.id !== id);
       if (card.records.length === before) {
         return { ok: false, code: 'MEMORY_NOT_FOUND', error: '记忆不存在', hint: '刷新记忆卡后重试；如果它已被自动清理，不用重复操作' };
@@ -490,11 +494,16 @@ export function restoreMemoryCardBackup(name, { config = memoryCardConfig(), now
 }
 
 /** B站调度器 / 调试用：读现成的 B站 注入块（mtime 缓存，避免每次重复读盘）。 */
-export function memoryCardPromptBlock(platform = 'bili') {
+export function memoryCardPromptBlock(platform = 'bili', { publicOnly = false, excludeRecentQq = false } = {}) {
+  if (platform === 'bili' && publicOnly) {
+    const config = memoryCardConfig();
+    if (config.enabled === false) return '';
+    return renderMemoryCard(readCardSafe(), { config: { ...config, includeQqInBili: false }, platform, maxChars: config.injectMaxChars.bili });
+  }
   if (platform === 'web') {
     const config = memoryCardConfig();
     if (config.enabled === false) return '';
-    return renderMemoryCard(readCardSafe(), { config, platform, maxChars: config.injectMaxChars.qq, runtimeSharing: memoryCardRuntimeSharing() });
+    return renderMemoryCard(readCardSafe(), { config, platform, maxChars: config.injectMaxChars.qq, runtimeSharing: { ...memoryCardRuntimeSharing(), excludeRecentQq } });
   }
   const paths = pathsNow();
   const file = platform === 'bili' ? paths.promptBili : paths.promptQq;

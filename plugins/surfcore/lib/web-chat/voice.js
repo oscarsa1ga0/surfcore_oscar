@@ -1,9 +1,13 @@
 // 网页私聊的语音：复用 SurfCore 的 TTS 配置（socialV2.voice.tts）和 src/voice-tts.js 的内容寻址缓存。
 // 合成结果按 wav 字节存进聊天附件，页面用 <audio> 播放；不依赖 QQ 桥接进程。
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { readQqConfig } from '../store.js';
-import { synthesizeToFile } from '../../../../src/voice-tts.js';
+import { synthesizeToFile, wavDurationMs } from '../../../../src/voice-tts.js';
 
 /** 语音语气：和 QQ 桥接的 VOICE_TONES 完全一致（8 个名字 + intensity 0~1）。 */
 export const VOICE_TONES = {
@@ -64,9 +68,13 @@ export function voiceSettings(config = readQqConfig()?.config ?? {}) {
 }
 
 const AUDIO_TYPE = [
-  { type: 'audio/wav', test: (b) => b.toString('ascii', 0, 4) === 'RIFF' },
-  { type: 'audio/mpeg', test: (b) => b.toString('ascii', 0, 3) === 'ID3' || (b[0] === 0xff && b[1] === 0xf0) },
+  { type: 'audio/wav', test: (b) => b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WAVE' },
+  { type: 'audio/mpeg', test: (b) => b.toString('ascii', 0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 6) !== 0) },
   { type: 'audio/ogg', test: (b) => b.toString('ascii', 0, 4) === 'OggS' },
+  { type: 'audio/mp4', test: (b) => b.toString('ascii', 4, 8) === 'ftyp' },
+  { type: 'audio/flac', test: (b) => b.toString('ascii', 0, 4) === 'fLaC' },
+  { type: 'audio/webm', test: (b) => b.subarray(0, 4096).includes(Buffer.from('A_OPUS')) },
+  { type: 'audio/aac', test: (b) => b[0] === 0xff && (b[1] & 0xf6) === 0xf0 },
 ];
 
 export function audioTypeOf(bytes) {
@@ -131,6 +139,31 @@ export function readVoiceFile(dir, name) {
   const root = fs.realpathSync(dir);
   const file = fs.realpathSync(path.resolve(root, String(name ?? '')));
   if (!file.startsWith(root + path.sep)) throw new Error('路径不在语音库内');
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new Error('语音文件必须小于 8 MB。');
   const bytes = fs.readFileSync(file);
   return { type: audioTypeOf(bytes), bytes };
+}
+
+
+const run = promisify(execFile);
+
+/** 可选的本地 Whisper，语音和转写均留在本机。 */
+export async function transcribeWebAudio(audio, config, signal) {
+  const { executable, model } = config.transcription ?? {};
+  if (!executable || !model) return { text: '', clipped: false };
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'surfcore-web-asr-'));
+  try {
+    const input = path.join(dir, 'source');
+    const wav = path.join(dir, 'speech.wav');
+    const output = path.join(dir, 'transcript');
+    await fsp.writeFile(input, audio.bytes, { mode: 0o600 });
+    await run(config.ffmpeg || 'ffmpeg', ['-nostdin', '-v', 'error', '-i', input,
+      '-map', '0:a:0', '-t', '90', '-ac', '1', '-ar', '16000', wav], { timeout: 12_000, signal });
+    await run(executable, ['-m', model, '-f', wav, '-l', 'zh', '-otxt', '-of', output], { timeout: 45_000, signal });
+    const transcript = (await fsp.readFile(output + '.txt', 'utf8')).trim();
+    return { text: transcript.slice(0, 2000), clipped: wavDurationMs(await fsp.readFile(wav)) >= 90_000 || transcript.length > 2000 };
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
 }

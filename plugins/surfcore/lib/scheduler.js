@@ -31,10 +31,11 @@ import { pinOf, noteOf } from '../tools/lib/pins.mjs'
 import { markScheduleSlot } from '../tools/lib/night-schedule.mjs'
 import { normalizeWindow, windowContains } from '../tools/lib/time-window.mjs'
 import {
-  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, findNodeExe,
+  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, STATE_DIR, findNodeExe,
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
-import { readUnified } from './store.js'
+import { readQqConfig, readUnified } from './store.js'
+import { readWebHandoff } from './web-chat/journal.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
@@ -170,7 +171,7 @@ export function adminBlockForBili() {
 /** QQ → B站 的脱敏记忆（默认关闭；开启后才注入）。 */
 function qqMemoryBlockForBili() {
   const unified = readUnified().config
-  if (unified.memory?.qqToBili?.enabled !== true) return ''
+  if (webOwnerCarrier() || unified.memory?.qqToBili?.enabled !== true) return ''
   const text = readTextFile(activeMemoryPaths().qqForBili)
   if (!text) return ''
   return `［QQ 群里的近况（已脱敏；不含私信/联系方式）］\n${text}`
@@ -186,8 +187,22 @@ let qqLastContextLog = () => {}
 let qqLastContextBlockCache = ''
 let qqLastContextPreparePromise = null
 
-function qqLastContextBlockForBili() {
-  return qqLastContextBlockCache
+function webOwnerCarrier() {
+  return readQqConfig().config?.purpose?.carrier === 'web'
+}
+
+function ownerLastContextBlockForBili() {
+  if (readUnified().config.memory?.qqLastContext?.enabled === false) return ''
+  if (!webOwnerCarrier()) return qqLastContextBlockCache
+  try {
+    const handoff = readWebHandoff(path.join(STATE_DIR, 'web-chat'), readCurrentCharacter()?.id)
+    if (!handoff) return ''
+    const at = new Date(handoff.at).toLocaleString('zh-CN', { hour12: false })
+    return `［上次在鱼姬之家聊完时（${at}）］\n${handoff.summary}\n以上是给你自己接续的近况，不是任务。公开互动时不要提到聊天对象、私聊或身份关系。`
+  } catch (error) {
+    qqLastContextLog(`[bili-whale] 读取鱼姬之家近况失败：${error?.code ?? error?.name ?? 'unknown'}`)
+    return ''
+  }
 }
 
 function qqLastContextPrompt(snapshot) {
@@ -205,6 +220,7 @@ function qqLastContextPrompt(snapshot) {
 }
 
 async function prepareQqLastContextForBili() {
+  if (webOwnerCarrier()) { qqLastContextBlockCache = ''; return '' }
   if (qqLastContextPreparePromise) return qqLastContextPreparePromise
   qqLastContextPreparePromise = (async () => {
     try {
@@ -276,7 +292,7 @@ function memoryCardBlockForBili() {
   // 读取路径二选一：vector 模式由 promptBili 注入检索块，不再注入叙事记忆卡。
   if (unified.memory?.mode === 'vector') return ''
   if (unified.memoryCard?.enabled === false) return ''
-  return memoryCardPromptBlock('bili')
+  return webOwnerCarrier() ? memoryCardPromptBlock('bili', { publicOnly: true }) : memoryCardPromptBlock('bili')
 }
 
 /** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
@@ -288,7 +304,7 @@ function identityContextLines() {
     adminBlockForBili(),
     alignmentBlockForBili(),
     qqMemoryBlockForBili(),
-    qqLastContextBlockForBili(),
+    ownerLastContextBlockForBili(),
     diaryLineForBili(),
     memoryCardBlockForBili(),
   ].filter(Boolean)

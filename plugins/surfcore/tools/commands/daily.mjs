@@ -179,12 +179,24 @@ let bv = BVARG
 if (KIND === 'best') {
   const best = bestToday()
   if (!best) { console.error('✗ 今天还没评过分 —— 先用 `score <BV> --score N` 记分，再发 ✗'); process.exit(5) }
-  bv = bv || best.bv
-  if (bv !== best.bv) {
-    console.error(`✗ 这类必须写当天评分最高的那条：现在是 ${best.bv}（${best.score}/20），你给的是 ${bv} ✗`)
+  // 2026-11-18 主人定：最高分那条今天已经推过时，按分数往下取第一条还没推过的。
+  const pushedToday = new Set()
+  try {
+    const st = loadState()
+    for (const it of Object.values(st ?? {})) {
+      const b = typeof it === 'string' ? it : (it && (it.bv || it.bvid))
+      if (b) pushedToday.add(String(b))
+    }
+  } catch {}
+  const ranked = todayScores().filter((x) => !pushedToday.has(String(x.bv)))
+  const pick = ranked[0] ?? best
+  bv = bv || pick.bv
+  if (bv !== pick.bv) {
+    console.error(`✗ 这类要写今天还没推过的最高分：现在是 ${pick.bv}（${pick.score}/20），你给的是 ${bv} ✗`)
+    if (best.bv !== pick.bv) console.error(`  （最高分 ${best.bv} 今天已经推过，所以往下取一条）`)
     process.exit(5)
   }
-  meta = { title: best.title, score: best.score }
+  meta = { title: pick.title, score: pick.score }
 } else {
   // 管理员钦定过就用他那条（一类除外 —— 一类必须是最高分）
   if (PINNED) {

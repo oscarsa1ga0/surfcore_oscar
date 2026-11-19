@@ -191,7 +191,7 @@ export function createTokenBudgetService({
     const learnerId = readLearnerId();
     if (learnerId && id === learnerId) return 'other';
     if (/^bili-whale(?:-|$)/.test(id)) return 'bili';
-    if (/^surfcore-web-/.test(id)) return 'other';
+    if (/^surfcore-web-/.test(id)) return 'web';
     const parent = header.parentSession ?? summary.parentSessionId;
     if (parent) {
       const parentCategory = sessionCategory.get(String(parent)) ?? state.sessions[String(parent)]?.category;
@@ -200,6 +200,7 @@ export function createTokenBudgetService({
     const preset = String(header.agentPreset ?? summary.agentPreset ?? '');
     const title = String(summary.title ?? sessionMeta.get(id)?.title ?? '');
     if (preset.startsWith('qq-chat') && /黑话/.test(title)) return 'other';
+    if (preset.startsWith('web-chat')) return 'web';
     if (preset.startsWith('qq-chat')) return 'qq';
     if (readQqSessionIds().has(id)) return 'qq';
     return null;

@@ -31,15 +31,20 @@ export function replyRhythm(messages = [], { now = Date.now(), quietMs } = {}) {
 
 /** 发言方式：网页里唯一的“发出去”的动作。 */
 export const TRANSPORT_RULES = [
-  '【网页发言】你的普通文字不会显示给主人，只是思考。要说话必须调用 web_chat_send_message：messages 必须是字符串数组（只发一条也写成 ["那句话"]），条与条之间由系统自动停顿；一次最多 8 条，普通对话默认 1 条、最多 2 条短句，不用 Markdown。表情包：web_chat_list_stickers 查编号，web_chat_send_sticker 发一张，文字另发；语音：web_chat_send_voice(text, tone, intensity) 现场说一句，偶尔发；引用某条消息：web_chat_send_message 传 replyTo（用【此刻状态】里的消息 id）；对方没说完用 web_chat_wait 等补完；不想接或晚点再找他用 web_chat_dive。',
+  '【网页发言】你的普通文字不会显示给主人，只是思考。要说话必须调用 web_chat_send_message：messages 必须是字符串数组（只发一条也写成 ["那句话"]），条与条之间由系统自动停顿；一次最多 8 条，普通对话默认 1 条、最多 2 条短句，不用 Markdown。表情包：web_chat_list_stickers 查编号，web_chat_send_sticker 发一张，文字另发；语音：web_chat_send_voice(text, tone, intensity) 现场说一句，偶尔发；引用某条消息：web_chat_send_message 传 replyTo（用【此刻状态】里的消息 id）；对方没说完用 web_chat_wait 等补完，每次最多 30 秒，整轮最多 2 分钟，收到 stopped 就接住已读内容并收尾；不想接或晚点再找他用 web_chat_dive。要看补发或历史图片，先用 web_chat_image_ticket，再使用 mcp__web-images__web_read_images(ticket)。语音只按实际提供的转写或附言理解。',
 ].join('\n');
 
 import { buildStickerMatchHint, detectEmotions } from '../../../../src/sticker-semantics.js';
 import { looksLikeUnfinished } from '../../../../src/v2-wait.js';
 import { matchStickers } from './stickers.js';
 
+const isMessage = (message) => message && (['user', 'assistant'].includes(message.author))
+  && (String(message.text ?? '').trim() || message.attachments?.length || message.action);
+const messageLabel = (message) => message.text || (message.action === 'sticker' ? '[表情]'
+  : message.attachments?.[0]?.type?.startsWith('audio/') ? '[语音]' : '[图片]');
+
 const isQuestion = (text) => /[?？]|吗|呢|怎么|为什么|哪|是不是/.test(String(text ?? ''));
-const isClosing = (text) => /^(嗯|好|行|ok|晚安|拜拜|睡了|去忙|下了)/i.test(String(text ?? '').trim());
+const isClosing = (text) => /^(?:嗯+|好(?:的|吧|啊)?|行(?:吧|啊)?|ok|晚安|拜拜|睡了|去忙|下了)[啦呀喔哦～~。！!\s]*$/i.test(String(text ?? '').trim());
 const clip = (text, max) => {
   const value = String(text ?? '').replace(/\s+/g, ' ').trim();
   return value.length > max ? value.slice(0, max - 1) + '…' : value;
@@ -47,13 +52,13 @@ const clip = (text, max) => {
 
 /** 动态收尾评估：和 QQ 的 closurePromptBlock 同一个形状（对方最后一句/我最后一句/未答提问/疲劳）。 */
 export function closureAssessment(messages = [], { now = Date.now(), thoughts = 0 } = {}) {
-  const list = messages.filter((message) => message && String(message.text || '').trim());
+  const list = messages.filter(isMessage);
   const lastUser = [...list].reverse().find((message) => message.author === 'user');
   const lastSelf = [...list].reverse().find((message) => message.author === 'assistant');
   const label = (message) => {
     if (!message) return '暂无';
-    if (isClosing(message.text)) return '纯附和/应答';
     if (isQuestion(message.text)) return '提问/请求';
+    if (isClosing(message.text)) return '纯附和/应答';
     return '有实际内容';
   };
   const open = Boolean(lastUser && isQuestion(lastUser.text) && (!lastSelf || Number(lastSelf.at) < Number(lastUser.at)));
@@ -68,13 +73,13 @@ export function closureAssessment(messages = [], { now = Date.now(), thoughts = 
     `- 对方最后一句：${label(lastUser)}；我最后一句：${label(lastSelf)}。`,
     `- 我的继续意愿：${ownIntent}（想说没说的 ${Number(thoughts) || 0} 条）；对方的继续意愿：${theirIntent}；话题闭环：${closure}；节奏疲劳：${fatigue}。`,
     `- 未完成：${open ? '有未答的提问/请求' : '没有未答的提问'}。判断：${verdict}。`,
-    '如果判断可以收尾：不要再补一句，调用一次 web_chat_close（可带 reason / summary / nextOpening / memorySummary）。如果还要聊就正常回；不要用收尾逃避提问/求助，也不要每轮都收尾。',
+    '如果判断可以收尾：不要再补一句，调用一次 web_chat_close（可带 reason / summary / nextOpening / memorySummary / biliSummary）。其中 biliSummary 只写适合对外说的非敏感近况，省略身份、私聊原句、未公开日记和身份线索；需要保密就不填。如果还要聊就正常回；不要用收尾逃避提问/求助，也不要每轮都收尾。',
   ].join('\n');
 }
 
 /** 此刻状态：和 QQ 的 statusLine 同一格式（未读/最近一条/上次发言）。 */
 export function webStatusLine({ messages = [], now = Date.now() } = {}) {
-  const list = messages.filter((message) => message && typeof message.text === 'string' && message.text.trim());
+  const list = messages.filter(isMessage);
   const lastUser = [...list].reverse().find((message) => message.author === 'user');
   const lastSelf = [...list].reverse().find((message) => message.author === 'assistant');
   const bits = [];
@@ -83,7 +88,7 @@ export function webStatusLine({ messages = [], now = Date.now() } = {}) {
   bits.push(`未读 ${unanswered} 条`);
   if (lastUser) {
     const minutes = Math.max(0, Math.round((now - Number(lastUser.at || 0)) / 60000));
-    bits.push(`最近一条来自 私聊：${clip(lastUser.text, 40)}${lastUser.id ? `（id=${lastUser.id}）` : ''}${minutes > 0 ? `（${minutes} 分钟前）` : ''}`);
+    bits.push(`最近一条来自 私聊：${clip(messageLabel(lastUser), 40)}${lastUser.id ? `（id=${lastUser.id}）` : ''}${minutes > 0 ? `（${minutes} 分钟前）` : ''}`);
   }
   if (lastSelf?.at) {
     const minutes = Math.max(0, Math.round((now - Number(lastSelf.at || 0)) / 60000));
@@ -93,16 +98,16 @@ export function webStatusLine({ messages = [], now = Date.now() } = {}) {
 }
 
 /** 表情匹配：和 QQ 同一个 rankStickers + buildStickerMatchHint，只把发送工具名换成网页版。 */
-export function stickerHint(messages = []) {
+export function stickerHint(messages = [], entries) {
   const last = [...messages].reverse().find((message) => message && message.author === 'user'
     && String(message.text || '').trim().length >= 4);
   if (!last) return '';
   let hits = [];
-  try { hits = matchStickers(String(last.text)); } catch { return ''; }
+  try { hits = matchStickers(String(last.text), { entries }); } catch { return ''; }
   if (!hits.length) return '';
   const moods = detectEmotions(String(last.text)).slice(0, 2).map((hit) => hit.label);
   return buildStickerMatchHint(hits, { moods, max: hits.length })
-    .replaceAll('qq_send_sticker', 'web_chat_send_sticker');
+    .replaceAll('qq_send_sticker stickerId=', 'web_chat_send_sticker sticker=');
 }
 
 /**
@@ -116,8 +121,8 @@ export function stickerHint(messages = []) {
  * @param {string} [input.diary] 日记提示
  * @param {string} [input.recall] 向量召回
  */
-export function buildWebPrompt({ owner = '主人', name = '鱼姬', persona = '', memory = '', status = '', diary = '', recall = '', messages = [], biliBrief = '', biliRecall = '', biliDiary = '', lightMemory = '', closureRecord = '', voice = '', stickerBlock = '', thoughts = 0, now = new Date() } = {}) {
-  const sticker = stickerHint(messages);
+export function buildWebPrompt({ owner = '主人', name = '鱼姬', persona = '', memory = '', briefing = '', status = '', diary = '', recall = '', messages = [], biliBrief = '', biliRecall = '', biliDiary = '', lightMemory = '', closureRecord = '', voice = '', stickerBlock = '', stickerEntries, thoughts = 0, now = new Date() } = {}) {
+  const sticker = stickerHint(messages, stickerEntries);
   const assessment = messages.length ? closureAssessment(messages, { thoughts }) : '';
   return [
     `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（Asia/Shanghai）`,
@@ -132,6 +137,7 @@ export function buildWebPrompt({ owner = '主人', name = '鱼姬', persona = ''
     ].join('\n'),
     [biliBrief, biliRecall].filter(Boolean).join('\n'),
     memory,
+    briefing,
     biliDiary,
     diary,
     voice,

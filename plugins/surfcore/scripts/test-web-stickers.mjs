@@ -22,7 +22,7 @@ try {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.equal(imageTypeOf(png), 'image/png');
   let calls = 0;
-  const fetchImpl = async () => { calls += 1; return { ok: true, arrayBuffer: async () => png }; };
+  const fetchImpl = async () => { calls += 1; return new Response(png); };
   const first = await stickerBytes(catalog[1], { dir: path.join(dir, 'cache'), fetchImpl });
   assert.equal(first.type, 'image/png');
   const second = await stickerBytes(catalog[1], { dir: path.join(dir, 'cache'), fetchImpl });

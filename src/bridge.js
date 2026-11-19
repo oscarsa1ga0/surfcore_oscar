@@ -5095,6 +5095,10 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/bili/memory/refresh') {
+          if (purposeCarrierNow() === 'web') {
+            sendJson({ ok: false, code: 'BILI_MEMORY_HOST', error: '当前由 SurfCore 宿主更新 B 站记忆。', hint: '在 SurfCore 设置的记忆页刷新。' }, 409);
+            return;
+          }
           const stats = await biliMemory.refresh({ force: true });
           sendJson({ ok: stats?.ok !== false, stats });
           return;
@@ -14465,6 +14469,7 @@ async function main() {
     }
     if (target.startsWith('private:')) {
       const userId = target.slice('private:'.length);
+      if (entry.scope === 'web') return userId === String(cfg.ownerQQ ?? '');
       if (entry.conversationKey === target) return true;
       if (entry.scope === 'pet') return userId === String(cfg.ownerQQ ?? '');
       return !entry.conversationKey && entry.private === true && entry.isOwner === true;
@@ -14502,6 +14507,7 @@ async function main() {
         index,
         config: vectorConfig,
         platform: 'qq',
+        ownerPrivate: Boolean(cfg.ownerQQ) && key === `private:${cfg.ownerQQ}`,
         entryFilter: (entry) => vectorEntryVisibleForKey(key, entry),
       });
       return renderVectorRecallBlock(hits, { maxChars: vectorConfig.injectMaxChars });
@@ -15751,11 +15757,11 @@ async function main() {
     if (!dir) return '';
     const files = ['whale-diary.md', 'whale-diary-private.md'].map((name) => path.join(dir, name));
     try {
-      const sig = files.map((file) => {
-        try { const st = fs.statSync(file); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; }
-      }).join('|');
-      if (biliTodayDiaryCache.key === sig) return biliTodayDiaryCache.text;
       const today = new Date().toLocaleDateString('sv-SE');
+      const sig = [dir, today, ...files.map((file) => {
+        try { const st = fs.statSync(file); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; }
+      })].join('|');
+      if (biliTodayDiaryCache.key === sig) return biliTodayDiaryCache.text;
       const texts = files.map((file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } });
       // 截断改成「从最新往回装」：被丢的永远是最老的条目，而不是刚写的这条。
       const text = composeDiaryInjection(texts, today, BILI_DIARY_BUDGET);
@@ -18652,8 +18658,10 @@ async function main() {
     const shareGroups = biliGroupList(cfg.biliBridge.share.groups.length ? cfg.biliBridge.share.groups : cfg.allow.groups);
     const dynamicsGroups = biliGroupList(cfg.biliBridge.dynamics.groups.length ? cfg.biliBridge.dynamics.groups : cfg.allow.groups);
     if (cfg.biliBridge.memory.enabled) {
-      void biliMemory.refresh({ force: true });
-      const t = setInterval(() => { void biliMemory.refresh(); }, cfg.biliBridge.memory.refreshIntervalMs);
+      if (purposeCarrierNow() !== 'web') void biliMemory.refresh({ force: true });
+      const t = setInterval(() => {
+        if (purposeCarrierNow() !== 'web') void biliMemory.refresh();
+      }, cfg.biliBridge.memory.refreshIntervalMs);
       t.unref?.();
     }
     if (cfg.biliBridge.dynamics.enabled && dynamicsGroups.length) {

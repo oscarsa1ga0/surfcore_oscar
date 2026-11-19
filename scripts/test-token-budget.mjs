@@ -88,6 +88,9 @@ check(describeHit(alerts.find((h) => h.scope === 'qq')).includes('QQ：¥6.40 / 
 
 const blocked = evaluateBudget(usage, limits, { scopes: ['qq', 'total'] });
 check(blocked.blocked === false, '80% 只提醒，不拦截');
+const webUsage = normalizeUsage({ web: { cost: 1.5, tokens: 200 }, other: { cost: 0.5, tokens: 50 } });
+check(webUsage.web.tokens === 200 && webUsage.total.tokens === 250 && webUsage.total.cost === 2, '网页用量单独展示，只加一次到总额');
+check(evaluateBudget(webUsage, normalizeLimits({ other: { tokens: 250 } }), { scopes: ['other'] }).blocked, '网页用量消耗其他渠道额度');
 const overUsage = normalizeUsage({ qq: { cost: 8, tokens: 0 } });
 const blockedOver = evaluateBudget(overUsage, limits, { scopes: ['qq', 'total'] });
 check(blockedOver.blocked === true && blockedOver.scopes.qq === true, 'QQ 到 100% 拦截');

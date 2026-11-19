@@ -12,13 +12,13 @@ import {
   totalTokensOf,
 } from '../../../src/model-prices.js';
 
-export const CATEGORY_KEYS = ['qq', 'bili', 'other'];
+export const CATEGORY_KEYS = ['qq', 'web', 'bili', 'other'];
 export const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 export const clamp0 = (v) => Math.max(0, Number(v) || 0);
 
 export function emptyCategories() {
-  return { qq: { cost: 0, tokens: 0 }, bili: { cost: 0, tokens: 0 }, other: { cost: 0, tokens: 0 } };
+  return { qq: { cost: 0, tokens: 0 }, web: { cost: 0, tokens: 0 }, bili: { cost: 0, tokens: 0 }, other: { cost: 0, tokens: 0 } };
 }
 
 export function normalizeCategories(input) {

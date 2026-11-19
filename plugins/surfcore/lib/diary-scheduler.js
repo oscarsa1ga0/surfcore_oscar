@@ -151,7 +151,7 @@ function pushBounded(lines, line, budget, counters) {
 /** 从 B站 侧日记里取某一天的 section（`## YYYY-MM-DD` 开头，直到下一个日期 section）。 */
 
 export function buildDailyDigest({
-  characterDir, qqStateDir, day = '', now = Date.now(), maxChars = 8000, history = null,
+  characterDir, qqStateDir, day = '', now = Date.now(), maxChars = 8000, history = null, webHistory = [],
 } = {}) {
   const target = day || localDay(now);
   const budget = Math.max(1000, Math.min(30000, Number(maxChars) || 8000));
@@ -161,15 +161,18 @@ export function buildDailyDigest({
 
   // ── 当日完整聊天（优先）：网关历史接口一次取当天全部消息，解决 recentMessages 只有 100 条的问题。
   const historyChatLines = [];
+  let hadQqHistory = false;
   const historyConversations = history?.conversations && typeof history.conversations === 'object'
     ? history.conversations
     : (history && typeof history === 'object' && !Array.isArray(history) ? history : null);
-  if (historyConversations) {
-    for (const [key, value] of Object.entries(historyConversations)) {
+  const availableHistory = { ...(historyConversations ?? {}), ...(webHistory.length ? { web: webHistory } : {}) };
+  if (Object.keys(availableHistory).length) {
+    for (const [key, value] of Object.entries(availableHistory)) {
       const list = (Array.isArray(value) ? value : [])
         .filter((message) => Number(message?.time) && dayOf(Number(message.time)) === target)
         .sort((a, b) => Number(a.time) - Number(b.time));
       if (!list.length) continue;
+      if (key !== 'web') hadQqHistory = true;
       counters.conversations += 1;
       counters.history += list.length;
       // 一天消息很多时按小时取「头尾」采样，保证上午/下午/晚上都出现在材料里，
@@ -198,7 +201,7 @@ export function buildDailyDigest({
             return picked;
           })()
         : list;
-      historyChatLines.push(`— ${key.replace(/^private:/, '私聊 ').replace(/^group:/, '群 ')} —`);
+      historyChatLines.push(`— ${key === 'web' ? '鱼姬之家 · 主人私聊' : key.replace(/^private:/, '私聊 ').replace(/^group:/, '群 ')} —`);
       for (const message of sample) {
         const who = message.isSelf ? '我' : safeLine(message.sender || '对方', 24);
         const body = safeLine(message.text || '', 180);
@@ -213,7 +216,7 @@ export function buildDailyDigest({
   const social = qqStateDir ? readJson(path.join(qqStateDir, 'social-v2.json'), {}) : {};
   const conversations = social?.conversations && typeof social.conversations === 'object' ? social.conversations : {};
   const chatLines = [];
-  if (!historyChatLines.length) {
+  if (!hadQqHistory) {
     for (const [key, value] of Object.entries(conversations)) {
       const messages = Array.isArray(value?.recentMessages) ? value.recentMessages : [];
       const todayMessages = messages
@@ -231,10 +234,10 @@ export function buildDailyDigest({
       }
     }
   }
-  const pickedChatLines = historyChatLines.length ? historyChatLines : chatLines;
+  const pickedChatLines = [...historyChatLines, ...chatLines];
   if (pickedChatLines.length) {
     lines.push('【今天的聊天片段（节选，不是全文）】');
-    for (const line of pickedChatLines) pushBounded(lines, line, budget, counters);
+    for (const line of pickedChatLines) pushBounded(lines, line, Math.floor(budget * 0.55), counters);
     lines.push('');
   }
 
@@ -372,7 +375,7 @@ function service(ctx, name) {
 export function startDiaryScheduler(ctx, {
   dshHome, characterId, characterDir, characterName = '', sessionId, qqStateDir = '',
   readConfig = () => ({}), now = () => Date.now(), log = () => {}, tokenBudget = null, autoTick = true,
-  fetchDayHistory = null, dispatch = null,
+  fetchDayHistory = null, fetchWebHistory = null, useQqHistory = () => true, readMemory = null, dispatch = null,
 } = {}) {
   if (!ctx?.sessionController) throw new Error('sessionController 不可用，无法启动日记回顾');
   if (!characterDir) throw new Error('缺少角色目录，无法启动日记回顾');
@@ -468,7 +471,8 @@ export function startDiaryScheduler(ctx, {
     } catch { return ''; }
   }
 
-  function memoryText() {
+  async function memoryText(digest) {
+    if (readMemory) return readMemory({ digest });
     try {
       const file = path.join(characterDir, 'memory', 'memory-card-prompt-qq.md');
       return fs.readFileSync(file, 'utf8').trim();
@@ -502,12 +506,19 @@ export function startDiaryScheduler(ctx, {
 
     const digest = buildDailyDigest({
       characterDir,
-      qqStateDir,
+      qqStateDir: useQqHistory() ? qqStateDir : '',
       day,
       now: now(),
       maxChars: conf.digestMaxChars,
+      webHistory: (() => {
+        try { return fetchWebHistory?.(day) ?? []; }
+        catch (error) {
+          log(`[diary] 读取鱼姬之家历史失败（本轮使用其余素材）：${error?.code ?? error?.name ?? 'unknown'}`);
+          return [];
+        }
+      })(),
       history: await (async () => {
-        if (!fetchDayHistory) return null;
+        if (!useQqHistory() || !fetchDayHistory) return null;
         try {
           return await fetchDayHistory({ day, count: 2000 });
         } catch (error) {
@@ -521,7 +532,7 @@ export function startDiaryScheduler(ctx, {
       characterId,
       characterName,
       persona: personaText(),
-      memory: memoryText(),
+      memory: await memoryText(digest.text),
       digest: digest.text,
       reviewAt: slot || hhmm(now()),
       reviewTimes: conf.reviewTimes,

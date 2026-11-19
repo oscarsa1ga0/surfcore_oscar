@@ -22,9 +22,9 @@ export function createWebPurpose({ store, identity, config, readInputs, readStat
       if (state.webRunId === job.id) {
         const now = Date.now();
         const text = job.replyText;
-        if (job.failure) rollbackPurposeDelivered(state, { now });
-        applyPurposeOutcome(state, { now, config: settings, outcome: job.failure ? 'delivery-failed' : text ? 'sent' : 'silent',
-          planned: job.purpose.selected, text });
+        if (job.failure && !job.replied) rollbackPurposeDelivered(state, { now });
+        applyPurposeOutcome(state, { now, config: settings, outcome: job.replied ? 'sent' : job.failure ? 'delivery-failed' : 'silent',
+          planned: job.purpose.selected, text, memo: job.memo });
         delete state.webRunId;
         writeState(state);
       }

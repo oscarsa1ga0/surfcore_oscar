@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createWebChatGateway } from '../lib/web-chat/gateway.js';
 import { openWebChatStore } from '../lib/web-chat/store.js';
+import { checkPrivateLeak, createEntry } from '../../../src/diary-store.js';
 import { webSessionId } from '../lib/web-chat/dsh.js';
 import { createRoleDispatch } from '../lib/role-dispatch.js';
 import { WEB_CHAT_API } from '../lib/web-chat/port.js';
@@ -21,10 +22,15 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-web-chat-'));
 const role = { characterId: 'fish', epoch: 1 };
 const sessionId = webSessionId(role.characterId);
 const identity = () => ({ role, name: '鱼姬' });
-const prefs = { cwd: path.join(dir, 'workspace'), proactive: false, purpose: { enabled: true }, batchMs: 0 };
+const prefs = {
+  cwd: path.join(dir, 'workspace'), proactive: false, purpose: { enabled: true }, batchMs: 0,
+  avatar: path.join(dir, 'avatar.bin'), stickers: path.join(dir, 'cache'), stickerNotes: path.join(dir, 'notes.json'),
+  stickersCollected: path.join(dir, 'collected'), stickersWeb: path.join(dir, 'collected.json'),
+};
 const handlers = new Map();
 const logs = [];
 const captures = [];
+const desktopNotices = [];
 const sessions = new Map();
 const messages = [];
 const host = {
@@ -125,14 +131,21 @@ const dispatch = createRoleDispatch({
 });
 dispatch.start();
 let purposeState = {};
+const diary = path.join(dir, 'diary');
+const privateText = '这是仅用来测试的一条长日记，读过以后请留在自己的日记里，直到主人选好的摘录获得授权。';
+createEntry(diary, { content: privateText });
+
 const gateway = createWebChatGateway({
   directory: dir, ctx: host, dispatch, identity, config: () => prefs, context: () => [],
   budget: { block: async () => null }, createServer, log: (...args) => logs.push(args),
   onMessage: (message) => messages.push(message),
+  guardOutput(_chat, text) {
+    if (checkPrivateLeak(diary, text).blocked) throw Object.assign(new Error('日记未授权'), { code: 'WEB_PRIVATE_DIARY' });
+  },
   readPurposeInputs: () => ({ ownerName: '主人', persona: '对身边的事很好奇。', ownerUin: '0',
     memoryRecords: [{ id: 'm1', source: 'manual', text: '昨天写了一篇关于鱼和水的日记，期待给主人分享。', createdAt: Date.now() }] }),
   readPurposeState: () => purposeState, writePurposeState: (state) => { purposeState = JSON.parse(JSON.stringify(state)); },
-  focus: () => false, mood: () => null,
+  focus: () => false, mood: () => null, notifyDesktop: async (count) => desktopNotices.push(count),
 });
 try {
   await gateway.start();
@@ -202,27 +215,38 @@ try {
   gateway.sendImage({ file: 'picture.png' }, { agent, callId: 'call1' });
   gateway.sendImage({ file: 'picture.png' }, { agent, callId: 'call1' });
   assert.throws(() => gateway.sendImage({ file: '../chat.sqlite' }, { agent, callId: 'call2' }), { code: 'WEB_IMAGE_FILE' });
+  await assert.rejects(gateway.sendMessages({ messages: [privateText.slice(0, 18), privateText.slice(18)] }, { agent }), { code: 'WEB_PRIVATE_DIARY' });
+  assert.throws(() => gateway.sendImage({ file: 'picture.png', caption: privateText }, { agent, callId: 'private-caption' }), { code: 'WEB_PRIVATE_DIARY' });
+  await assert.rejects(gateway.sendVoice({ text: privateText }, { agent, callId: 'private-voice' }), { code: 'WEB_PRIVATE_DIARY' });
   // 发言走 web_chat_send_message：一次两条，逐条落库；整轮有发言时兜底文字不再追加。
   const sent = await gateway.sendMessages({ messages: ['你好，我在。', '刚在看水'], gaps: [0, 0] }, { agent });
   assert.equal(sent.count, 2);
+  const duplicateCall = { agent, callId: 'text-idempotent' };
+  await gateway.sendMessages({ messages: ['同一工具调用只发一次'] }, duplicateCall);
+  await gateway.sendMessages({ messages: ['同一工具调用只发一次'] }, duplicateCall);
   reply(1, '这段文字只是思考，不该显示。');
   const turnOne = (await call('/state', { headers })).json.messages.filter((item) => item.author === 'assistant');
-  assert.equal(turnOne.length, 3);
-  assert.deepEqual(turnOne.slice(1).map((item) => item.text), ['你好，我在。', '刚在看水']);
+  assert.equal(turnOne.length, 4);
+  assert.deepEqual(turnOne.slice(1).map((item) => item.text), ['你好，我在。', '刚在看水', '同一工具调用只发一次']);
   eventStream.destroy();
   await until(() => captures.length === 2);
   assert.equal(captures[1].requestId, secondId);
   // 引用：快照里带着被引用的原话。
   assert.match(captures[1].content.find((part) => part.type === 'text').text, /"quote":\{[^}]*"你好"/);
-  admit(secondId, 2, false);
-  reply(2, '重开后能读到。', false);
+  admit(secondId, 2);
+  await gateway.sendMessages({ messages: ['重开后能读到。'] }, { agent });
+  reply(2, '重启前的内部备忘不公开。', false);
   gateway.stop();
 
   // Host events that completed while the gateway was not active are recovered from DSH.
   await gateway.start();
   const restarted = (await call('/state', { headers })).json;
   assert.ok(restarted.messages.some((item) => item.text === '你好，我在。'));
-  await until(() => messages.some((item) => item.text === '重开后能读到。'));
+  const recoveryStream = await call('/events?chat=fish&after=0', { headers, stream: true });
+  await until(() => recoveryStream.output.includes('\"id\":\"' + secondId + '\",\"state\":\"done\"'));
+  recoveryStream.destroy();
+  assert.ok(restarted.messages.some((item) => item.text === '重开后能读到。'));
+  assert.equal((await call('/state', { headers })).json.turns.find((t) => t.id === secondId).state, 'done');
   assert.equal(captures.length, 2);
 
   // Proactive delivery uses the same real dispatch adapter with zero browser subscribers.
@@ -231,7 +255,10 @@ try {
   assert.equal(proactive.ok, true, JSON.stringify(proactive));
   await until(() => captures.length === 3);
   admit(captures[2].requestId, 3);
-  reply(3, '有一件事想跟你聊。');
+  const noNew = await gateway.waitMessages({ timeoutMs: 1000 }, { agent });
+  assert.equal(noNew.messages.length, 0, '主动回合不会把旧聊天当作新来信');
+  await gateway.sendMessages({ messages: ['有一件事想跟你聊。'] }, { agent });
+  reply(3, '主动回合备忘');
   const fromBili = fs.readFileSync(path.join(dir, 'notify-token'), 'utf8');
   const notice = await call('/owner-notice', { method: 'POST', data: { role: 'fish', id: randomUUID(), text: 'B 站通知' },
     headers: { origin: undefined, authorization: 'Bearer ' + fromBili } });
@@ -251,7 +278,8 @@ try {
   assert.match(mergedText, /第一句/);
   assert.match(mergedText, /第二句/);
   admit(captures[3].requestId, 4);
-  reply(4, '一起回。');
+  await gateway.sendMessages({ messages: ['一起回。'] }, { agent });
+  reply(4, '合批内部信息');
   await until(() => messages.some((item) => item.text === '一起回。'));
 
   // 等待：轮内等主人补发的消息，补发的那条不再单独开一轮。
@@ -266,7 +294,15 @@ try {
   const waited = await waiting;
   assert.equal(waited.timeout, false);
   assert.ok(waited.messages.some((item) => item.text === '补一句'));
-  reply(5, '等到了。');
+  const waitingState = (await call('/state', { headers })).json;
+  assert.equal(waitingState.turns.find((turn) => turn.id === wait2).state, 'submitted');
+  event('turn/end', { turn: 5, reason: { kind: 'aborted' } });
+  const failedBatch = (await call('/state', { headers })).json.turns;
+  assert.equal(failedBatch.find((turn) => turn.id === wait1).state, 'failed');
+  assert.equal(failedBatch.find((turn) => turn.id === wait2).state, 'failed');
+  const unsafeRetry = await call('/retry', { method: 'POST', data: { id: wait2, chat: role.characterId }, headers });
+  assert.equal(unsafeRetry.json.code, 'WEB_RETRY_UNCERTAIN');
+  assert.ok(unsafeRetry.json.hint);
   await delay(200);
   assert.equal(captures.length, 5, '等待期间收到的消息不应再开一轮');
 
@@ -277,11 +313,110 @@ try {
   admit(captures[5].requestId, 6);
   gateway.dive({ minutes: 0.006, summary: '他去忙了' }, { agent });
   reply(6, '');
+  gateway.stop();
+  await gateway.start();
   await until(() => captures.length === 7);
   assert.match(captures[6].content.find((part) => part.type === 'text').text, /晚点回来/);
   admit(captures[6].requestId, 7);
-  reply(7, '忙完了？');
+  await gateway.sendMessages({ messages: ['忙完了？'] }, { agent });
+  reply(7, '');
   await until(() => messages.some((item) => item.text === '忙完了？'));
+  // 作用域、单次看图、纯附件引用、网页收藏表情、音频和拍一拍。
+  const poke = randomUUID();
+  const poked = await call('/messages', { method: 'POST', data: { id: poke, chat: role.characterId, action: 'poke' }, headers });
+  assert.equal(poked.json.message.action, 'poke');
+  await until(() => captures.length === 8);
+  admit(poke, 8);
+  const execution = { agent };
+  const unrelated = { agent: { session: { id: 'some-other-session' } } };
+  await assert.rejects(() => gateway.getContextSnapshot({}, unrelated), { code: 'WEB_CONTEXT_SCOPE' });
+  assert.throws(() => gateway.imageTicket({ id }, unrelated), { code: 'WEB_IMAGE_SCOPE' });
+  const context = await gateway.getContextSnapshot({ afterSeq: 0, limit: 2 }, execution);
+  assert.ok(context.hasMore);
+  assert.equal(context.messages[0].id, id);
+  const next = await gateway.getContextSnapshot({ afterSeq: context.readThroughSeq, limit: 2 }, execution);
+  assert.ok(next.messages[0].seq > context.readThroughSeq);
+  const imageTicket = gateway.imageTicket({ id }, execution);
+  const mcpHeaders = { origin: undefined, authorization: 'Bearer ' + fromBili };
+  const picture = await call('/model-images', { method: 'POST', data: imageTicket, headers: mcpHeaders });
+  assert.equal(picture.json.blocks.find(({ type }) => type === 'image').data, png);
+  const spent = await call('/model-images', { method: 'POST', data: imageTicket, headers: mcpHeaders });
+  assert.equal(spent.json.code, 'WEB_IMAGE_TICKET');
+  assert.ok(spent.json.hint);
+
+  const savedSticker = gateway.collectSticker({ messageId: id, content: '测试表情' }, execution);
+  const stickers = await call('/stickers', { headers });
+  assert.ok(stickers.json.stickers.some(({ id }) => id === savedSticker.sticker));
+  const stickerId = randomUUID();
+  const sticker = await call('/messages', { method: 'POST', data: { id: stickerId, chat: role.characterId, sticker: savedSticker.sticker }, headers });
+  assert.equal(sticker.json.message.action, 'sticker');
+  const wav = Buffer.alloc(48);
+  wav.write('RIFF', 0);
+  wav.write('WAVE', 8);
+  const soundId = randomUUID();
+  const voice = await call('/messages', { method: 'POST', data: {
+    id: soundId, chat: role.characterId, audio: wav.toString('base64'), quoteId: stickerId,
+  }, headers });
+  assert.equal(voice.json.message.attachments[0].type, 'audio/wav');
+  assert.equal(voice.json.message.quote.text, '[表情]');
+  const audioRoute = '/attachment/' + voice.json.message.attachments[0].id;
+  const audioRange = await call(audioRoute, { headers: { ...headers, range: 'bytes=0-9' } });
+  assert.equal(audioRange.status, 206);
+  assert.equal(audioRange.headers['Content-Range'], 'bytes 0-9/48');
+  assert.deepEqual(audioRange.data, wav.subarray(0, 10));
+  const badRange = await call(audioRoute, { headers: { ...headers, range: 'bytes=100-' } });
+  assert.equal(badRange.json.code, 'WEB_MEDIA_RANGE');
+  assert.ok(badRange.json.hint);
+  const now = Date.now;
+  const earlier = randomUUID();
+  try {
+    Date.now = () => now() - 25_000;
+    assert.equal((await call('/messages', { method: 'POST', data: { id: earlier, chat: role.characterId, text: '早一点发的补充' }, headers })).status, 202);
+  } finally { Date.now = now; }
+  const capturedSupplement = await gateway.waitMessages({ timeoutMs: 1000, purpose: 'reply' }, execution);
+  assert.ok(capturedSupplement.newMessages.some(({ id: m }) => m === earlier), '静默时间已过也先补读来信');
+  assert.ok(capturedSupplement.newMessages.find(({ id: m }) => m === soundId).audioStatus.includes('转写不可用'));
+  reply(8, '【目的】只属于 DSH 的内部备忘。');
+  const privateState = (await call('/state', { headers })).json;
+  assert.ok(!privateState.messages.some(({ text }) => text.includes('只属于 DSH')));
+  assert.equal(privateState.turns.find(({ id: t }) => t === poke).state, 'failed');
+
+  // DSH 尚未确认接收的请求由历史回读结算，进程重启也不自动二次提交。
+  const unknown = await call('/messages', { method: 'POST', data: { id: randomUUID(), chat: role.characterId, text: '请帮我记一下' }, headers });
+  await until(() => captures.length === 9);
+  gateway.stop();
+  await gateway.start();
+  const recovery = await call('/events?chat=fish&after=0', { headers, stream: true });
+  await until(() => recovery.output.includes('\"id\":\"' + unknown.json.message.id + '\",\"state\":\"failed\"'));
+  recovery.destroy();
+  assert.equal(captures.length, 9);
+  const audioMatches = (await call('/search?chat=fish&kind=audio', { headers })).json;
+  assert.deepEqual(audioMatches.messages.map(({ id }) => id), [soundId]);
+  const textMatches = (await call('/search?chat=fish&q=' + encodeURIComponent('第一句'), { headers })).json;
+  assert.ok(textMatches.messages.some(({ id }) => id === batch1));
+  assert.equal((await call('/search?chat=other&kind=image', { headers })).json.code, 'WEB_ROLE_CHANGED');
+  const originalMessage = (await call('/around?chat=fish&id=' + stickerId, { headers })).json;
+  assert.equal(originalMessage.target, stickerId);
+  assert.ok(originalMessage.messages.some(({ id }) => id === soundId));
+  assert.equal((await call('/around?chat=fish&id=missing', { headers })).json.code, 'WEB_HISTORY_MISSING');
+
+  const beforeBacklog = (await call('/state', { headers })).json.cursor;
+  const extraStore = openWebChatStore(dir);
+  for (let i = 0; i < 250; i++) extraStore.notice('fish', 'offline-' + i, 'offline fixture');
+  extraStore.close();
+  const backlogStream = await call('/events?chat=fish&after=' + beforeBacklog, { headers, stream: true });
+  const pages = () => backlogStream.output.split('\n').filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6))).filter(({ messages }) => messages.length);
+  await until(() => pages().length >= 3);
+  assert.deepEqual(pages().map(({ messages }) => messages.length), [100, 100, 50]);
+
+  prefs.desktopNotifications = true;
+  gateway.notice('可见聊天页不弹桌面通知');
+  backlogStream.destroy();
+  gateway.notice('未打开聊天时提醒');
+  gateway.notice('合并同一批提醒');
+  await until(() => desktopNotices.length === 1);
+  assert.deepEqual(desktopNotices, [2]);
   assert.deepEqual(logs, []);
 } finally {
   gateway.stop();
@@ -293,7 +428,7 @@ try {
   const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-store-'));
   const s = openWebChatStore(storeDir);
   s.enqueue('c', 't1', { text: 'hi' });
-  s.finalize('t1', { closed: true, replied: false });
+  s.finalize('t1', { closed: true });
   assert.equal(s.lastTurn('c').replied, false);
   assert.equal(s.lastTurn('c').closed, true);
   s.close();
@@ -319,4 +454,12 @@ const index = { manifest: { dimension: 1, entries: [{ ...webVector, offset: 0 }]
 assert.equal(rankVectorMemories({ platform: 'bili', queryVector: [1], index }).length, 0);
 assert.equal(rankVectorMemories({ platform: 'qq', queryVector: [1], index }).length, 0);
 assert.equal(rankVectorMemories({ platform: 'web', queryVector: [1], index }).length, 1);
+assert.equal(rankVectorMemories({ platform: 'qq', ownerPrivate: true, queryVector: [1], index }).length, 1);
+const ownerPrompt = renderMemoryCard(card, { platform: 'qq', conversationKey: 'private:111', runtimeSharing: { ownerPrivateKey: 'private:111' }, now: at });
+assert.match(ownerPrompt, /网页私密回忆测试/);
+const otherPrompt = renderMemoryCard(card, { platform: 'qq', conversationKey: 'private:222', runtimeSharing: { ownerPrivateKey: 'private:111' }, now: at });
+assert.doesNotMatch(otherPrompt, /网页私密回忆测试/);
+const webPrimaryPrompt = renderMemoryCard(card, { platform: 'web', runtimeSharing: { ownerPrivateKey: 'private:111', excludeRecentQq: true }, now: at });
+assert.match(webPrimaryPrompt, /网页私密回忆测试/);
+assert.doesNotMatch(webPrimaryPrompt, /旧 QQ 私聊回忆测试/);
 console.log('✓ Web gateway pairing, real dispatcher contract, SSE, image, approvals, restart and unattended delivery');

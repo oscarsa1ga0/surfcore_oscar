@@ -744,7 +744,7 @@ function privateCorpus(diaryDir) {
  * 出站闸：判断一段准备发给主人的文本，是否包含**未授权**的私人日记原文。
  * 只做字面比对（24 字窗口），不做语义判断；出错一律放行（日记坏了不能影响聊天）。
  */
-export function checkPrivateLeak(diaryDir, text, { enabled = true, shingle = LEAK_SHINGLE } = {}) {
+export function checkPrivateLeak(diaryDir, text, { enabled = true, shingle = LEAK_SHINGLE, allowApproved = true } = {}) {
   try {
     if (!enabled) return { blocked: false };
     const body = normalizeForMatch(text);
@@ -757,7 +757,7 @@ export function checkPrivateLeak(diaryDir, text, { enabled = true, shingle = LEA
       const win = body.slice(i, i + size);
       if (!win.trim()) continue;
       if (!corpus.includes(win)) continue;
-      if (approved.includes(win)) continue;
+      if (allowApproved && approved.includes(win)) continue;
       return {
         blocked: true,
         message: `这段内容里有私人日记的原文（${win.slice(0, 12)}…），还没有授权发出去。要分享请先用 diary_share 选一段摘录，或者换一种说法。`,
