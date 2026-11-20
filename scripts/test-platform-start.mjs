@@ -28,8 +28,8 @@ const writeUnified = (value) => {
 try {
   // 1) 老配置：bridge.autoStart=true，没有 platforms.start → QQ 跟随旧开关。
   writeUnified({ version: 1, bridge: { autoStart: true }, platforms: { enabled: ['qq', 'bili'] } });
-  assert.deepEqual(store.readUnified().config.platforms.start, { qq: true, bili: true },
-    '老配置 autoStart=true 应迁移成 QQ 启动开');
+  assert.deepEqual(store.readUnified().config.platforms.start, { qq: false, bili: true },
+    '旧自动启动字段不能开启已移除的桥接');
 
   // 2) 老配置：autoStart=false → QQ 关、B站 仍默认开。
   writeUnified({ version: 1, bridge: { autoStart: false }, platforms: { enabled: ['qq', 'bili'] } });
@@ -52,11 +52,11 @@ try {
 
   // 5) 全新用户：没有旧字段时两边默认都开。
   writeUnified({ version: 1 });
-  assert.deepEqual(store.readUnified().config.platforms.start, { qq: true, bili: true },
-    '没有旧字段时默认两边都启动');
+  assert.deepEqual(store.readUnified().config.platforms.start, { qq: false, bili: true },
+    '新用户默认启动 B 站');
 
   // 6) 保存：只收布尔、缺省 true，并把 bridge.autoStart 镜像成 QQ 的选择。
-  writeUnified({ version: 1, platforms: { start: { qq: true, bili: true } } });
+  writeUnified({ version: 1, platforms: { start: { qq: false, bili: true } } });
   const saved = store.saveUnified({ platforms: { start: { qq: false, bili: true } } });
   assert.deepEqual(saved.config.platforms.start, { qq: false, bili: true });
   const onDisk = JSON.parse(fs.readFileSync(unifiedFile, 'utf8'));
@@ -66,8 +66,8 @@ try {
   // 7) 非布尔值不能把开关意外打开/关掉：按「缺省 = 开」收敛。
   writeUnified({ version: 1 });
   const coerced = store.saveUnified({ platforms: { start: { qq: 'off', bili: 0 } } });
-  assert.deepEqual(coerced.config.platforms.start, { qq: true, bili: true },
-    '非布尔值应按缺省 true 处理（明确 false 才关）');
+  assert.deepEqual(coerced.config.platforms.start, { qq: false, bili: true },
+    'B 站非布尔值使用默认值，QQ 保持停用');
 
   // 8) 纯函数也能独立用（不读文件）：显式值优先。
   assert.deepEqual(

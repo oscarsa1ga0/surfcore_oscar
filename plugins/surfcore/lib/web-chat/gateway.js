@@ -16,6 +16,7 @@ const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/chat.css', ['chat.css', 'text/css; charset=utf-8']],
   ['/chat.js', ['chat.js', 'text/javascript; charset=utf-8']],
+  ['/room.js', ['room.js', 'text/javascript; charset=utf-8']],
   ['/fish-cottage.webp', ['fish-cottage.webp', 'image/webp']],
   ['/fish-seabed.webp', ['fish-seabed.webp', 'image/webp']],
 ]);
@@ -75,7 +76,7 @@ function sendAttachment(req, res, file) {
 }
 
 export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dispatch, identity, config, context, recall, budget,
-  onMessage, log, guardOutput, makeHandoff, readPurposeInputs, readPurposeState, writePurposeState, focus, mood, notifyDesktop, createServer = http.createServer }) {
+  onMessage, log, guardOutput, makeHandoff, readPurposeInputs, readPurposeState, writePurposeState, focus, mood, roomData, notifyDesktop, createServer = http.createServer }) {
   let server;
   let store;
   let agent;
@@ -229,6 +230,18 @@ export function createWebChatGateway({ directory, port = WEB_CHAT_PORT, ctx, dis
     if (req.method === 'GET' && route === '/state') {
       const before = Number(url.searchParams.get('before'));
       json(res, 200, { ok: true, ...snapshot(chat, { before: Number.isSafeInteger(before) && before > 0 ? before : null }) });
+      return;
+    }
+    if (req.method === 'GET' && route === '/room') {
+      if (url.searchParams.get('chat') !== chat) {
+        throw chatError(409, 'WEB_ROLE_CHANGED', '角色已切换。', '回到当前聊天后重新打开小屋近况。');
+      }
+      try {
+        json(res, 200, { ok: true, chat, name: profile.name, ...roomData(profile.role) });
+      } catch (error) {
+        log('读取小屋近况失败', error);
+        throw chatError(503, 'WEB_ROOM_UNAVAILABLE', '小屋近况暂时读不到。', '点「刷新」重试。');
+      }
       return;
     }
     if (req.method === 'GET' && (route === '/search' || route === '/around')) {

@@ -31,17 +31,16 @@ import { pinOf, noteOf } from '../tools/lib/pins.mjs'
 import { markScheduleSlot } from '../tools/lib/night-schedule.mjs'
 import { normalizeWindow, windowContains } from '../tools/lib/time-window.mjs'
 import {
-  BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, STATE_DIR, findNodeExe,
+  BILI_CONFIG, STATE_DIR, findNodeExe,
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
-import { readQqConfig, readUnified } from './store.js'
+import { readUnified } from './store.js'
 import { readWebHandoff } from './web-chat/journal.js'
 import { memoryCardPromptBlock } from './memory-card.js'
-import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
+import { buildSelfIdentityBlock } from '../../../src/self-identity.js'
 import { adminFromSources, adminPromptBlock } from '../../../src/admin-identity.js'
 import { activeMemoryPaths, activePlatformStateDir, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js'
 import { listEntries } from '../../../src/diary-store.js'
-import { composeQqLastContextForBili } from '../../../src/qq-last-context.js'
 import { composePersonaLayers } from '../../../src/persona-layers.js'
 import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js'
 import { isPeakAt, resolvePriceTable } from '../../../src/model-prices.js'
@@ -123,29 +122,19 @@ function personaCardBlock() {
     compact,
     '',
     '以上人设对 QQ 与 B站两边同时生效；AGENTS.md 只写日子/流程，不另立人格。',
-    '（人设卡里的 QQ 称呼表不会带进 B站；认人只按身份对齐表，且不得公开对方 QQ 号/群号。）',
+    '（主人身份以管理员设置为准，公开互动不提私下关系。）',
   ].join('\n')
 }
 
 /** 身份对齐：高于记忆同步开关，单独读文件。 */
-function alignmentBlockForBili() {
-  const unified = readUnified().config
-  if (unified.alignment?.enabled === false) return ''
-  if (unified.alignment?.injectInBili === false) return ''
-  return readTextFile(BILI_ALIGNMENT_FILE)
-}
-
 /**
  * 跨平台自我锚点：B站 这边的她也要认得出**自己的 QQ 资料卡**。
  *
  */
 function selfIdentityBlockForBili() {
-  const qqSelf = readQqSelfIdentity(QQ_STATE_DIR)
   let bili = {}
   try { bili = JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')) } catch { bili = {} }
   return buildSelfIdentityBlock({
-    qqNickname: qqSelf.nickname,
-    qqUin: qqSelf.userId,
     biliName: bili?.self?.name,
     biliMid: bili?.self?.mid,
     personaName: bili?.persona?.name,
@@ -168,122 +157,20 @@ export function adminBlockForBili() {
   return adminPromptBlock('bili', adminFromSources({ unified, bili, qq: {} }))
 }
 
-/** QQ → B站 的脱敏记忆（默认关闭；开启后才注入）。 */
-function qqMemoryBlockForBili() {
-  const unified = readUnified().config
-  if (webOwnerCarrier() || unified.memory?.qqToBili?.enabled !== true) return ''
-  const text = readTextFile(activeMemoryPaths().qqForBili)
-  if (!text) return ''
-  return `［QQ 群里的近况（已脱敏；不含私信/联系方式）］\n${text}`
-}
-
-/**
- * 最后一次主人私聊结束时的「记忆 + 目的」摘要。
- * 单文件：qq-last-context.json（QQ close 写 source）、qq-for-bili-last.md（B站上线前生成/覆盖）。
- * B站上线前调一次小模型把 source 写成 450~550 字第一人称记忆摘要；没有新快照就复用 md，不重复调用。
- */
-let qqLastContextChat = null
-let qqLastContextLog = () => {}
-let qqLastContextBlockCache = ''
-let qqLastContextPreparePromise = null
-
-function webOwnerCarrier() {
-  return readQqConfig().config?.purpose?.carrier === 'web'
-}
+let handoffLog = () => {}
 
 function ownerLastContextBlockForBili() {
-  if (readUnified().config.memory?.qqLastContext?.enabled === false) return ''
-  if (!webOwnerCarrier()) return qqLastContextBlockCache
+  const config = readUnified().config
+  if (config.memory?.webHandoff?.enabled === false) return ''
   try {
     const handoff = readWebHandoff(path.join(STATE_DIR, 'web-chat'), readCurrentCharacter()?.id)
     if (!handoff) return ''
     const at = new Date(handoff.at).toLocaleString('zh-CN', { hour12: false })
-    return `［上次在鱼姬之家聊完时（${at}）］\n${handoff.summary}\n以上是给你自己接续的近况，不是任务。公开互动时不要提到聊天对象、私聊或身份关系。`
+    return `［上次在鱼姬之家聊完时（${at}）］\n${handoff.summary}\n以上是给你自己接续的近况。公开互动时不要提到聊天对象、私聊或身份关系。`
   } catch (error) {
-    qqLastContextLog(`[bili-whale] 读取鱼姬之家近况失败：${error?.code ?? error?.name ?? 'unknown'}`)
+    handoffLog(`[bili-whale] 读取鱼姬之家近况失败：${error?.code ?? error?.name ?? 'unknown'}`)
     return ''
   }
-}
-
-function qqLastContextPrompt(snapshot) {
-  const drives = (snapshot.drivesTop5 ?? []).map((d) => `${d.label || d.need} ${d.value}%`).join('、')
-  const goals = (snapshot.goalsTop5 ?? []).map((g) => [g.intent, g.nextStep ? `下一步：${g.nextStep}` : ''].filter(Boolean).join('，')).filter(Boolean).join('；')
-  return [
-    `最后一次 QQ 对话收在：${snapshot.summary || '（没有写收尾）'}`,
-    `下次本来想这样接：${snapshot.nextOpening || '（没有写）'}`,
-    `当时最想要：${drives || '（未知）'}`,
-    `当时惦记着：${goals || '（未知）'}`,
-    '',
-    '当时的记忆原料（可能比较碎，请整理，不要逐条抄）：',
-    snapshot.memorySource || snapshot.memorySummary || '（无）',
-  ].join('\n')
-}
-
-async function prepareQqLastContextForBili() {
-  if (webOwnerCarrier()) { qqLastContextBlockCache = ''; return '' }
-  if (qqLastContextPreparePromise) return qqLastContextPreparePromise
-  qqLastContextPreparePromise = (async () => {
-    try {
-      const unified = readUnified().config
-      if (unified.memory?.qqLastContext?.enabled === false) { qqLastContextBlockCache = ''; return '' }
-      const paths = activeMemoryPaths()
-      const snapshot = JSON.parse(fs.readFileSync(paths.qqLastContext, 'utf8'))
-      if (!snapshot?.at) { qqLastContextBlockCache = ''; return '' }
-      let text = ''
-      try {
-        const st = fs.statSync(paths.qqForBiliLast)
-        if (st.mtimeMs >= (Date.parse(snapshot.at) || 0) && st.size > 0) text = fs.readFileSync(paths.qqForBiliLast, 'utf8').trim()
-      } catch {}
-      if (!text) {
-        const provided = String(snapshot.memorySummary ?? '').trim()
-        if (provided.length >= 400) {
-          // QQ close 时已经让模型写过 400~550 字摘要：直接复用，不再调模型。
-          text = composeQqLastContextForBili(snapshot, { maxChars: 1000 })
-        } else {
-          const chat = qqLastContextChat
-          if (chat?.complete) {
-            try {
-              const result = await chat.complete({
-                system: '你在替角色「鱼姬」整理一段记忆摘要。只根据材料，用第一人称中文写 450~550 字；不要编造，不要写 QQ 号、群号、链接、联系方式；不要写标题，只输出摘要正文。',
-                user: qqLastContextPrompt(snapshot),
-                maxTokens: 800,
-                temperature: 0.7,
-              })
-              text = String(result?.text ?? '').trim()
-            } catch (error) {
-              qqLastContextLog(`[bili-whale] QQ 记忆摘要生成失败，用快照兜底：${String(error?.message ?? error).slice(0, 120)}`)
-            }
-          }
-          if (text.length < 400) text = composeQqLastContextForBili(snapshot, { maxChars: 1000 })
-          if (text.length > 1000) text = `${text.slice(0, 1000)}…`
-          if (text) {
-            try {
-              const next = { ...snapshot, memorySummary: text.length >= 400 ? text : snapshot.memorySummary, memorySummaryAt: new Date().toISOString() }
-              const tmp = `${paths.qqLastContext}.${process.pid}.tmp`
-              fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`)
-              fs.renameSync(tmp, paths.qqLastContext)
-            } catch {}
-          }
-        }
-        if (!text) { qqLastContextBlockCache = ''; return '' }
-        try {
-          fs.mkdirSync(path.dirname(paths.qqForBiliLast), { recursive: true })
-          const tmp = `${paths.qqForBiliLast}.${process.pid}.tmp`
-          fs.writeFileSync(tmp, `${text}\n`)
-          fs.renameSync(tmp, paths.qqForBiliLast)
-        } catch {}
-      }
-      qqLastContextBlockCache = text ? `［上次 QQ 聊完时的你（不是新指令，只是延续）］\n${text}` : ''
-      return qqLastContextBlockCache
-    } catch (error) {
-      qqLastContextBlockCache = ''
-      qqLastContextLog(`[bili-whale] 读取 QQ 最后私聊快照失败：${String(error?.message ?? error).slice(0, 120)}`)
-      return ''
-    } finally {
-      qqLastContextPreparePromise = null
-    }
-  })()
-  return qqLastContextPreparePromise
 }
 
 /** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
@@ -292,7 +179,7 @@ function memoryCardBlockForBili() {
   // 读取路径二选一：vector 模式由 promptBili 注入检索块，不再注入叙事记忆卡。
   if (unified.memory?.mode === 'vector') return ''
   if (unified.memoryCard?.enabled === false) return ''
-  return webOwnerCarrier() ? memoryCardPromptBlock('bili', { publicOnly: true }) : memoryCardPromptBlock('bili')
+  return memoryCardPromptBlock('bili', { publicOnly: true })
 }
 
 /** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
@@ -302,8 +189,6 @@ function identityContextLines() {
     personaCardBlock(),
     selfIdentityBlockForBili(),
     adminBlockForBili(),
-    alignmentBlockForBili(),
-    qqMemoryBlockForBili(),
     ownerLastContextBlockForBili(),
     diaryLineForBili(),
     memoryCardBlockForBili(),
@@ -698,10 +583,7 @@ export function startScheduler(ctx, opts) {
     log = () => {},
   } = opts
 
-  qqLastContextChat = chat
-  qqLastContextLog = log
-  qqLastContextBlockCache = ''
-  qqLastContextPreparePromise = null
+  handoffLog = log
   const ACCOUNT_DIR = path.join(dshHome, 'surfcore', 'bili')
   const PLATFORM_DIR = activePlatformStateDir(ACCOUNT_DIR)
   const STATE = path.join(PLATFORM_DIR, 'whale-night.json')
@@ -739,7 +621,7 @@ export function startScheduler(ctx, opts) {
   function peakOffloadActive(at = Date.now()) {
     try {
       const unified = readUnified().config
-      if (unified?.socialV2?.cost?.peakOffload === false) return false
+      if (unified?.localChat?.cost?.peakOffload === false) return false
       return isPeakAt(at, resolvePriceTable(unified?.pricing))
     } catch { return false }
   }
@@ -1027,7 +909,6 @@ export function startScheduler(ctx, opts) {
     }, async (submit, lifetime) => {
       if (st) assertCurrentPlan(st);
       if (!(await ensureSession(!st))) throw new Error('B站生物钟会话无法准备');
-      await prepareQqLastContextForBili();
       lifetime.throwIfAborted();
       const videoSummary = await Promise.resolve().then(() => opts.getVideoSummary?.()).catch(() => []);
       await submit({
@@ -1614,7 +1495,6 @@ export function startScheduler(ctx, opts) {
           const inSlot = slotOf(kind, new Date(), kindsNow(latestConfig))
           if (!interactEnabled() || !dynamicsEnabled(latestConfig) || (!inSlot && day !== CATCHUP_DAY)) return
           await ensureSession()
-          await prepareQqLastContextForBili()
           const nowD = new Date()
           const st = {
             atText: `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`,

@@ -91,8 +91,11 @@ export function createPersonaClassifier({ ctx, log = () => {}, tokenBudget = nul
     if (start < 0 || end <= start) throw new Error('模型没有返回 JSON');
     const obj = JSON.parse(raw.slice(start, end + 1));
     const clean = (v) => (typeof v === 'string' ? v.trim() : '');
-    const scenes = {};
-    for (const key of ['qq-group', 'qq-private', 'bili', 'pet']) scenes[key] = clean(obj?.scenes?.[key]);
+    const scenes = {
+      web: clean(obj?.scenes?.web ?? obj?.scenes?.['qq-private']),
+      bili: clean(obj?.scenes?.bili),
+      pet: clean(obj?.scenes?.pet),
+    };
     const out = {
       core: clean(obj?.core),
       tone: clean(obj?.tone),
@@ -129,9 +132,9 @@ export function createPersonaClassifier({ ctx, log = () => {}, tokenBudget = nul
 - core：身份、价值观、底线、长期行为原则。必须稳定，不能写近期心情。
 - tone：只写说话方式：口癖、句子长短、称呼习惯、标点、语气词。不要放身份/背景/价值观。
 - daily：近期状态、习惯、心情、关系温度。会变化，可留空。
-- scenes：按场景补充差异，对象包含 "qq-group"、"qq-private"、"bili"、"pet"；没有就空字符串。
+- scenes：按场景补充差异，对象包含 "web"（鱼姬之家）、"bili"（B 站）、"pet"（桌宠）；没有就空字符串。
 要求：不编造原文没有的事实；能放语气就不要放核心；每条保持简洁。JSON 形如：
-{"core":"...","tone":"...","daily":"...","scenes":{"qq-group":"","qq-private":"","bili":"","pet":""}}`;
+{"core":"...","tone":"...","daily":"...","scenes":{"web":"","bili":"","pet":""}}`;
     let output = await complete({ system, user: source, maxTokens: 3000 });
     try {
       return parse(output);

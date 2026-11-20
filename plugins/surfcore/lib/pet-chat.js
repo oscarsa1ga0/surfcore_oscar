@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sliceHead, wellFormed } from '../../../src/safe-text.js';
-import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
+import { localEditorConfig, readBiliConfig, readUnified, writeJsonAtomic } from './store.js';
 import { classifyEmotionText } from '../../../src/emotion.js';
 import { dialogueEmotionScope } from '../../../src/emotion-events.js';
 import { resolvePersonaFile } from './persona.js';
@@ -202,7 +202,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   }
 
   function qqConfig() {
-    try { return readQqConfig().config ?? {}; } catch { return {}; }
+    try { return localEditorConfig(); } catch { return {}; }
   }
 
   function ownerInfo() {
@@ -260,9 +260,8 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
           : 'low',
       },
       proactive: {
-        carrier: ['pet', 'web'].includes(purpose.carrier) ? purpose.carrier : 'qq',
+        carrier: purpose.carrier === 'pet' ? 'pet' : 'web',
         modality: purpose.petModality === 'voice' ? 'voice' : 'text',
-        fallbackToQQ: purpose.petFallbackToQQ !== false,
       },
       purpose,
       voice: voiceSettings(),
@@ -302,7 +301,7 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
   function memoryBlock() {
     const unified = unifiedConfig();
     if (unified?.memoryCard?.enabled === false) return '';
-    try { return String(memoryCardPromptBlock('qq') || '').trim(); } catch { return ''; }
+    try { return String(memoryCardPromptBlock('web', { excludeRecentQq: true }) || '').trim(); } catch { return ''; }
   }
 
   function purposeStateFile() {

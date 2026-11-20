@@ -15,7 +15,7 @@ const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-memory-card-'))
 const dshHome = path.join(tempRoot, 'dsh');
 const qqbotRoot = path.join(tempRoot, 'qqbot');
 fs.mkdirSync(path.join(dshHome, 'surfcore', 'memory'), { recursive: true });
-fs.mkdirSync(path.join(qqbotRoot, 'state'), { recursive: true });
+fs.mkdirSync(path.join(dshHome, 'surfcore', 'bili'), { recursive: true });
 fs.mkdirSync(path.join(qqbotRoot, 'src'), { recursive: true });
 fs.writeFileSync(path.join(qqbotRoot, 'config.json'), '{"ownerQQ":10001}\n');
 fs.writeFileSync(path.join(qqbotRoot, 'src', 'bridge.js'), '// fake root for test\n');
@@ -33,7 +33,7 @@ fs.writeFileSync(path.join(dshHome, 'surfcore', 'memory', 'memory-inbox.jsonl'),
   JSON.stringify({ at: new Date(now - 60_000).toISOString(), kind: 'private', sender: '主人', senderId: '10001', isOwner: true, private: true, direct: true, text: '第一次跟角色说：以后就是一家人了' }),
   JSON.stringify({ at: new Date(now - 30_000).toISOString(), kind: 'group', sender: 'omm', senderId: '2373982492', isOwner: false, direct: true, text: '角色今天在吗' }),
 ].join('\n') + '\n');
-fs.writeFileSync(path.join(qqbotRoot, 'state', 'bili-memory.json'), `${JSON.stringify({
+fs.writeFileSync(path.join(dshHome, 'surfcore', 'bili', 'bili-memory.json'), `${JSON.stringify({
   generatedAt: new Date(now).toISOString(),
   entries: [
     { id: 'bv:test001', type: 'video', title: '鲸鱼娘的二创', reason: '可爱又好笑', score: 15, favorite: true, at: new Date(now - 3_600_000).toISOString() },

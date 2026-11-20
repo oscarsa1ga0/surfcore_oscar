@@ -1,19 +1,10 @@
 #!/usr/bin/env node
-// setup-dsh.mjs — 在目标设备上安装 qq-bridge 的 DSH 端配置
+// 安装 SurfCore、网页工具和角色预设到指定 DSH profile。
 //
-// 功能：
-//   1. 安装三套 agent preset：qq-chat、qq-chat-v2、surfcore-diary
-//      （DSH 0.1.7 机制：作为 surfcore bundle 的 patch 层插入
-//        @deepseek-ai/dsh-agent-preset 行；~/.dsh/.agent-presets/ 目录已不再被读取）
-//   2. 在 DSH profile 的 cordis.patch.yml 中挂载三个 MCP server：
-//      mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe
-//   3. 在 profile package.json 中只注册一个 bundle：surfcore
-//      （surfcore = QQ 设置 + B站养鱼 + 三个 preset，全部在一个 bundle 里）
+// node scripts/setup-dsh.mjs [profile]
+// node scripts/setup-dsh.mjs --retire-qq [profile]
 //
-// 用法：
-//   node scripts/setup-dsh.mjs [profile]
-//
-// 默认 profile 为 web；可用环境变量 DSH_HOME 指定 DSH 根目录。
+// 省略 profile 时自动检测。DSH_HOME 可指定 DSH 数据目录。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -35,7 +26,8 @@ try {
 // 没传 profile 就自动判断（环境变量 → 正在运行的 DSH 进程 → 最近使用 → 兜底 web）。
 // 用动态 import + 兜底：这个脚本偶尔会被单独复制到别处跑（审计台就在这么测），
 // 没有 detect-profile.mjs 时不能直接崩。
-let PROFILE = process.argv[2] || '';
+const retireOnly = process.argv.includes('--retire-qq');
+let PROFILE = process.argv.slice(2).find((arg) => arg !== '--retire-qq') || '';
 if (!PROFILE) {
   try {
     const { detectProfile } = await import('./detect-profile.mjs');
@@ -182,14 +174,13 @@ function yamlSingleQuote(s) {
   return `'${String(s).replace(/'/g, "''")}'`;
 }
 
-// 由桥接托管的 MCP 条目 id：脚本对这三个 id 拥有所有权，可安全地按 id 增删。
-const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-web-images'];
+// 旧 QQ 条目和由此脚本维护的网页 MCP 条目。
+const RETIRED_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'qq-mode'];
+const MANAGED_MCP_IDS = [...RETIRED_IDS, 'mcp-web-search-safe', 'mcp-web-images'];
 
 function mcpEntries() {
   const node = NODE_EXE;
   const servers = {
-    'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
-    'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },
     'mcp-web-search-safe': { serverName: 'web-search-safe', script: path.join(REPO_ROOT, 'src', 'mcp-web-search-safe.js') },
     'mcp-web-images': { serverName: 'web-images', script: path.join(REPO_ROOT, 'src', 'mcp-web-images.js') },
   };
@@ -205,14 +196,12 @@ function mcpEntries() {
     out += `        command: ${yamlSingleQuote(node)}\n`;
     out += `        args:\n`;
     out += `          - ${yamlSingleQuote(s.script)}\n`;
-    // qq_wait_for_messages 最长可等 10 分钟；DSH 默认 60s 会提前掐断工具调用。
-    if (s.toolCallTimeoutMs) out += `        toolCallTimeoutMs: ${s.toolCallTimeoutMs}\n`;
   }
   out += '# === qq-bridge MCP END ===\n';
   return out;
 }
 
-function prepareCordisPatch() {
+function prepareCordisPatch({ retiredOnly = false } = {}) {
   const profileDir = path.join(DSH_HOME, 'profiles', PROFILE);
   const patchFile = path.join(profileDir, 'cordis.patch.yml');
   const original = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : '';
@@ -237,18 +226,20 @@ function prepareCordisPatch() {
     if (!Object.hasOwn(operation, 'insert')) { kept.push(operation); continue; }
     if (!Array.isArray(operation.insert)) fatal(`insert must be an array in ${patchFile}; file unchanged`);
     const entries = operation.insert.filter((entry) => {
-      if (!MANAGED_MCP_IDS.includes(entry?.id)) return true;
+      if (!(retiredOnly ? RETIRED_IDS : MANAGED_MCP_IDS).includes(entry?.id)) return true;
       removed++;
       return false;
     });
     // Retain shared insert parents and their selectors/other operation fields.
     if (entries.length || Object.keys(operation).length > 1) kept.push({ ...operation, insert: entries });
   }
-  const text = (kept.length ? `${yaml.dump(kept, { lineWidth: -1, noRefs: true })}\n` : '') + mcpEntries();
-  return { patchFile, original, text, removed };
+  const text = retiredOnly
+    ? (removed ? yaml.dump(kept, { lineWidth: -1, noRefs: true }) : original)
+    : (kept.length ? `${yaml.dump(kept, { lineWidth: -1, noRefs: true })}\n` : '') + mcpEntries();
+  return { patchFile, original, text, removed, retiredOnly };
 }
 
-function patchCordis({ patchFile, original, text, removed }) {
+function patchCordis({ patchFile, original, text, removed, retiredOnly }) {
   ensureDir(path.dirname(patchFile));
   // Parsing/serialization normalizes formatting; keep the original text (including comments).
   let backup = null;
@@ -257,7 +248,7 @@ function patchCordis({ patchFile, original, text, removed }) {
     if (!backup) fatal(`无法备份 ${patchFile}，为避免污染 profile 已停止；请先手动备份后重试`);
   }
   writeTextAtomic(patchFile, text);
-  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 ${MANAGED_MCP_IDS.length} 条）`);
+  if (!retiredOnly) log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 ${MANAGED_MCP_IDS.length - RETIRED_IDS.length} 条）`);
   return { patchFile, backup };
 }
 
@@ -384,19 +375,7 @@ function patchProfilePackage(links) {
   return { pkgFile, backup };
 }
 
-function ensureLocalModeFile() {
-  const stateDir = path.join(REPO_ROOT, 'state');
-  const modeFile = path.join(stateDir, 'mode.json');
-  if (fs.existsSync(modeFile)) {
-    log(`state/mode.json already exists; leave as-is (current mode may be user-configured)`);
-    return;
-  }
-  ensureDir(stateDir);
-  // DSH 0.1.5 起不再有 'router-standard' preset；留空表示「用 DSH 自己声明的默认 preset」，
-  // 由 bridge.js 的 resolvePresetName() 兜底（硬编码已下线的名字只会换来每次启动的误导性告警）。
-  fs.writeFileSync(modeFile, `${JSON.stringify({ mode: 'reserved2', closedAgentPreset: '' }, null, 2)}\n`, 'utf8');
-  log(`state/mode.json created with mode=reserved2 (fallback if DSH settings are not available)`);
-}
+
 
 // surfcore 以 link: 依赖注册进 profile package.json 后，DSH 首次启动
 // 需要先安装一次才能解析这些 bundle（否则 cold start 报 "cannot resolve profile bundle"）。
@@ -456,6 +435,15 @@ function rollbackProfile(pkg, patch) {
   restoreProfileFile(patch.patchFile, patch.backup);
 }
 
+if (retireOnly) {
+  const plan = prepareCordisPatch({ retiredOnly: true });
+  if (plan.removed) {
+    patchCordis(plan);
+    log(`已停用 ${plan.removed} 个旧 QQ 工具，重开 DSH 后生效。`);
+  } else log('当前 profile 已无 QQ 工具注册。');
+  process.exit(0);
+}
+
 // Validate the existing YAML before changing any presets or configuration.
 const cordisPatch = prepareCordisPatch();
 regeneratePresetPatches();
@@ -464,7 +452,6 @@ const links = {};
 for (const name of BUNDLE_NAMES) links[name] = ensureBundle(name);
 const profilePackage = patchProfilePackage(links);
 reportLegacyPresetDir();
-ensureLocalModeFile();
 
 const expectedProfile = readProfileState(profilePackage.pkgFile);
 const expectedPatch = fs.readFileSync(patch.patchFile, 'utf8');

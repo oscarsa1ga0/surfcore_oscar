@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#070f26">
   <title>鱼姬之家</title>
   <link rel="stylesheet" href="/chat.css">
+  <script defer src="/room.js"></script>
   <script defer src="/chat.js"></script>
 </head>
 <body>
@@ -15,6 +16,7 @@
       <div class="brand"><span class="mark" aria-hidden="true"></span><span>鱼姬之家</span></div>
       <nav aria-label="鱼姬之家">
         <a href="/" aria-current="page"><span class="chat-mark" aria-hidden="true"></span>聊天</a>
+        <button class="room-nav" type="button" aria-haspopup="dialog" data-open-room>小屋近况</button>
       </nav>
       <div class="cottage" aria-hidden="true">
         <div class="water-bubbles">
@@ -25,7 +27,7 @@
       <div id="connection" class="connection"><span class="dot" aria-hidden="true"></span><span id="connection-label">正在连接</span></div>
     </aside>
     <main>
-      <header><div><h1 id="name">鱼姬</h1><p id="status" aria-live="polite">正在连接本机服务</p></div><button id="open-history" type="button">聊天记录</button></header>
+      <header><div><h1 id="name">鱼姬</h1><p id="status" aria-live="polite">正在连接本机服务</p></div><div class="chat-header-tools"><button class="room-mobile" type="button" aria-haspopup="dialog" data-open-room>小屋近况</button><button id="open-history" type="button">聊天记录</button></div></header>
       <div id="alert" class="alert" role="status" hidden></div>
       <div class="chat-water">
         <div class="water-bubbles" aria-hidden="true">
@@ -77,6 +79,29 @@
       </form>
     </main>
   </div>
+  <dialog id="room-panel" aria-labelledby="room-title">
+    <header class="room-hero">
+      <div><h2 id="room-title">小屋近况</h2><p id="room-activity" aria-live="polite"></p></div>
+      <div class="room-tools"><button id="room-refresh" type="button">刷新</button><button id="room-close" type="button" autofocus>返回聊天</button></div>
+    </header>
+    <p id="room-status" role="status"></p>
+    <div id="room-cards" class="room-cards" hidden>
+      <section class="room-card" aria-labelledby="room-mood-title">
+        <h3 id="room-mood-title">此刻心境</h3>
+        <p id="room-mood"></p>
+        <div id="room-metrics"></div>
+      </section>
+      <section class="room-card" aria-labelledby="room-diary-title">
+        <h3 id="room-diary-title">日记</h3>
+        <p id="room-diary-date"></p>
+        <div id="room-diary-shares"></div>
+      </section>
+      <section class="room-card" aria-labelledby="room-bili-title">
+        <h3 id="room-bili-title">B 站最近看过</h3>
+        <div id="room-watches"></div>
+      </section>
+    </div>
+  </dialog>
   <dialog id="history-search" aria-label="搜索聊天记录">
     <header><h2>聊天记录</h2><button id="close-history-search" type="button">关闭</button></header>
     <form id="history-form">

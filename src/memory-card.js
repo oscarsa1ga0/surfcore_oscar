@@ -2306,6 +2306,7 @@ export function maintainMemoryCard({
 /** 手动加一条记忆（控制台用）。 */
 export function addManualMemory(card, { text, title = '', importance, scope = 'qq', tags = [] }, config = {}, now = Date.now()) {
   const cfg = normalizeMemoryCardConfig(config);
+  const platform = ['web', 'bili', 'shared'].includes(scope) ? scope : 'qq';
   return addMemoryRecord(card, {
     source: 'manual',
     sourceId: `manual:${hash(`${now}|${text}`, 12)}`,
@@ -2314,8 +2315,8 @@ export function addManualMemory(card, { text, title = '', importance, scope = 'q
     isOwner: false,
     direct: true,
     manualImportance: Number.isFinite(Number(importance)) ? Number(importance) : 60,
-    scope: scope === 'bili' || scope === 'shared' ? scope : 'qq',
-    platform: scope === 'bili' ? 'bili' : (scope === 'shared' ? 'shared' : 'qq'),
+    scope: platform,
+    platform,
     tags: ['manual', ...asArray(tags)],
     manual: true,
     createdAt: now,

@@ -3,13 +3,12 @@
   "version": "0.8.9",
   "private": true,
   "license": "MIT",
-  "description": "SurfCore — QQ ↔ DeepSeek Harness bridge + QQ/B站 merged plugin: one repo, one settings window, QQ + Bilibili + QQ presets.",
+  "description": "SurfCore — local Fish Home chat, Bilibili, companion and diary for DeepSeek Harness.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "start": "node src/bridge.js",
     "test:audit": "node scripts/test-audit.mjs",
     "test:token": "node scripts/test-token-economy.mjs && node scripts/test-reply-wait.mjs && node scripts/test-qq-model-view.mjs && node scripts/test-qq-preset-contract.mjs",
     "test:tokens": "node scripts/test-token-usage.mjs",

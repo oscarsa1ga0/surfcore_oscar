@@ -9,12 +9,11 @@
  * QQ 视频分享 → /api/config 的 qq.biliBridge 段（保存后需重启桥接）。
  */
 import path from 'node:path'
-import { BILI_AI_DIR, QQ_STATE_DIR } from './paths.js'
-import { readBiliConfig, readQqConfig, readJson } from './store.js'
+import { BILI_AI_DIR } from './paths.js'
+import { readBiliConfig, readJson } from './store.js'
 import { usageToday } from '../tools/lib/free-gate.mjs'
 import { DEFAULT_LIMITS, freeLimits } from '../tools/lib/limits.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
-import { normalizeCardMode } from '../../../src/share-mode.js'
 
 const today = () => new Date().toLocaleDateString('sv-SE')
 
@@ -46,26 +45,12 @@ function nextClock(times, now = new Date()) {
   return d
 }
 
-function isoOrNull(value) {
-  const t = Number(value)
-  return Number.isFinite(t) && t > 0 ? new Date(t).toISOString() : null
-}
-
 function readBiliDynamicsState() {
   return readJson(path.join(BILI_AI_DIR, 'daily-dynamic.json'), {}) ?? {}
 }
 
-function readQqShareState() {
-  return readJson(path.join(QQ_STATE_DIR, 'bili-share-state.json'), {}) ?? {}
-}
-
-function readQqDynamicsState() {
-  return readJson(path.join(QQ_STATE_DIR, 'bili-dynamics-state.json'), {}) ?? {}
-}
-
 export function automationSnapshot(now = new Date()) {
   const bili = readBiliConfig().config
-  const qq = readQqConfig().config
   const limits = freeLimits(bili)
   const usage = usageToday()
 
@@ -100,16 +85,6 @@ export function automationSnapshot(now = new Date()) {
       .sort((a, b) => a.at.getTime() - b.at.getTime())[0] ?? null
     : null
 
-  const shareCfg = qq?.biliBridge?.share ?? {}
-  const shareGroups = Array.isArray(shareCfg.groups) ? shareCfg.groups : []
-  const allowGroups = Array.isArray(qq?.allow?.groups) ? qq.allow.groups : []
-  const shareState = readQqShareState()
-  const shareEnabled = qq?.biliBridge?.enabled !== false && shareCfg.enabled !== false
-  const shareNext = shareEnabled ? nextClock(shareCfg.times, now) : null
-
-  const dynSyncCfg = qq?.biliBridge?.dynamics ?? {}
-  const dynSyncState = readQqDynamicsState()
-
   return {
     ok: true,
     now: now.toISOString(),
@@ -134,27 +109,6 @@ export function automationSnapshot(now = new Date()) {
       next: nextDyn
         ? { key: nextDyn.key, label: nextDyn.label, slotText: nextDyn.slotText, at: nextDyn.at.toISOString() }
         : null,
-    },
-    qqShare: {
-      enabled: shareEnabled,
-      times: Array.isArray(shareCfg.times) ? shareCfg.times : [],
-      groups: shareGroups,
-      groupsEffective: shareGroups.length ? shareGroups : allowGroups,
-      gapMs: Number(shareCfg.gapMs ?? 4000),
-      card: shareCfg.card !== false,
-      cardMode: normalizeCardMode(shareCfg),
-      lastSlot: shareState?.lastSlot ?? '',
-      lastRunAt: shareState?.lastRunAt ?? null,
-      lastSlots: shareState?.lastSlots ?? {},
-      nextAt: shareNext ? shareNext.toISOString() : null,
-      nextText: shareNext ? shareNext.toTimeString().slice(0, 5) : null,
-    },
-    dynamicsSync: {
-      enabled: qq?.biliBridge?.enabled !== false && dynSyncCfg.enabled !== false,
-      pollIntervalMs: Number(dynSyncCfg.pollIntervalMs ?? 180_000),
-      groups: Array.isArray(dynSyncCfg.groups) ? dynSyncCfg.groups : [],
-      groupsEffective: (Array.isArray(dynSyncCfg.groups) && dynSyncCfg.groups.length) ? dynSyncCfg.groups : allowGroups,
-      lastPollAt: isoOrNull(dynSyncState?.lastPollAt),
     },
   }
 }

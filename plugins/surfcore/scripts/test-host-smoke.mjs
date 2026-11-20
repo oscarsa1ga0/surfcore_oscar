@@ -7,12 +7,33 @@
  * 运行：node scripts/test-host-smoke.mjs
  */
 import { EventEmitter } from 'node:events';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 // 冒烟测试不启动真实桥接（即使本机 unified 配置开了 autoStart）。
 process.env.SURFCORE_SKIP_AUTOSTART = '1';
 process.env.SURFCORE_DISABLE_CHARACTER_MIGRATION = '1';
 // 不写真实记忆卡 / 不跑后台整理。
 process.env.SURFCORE_DISABLE_MEMORY_TIMER = '1';
-import { apply } from '../lib/index.js';
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'surfcore-host-web-only-'));
+process.env.DSH_HOME = testHome;
+const legacyRoot = path.join(testHome, 'legacy');
+fs.mkdirSync(path.join(legacyRoot, 'plugins/surfcore'), { recursive: true });
+fs.writeFileSync(path.join(legacyRoot, 'plugins/surfcore/package.json'), '{}');
+const legacyFile = path.join(legacyRoot, 'config.json');
+const legacy = JSON.stringify({
+  purpose: { carrier: 'qq', enabled: true },
+  ownerQQ: '10001',
+  socialV2: { voice: { tts: { enabled: true, provider: 'breeze',
+    breeze: { apiKey: 'fixture-breeze-token', voiceId: 'fixture-voice' } } } },
+  biliBridge: { enabled: true, memory: { enabled: false, refreshIntervalMs: 120000 } },
+});
+fs.writeFileSync(legacyFile, legacy);
+process.env.SURFCORE_ROOT = legacyRoot;
+const { apply } = await import('../lib/index.js');
 
 const routes = [];
 const effects = [];
@@ -82,7 +103,7 @@ if (!apiRoute || !extRoute || !healthRoute) throw new Error('路由没有全部�
 const health = await invoke(healthRoute, 'GET', '/dsh-surfcore/health');
 console.log('health:', health.statusCode, health.body.slice(0, 200));
 
-for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/embedding-packs', '/dsh-surfcore/api/align', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard', '/dsh-surfcore/api/fish-guard/qq']) {
+for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/dsh-surfcore/api/persona', '/dsh-surfcore/api/memory', '/dsh-surfcore/api/memory-card', '/dsh-surfcore/api/memory-card/full', '/dsh-surfcore/api/embedding-packs', '/dsh-surfcore/api/extensions', '/dsh-surfcore/api/platforms', '/dsh-surfcore/api/diagnostics', '/dsh-surfcore/api/bili/automation', '/dsh-surfcore/api/watch-history', '/dsh-surfcore/api/preferences/scan?sources=local&limit=5', '/dsh-surfcore/api/bili/fish-guard']) {
   const res = await invoke(apiRoute, 'GET', path);
   const data = JSON.parse(res.body || '{}');
   console.log(path, res.statusCode, data.ok, Object.keys(data).slice(0, 8));
@@ -101,7 +122,7 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     }
     // 平台启动开关：唯一真相必须出现在合体层配置里，且两个都必须是布尔。
     const start = data.unified?.platforms?.start;
-    if (!start || typeof start.qq !== 'boolean' || typeof start.bili !== 'boolean') {
+    if (!start || 'qq' in start || typeof start.bili !== 'boolean') {
       throw new Error('/config 缺少 platforms.start.{qq,bili}');
     }
   }
@@ -109,7 +130,7 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     if (!('admin' in data)) throw new Error('/overview 没有返回管理员摘要');
     if (typeof data.admin?.gentle !== 'boolean') throw new Error('管理员摘要缺少 gentle');
     // 设置页顶部状态点 / 概览三按钮都读它：缺了会静默变成「开关都开」。
-    if (!data.platformStart || typeof data.platformStart.qq !== 'boolean' || typeof data.platformStart.bili !== 'boolean') {
+    if (!data.platformStart || 'qq' in data.platformStart || typeof data.platformStart.bili !== 'boolean') {
       throw new Error('/overview 缺少 platformStart.{qq,bili}');
     }
     if (typeof data.scheduler?.running !== 'boolean') throw new Error('/overview 缺少 scheduler.running');
@@ -121,7 +142,7 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     if (!data.dynamics || !Array.isArray(data.dynamics.kinds) || data.dynamics.kinds.length !== 4) {
       throw new Error('自动化快照缺少四类动态');
     }
-    if (!data.qqShare || !Array.isArray(data.qqShare.times)) throw new Error('自动化快照缺少 QQ 分享排期');
+    assert.equal('qqShare' in data, false);
   }
   if (path.endsWith('/watch-history')) {
     if (data.ok !== true) throw new Error('/watch-history 没有返回 ok');
@@ -146,19 +167,49 @@ for (const path of ['/dsh-surfcore/api/overview', '/dsh-surfcore/api/config', '/
     if (!data.fishGuard || typeof data.fishGuard.dailyLikes !== 'number') throw new Error('鱼群状态缺少 dailyLikes');
     if (typeof data.credentials !== 'boolean') throw new Error('鱼群状态缺少 credentials');
   }
-  if (path.endsWith('/fish-guard/qq')) {
-    if (data.ok !== true) throw new Error('/fish-guard/qq 没有返回 ok');
-    if (!Array.isArray(data.items)) throw new Error('/fish-guard/qq 缺少 items');
-    if (typeof data.active !== 'number') throw new Error('/fish-guard/qq 缺少 active');
-    if (!data.config || typeof data.config.enabled !== 'boolean') throw new Error('/fish-guard/qq 缺少配置');
-  }
+
 }
 
 // 一键启动里的 SnowLuma 分支：测试环境跳过真实弹窗，只验证路由/鉴权/响应。
-const sl = await invoke(apiRoute, 'POST', '/dsh-surfcore/api/bridge', { action: 'start-snowluma' });
-const slData = JSON.parse(sl.body || '{}');
-console.log('start-snowluma', sl.statusCode, slData.ok, slData.skipped, slData.message);
-if (sl.statusCode !== 200 || slData.ok !== true) throw new Error('start-snowluma 路由未通过');
+for (const retired of ['/bridge', '/mode', '/qzone/status', '/snowluma/accounts', '/align']) {
+  const result = await invoke(apiRoute, 'GET', '/dsh-surfcore/api' + retired);
+  assert.equal(result.statusCode, 404);
+}
+const personaView = JSON.parse((await invoke(apiRoute, 'GET', '/dsh-surfcore/api/persona')).body);
+assert.deepEqual(personaView.sceneLabels, { web: '鱼姬之家', bili: 'B 站', pet: '桌宠' });
+assert.ok(!Object.keys(personaView.layers.scenes).some((key) => key.startsWith('qq')));
+const configAfterMigration = JSON.parse((await invoke(apiRoute, 'GET', '/dsh-surfcore/api/config')).body);
+assert.equal(configAfterMigration.unified.localChat.purpose.carrier, 'web');
+assert.equal(configAfterMigration.unified.localChat.biliMemory.enabled, false);
+assert.equal(configAfterMigration.unified.localChat.biliMemory.refreshIntervalMs, 120000);
+assert.equal(configAfterMigration.unified.localChat.voice.tts.breeze.apiKey, '********');
+assert.doesNotMatch(JSON.stringify(configAfterMigration), /fixture-breeze-token/);
+assert.equal(fs.readFileSync(legacyFile, 'utf8'), legacy);
+fs.renameSync(legacyFile, legacyFile + '.archive');
+const voiceRules = JSON.parse((await invoke(apiRoute, 'GET', '/dsh-surfcore/api/voice/rules')).body);
+assert.equal(voiceRules.breeze.voiceId, 'fixture-voice');
+assert.equal(voiceRules.breeze.hasApiKey, true);
+assert.equal(voiceRules.aiEnabled, true);
+const realFetch = globalThis.fetch;
+try {
+  globalThis.fetch = async (url, request) => {
+    assert.match(String(url), /text-to-speech\/fixture-voice/);
+    assert.equal(request.headers['xi-api-key'], process.env.BREEZE_API_KEY || 'fixture-breeze-token');
+    return new Response(new Uint8Array(100), { status: 200 });
+  };
+  const check = await invoke(apiRoute, 'POST', '/dsh-surfcore/api/voice/tts-check', {});
+  assert.equal(JSON.parse(check.body).ok, true);
+} finally { globalThis.fetch = realFetch; }
+
+const manualText = '手动记住鱼姬之家这盏灯';
+const manualResult = await invoke(apiRoute, 'POST', '/dsh-surfcore/api/memory-card', {
+  action: 'add', text: manualText,
+});
+assert.equal(manualResult.statusCode, 200);
+const memoryCard = JSON.parse(manualResult.body);
+assert.equal(memoryCard.records.find((record) => record.text === manualText)?.scope, 'web');
+assert.ok(memoryCard.promptWeb.includes(manualText));
+assert.ok(!memoryCard.promptBili.includes(manualText));
 
 // 扫码登录：只读状态接口 + 非法 id（不启动 Edge / 不真扫码）。
 const accRes = await invoke(apiRoute, 'GET', '/dsh-surfcore/api/bili/accounts');
@@ -179,30 +230,19 @@ if (blocked.ok) throw new Error('隐私闸门没有拦截 QQ号/手机号');
 const normal = sanitizeText('今天看了个视频 BV1xx411c7mD 很好笑');
 if (!normal.ok) throw new Error('正常内容被误杀');
 
-// 身份对齐：写入一条临时记录再删掉（会写真实 alignments.json，但会删除）。
-// 本机 workspace-write 沙箱不允许写 ~/.dsh（DSH 自己的 ACL 收紧），此时只跳过这一段，
-// 不把环境限制误报成插件回归；无沙箱终端仍会真的跑一遍 add/remove。
-const { addLink, removeLink } = await import('../lib/align.js');
-try {
-  const link = addLink({
-    identities: {
-      qq: { id: '10001', name: '测试群友', groups: ['767098733'] },
-      bili: { id: '20002', name: '测试鱼' },
-    },
-    source: 'smoke-test',
-    confidence: 1,
-    verified: true,
-    note: 'smoke test; will be removed',
-  });
-  console.log('align add:', link.id);
-  removeLink(link.id);
-} catch (error) {
-  if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-    console.log('align add/remove: skipped（沙箱不允许写 ~/.dsh）');
-  } else {
-    throw error;
-  }
-}
+const profileDir = path.join(testHome, 'profiles/desktop');
+fs.mkdirSync(profileDir, { recursive: true });
+const profilePatch = path.join(profileDir, 'cordis.patch.yml');
+const beforeRetirement = '- insert:\n    - id: mcp-snowluma\n      name: retired\n    - id: mcp-snowluma-host\n      name: retired\n    - id: qq-mode\n      name: retired\n    - id: mcp-web-images\n      name: kept\n';
+fs.writeFileSync(profilePatch, beforeRetirement);
+const installer = fileURLToPath(new URL('../../../scripts/setup-dsh.mjs', import.meta.url));
+execFileSync(process.execPath, [installer, '--retire-qq', 'desktop']);
+const profile = fs.readFileSync(profilePatch, 'utf8');
+assert.doesNotMatch(profile, /mcp-snowluma|qq-mode/);
+assert.match(profile, /mcp-web-images/);
+assert.ok(fs.readdirSync(profileDir).some((name) => name.startsWith('cordis.patch.yml.bak-')));
+execFileSync(process.execPath, [installer, '--retire-qq', 'desktop']);
+assert.equal(fs.readFileSync(profilePatch, 'utf8'), profile);
 
 for (const fn of effects) {
   try {
@@ -214,4 +254,5 @@ console.log('SMOKE OK');
 // 给 scheduler.stop()/子进程关闭留一个 tick，避免 Windows 上 process.exit 与 libuv
 // handle 关闭竞争（Node 24 会打 "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)"）。
 await new Promise((resolve) => setTimeout(resolve, 100));
+fs.rmSync(testHome, { recursive: true, force: true });
 process.exit(0);

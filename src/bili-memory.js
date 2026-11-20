@@ -1,4 +1,4 @@
-// B 站角色的「记忆」生成器：把 B 站那边公开的见闻整理成 QQ 桥接能注入/检索的记忆。
+// 整理角色在 B 站的公开见闻，用于聊天和检索。
 //
 // 隐私红线（用户明确要求）：
 //   · **不读任何私信文件**（dm-*.json / dm-await / dm-quota / 私信正文都不碰）。
@@ -156,9 +156,12 @@ function parseDiaryBlocks(text, fallbackDate) {
 }
 
 /**
- * @param {{stateDir:string, home?:string, biliDir?:string|null, log?:(...args:any[])=>void}} options
+ * @param {{stateDir:string, home?:string, biliDir?:string|null, chatPlatform?:'qq'|'web', log?:(...args:any[])=>void}} options
  */
-export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null, log = () => {} }) {
+export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null, chatPlatform = 'qq', log = () => {} }) {
+  const identity = chatPlatform === 'web' ? '鱼姬之家和 B 站里的我都是同一个角色。' : 'QQ 和 B 站是同一个人。';
+  const chatMention = chatPlatform === 'web' ? '聊天里' : '群友';
+  const chatAsked = chatPlatform === 'web' ? '聊天中被问起' : '群友问起';
   const paths = {
     ...resolveBiliPaths(home),
     doc: path.join(stateDir, 'bili-memory.md'),
@@ -687,8 +690,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push('');
     lines.push(`- B 站账号：**${self.name || 'B站账号'}**（mid ${self.mid || '未知'}）。`);
     const ownerTitle = String(persona.ownerTitle ?? '').trim();
-    lines.push(`- 那边的我就是同一个角色${persona.name ? `（也叫 **${persona.name}**）` : ''}${ownerTitle && ownerTitle !== '主人' ? `，称呼主人为「${ownerTitle}」` : ''}；QQ 和 B 站是同一个人。`);
-    lines.push('- 群友用「B站那个号」「B站的我」或账号昵称称呼我时，说的就是我本人，不是别人。');
+    lines.push(`- 那边的我就是同一个角色${persona.name ? `（也叫 **${persona.name}**）` : ''}${ownerTitle && ownerTitle !== '主人' ? `，称呼主人为「${ownerTitle}」` : ''}；${identity}`);
+    lines.push(`- ${chatMention}用「B站那个号」「B站的我」或账号昵称称呼我时，说的就是我本人。`);
     lines.push(`- 喜欢：${(prefs.like ?? []).join('、') || '（未配置）'}。`);
     lines.push(`- 不喜欢：${(prefs.dislike ?? []).join('、') || '（未配置）'}。`);
     lines.push('');
@@ -801,7 +804,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     const lines = [];
     lines.push('## B站记忆（自动同步；这些是我自己的真实经历，不是别人）');
     lines.push('');
-    lines.push(`群友用「B站那个号」「B站的我」或账号昵称提到我时，说的就是**我本人**：我的 B 站账号叫「${self.name || 'B站账号'}」${persona.name ? `，那边的我也叫「${persona.name}」` : ''}。QQ 和 B 站是同一个人，不要当成别人，也不要说“我认识她/那是另一个号”。`);
+    lines.push(`${chatMention}用「B站那个号」「B站的我」或账号昵称提到我时，说的就是**我本人**：我的 B 站账号叫「${self.name || 'B站账号'}」${persona.name ? `，那边的我也叫「${persona.name}」` : ''}。${identity}`);
     // 「认得出自己」不能只靠昵称：群友经常直接把 B 站主页截图/资料卡甩进群里，
     // 而模型看到一张图时默认会把它当成「别人的东西」。这里把可核对的锚点（昵称、mid、
     // 空间地址）和一条明确规则一起给出来，看到图就能对上号。
@@ -934,7 +937,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     }
     lines.push('');
     lines.push('我的习惯：看到认真做但没人看的小 UP 会去留一句；喜欢短、可爱、荒诞、有梗的东西，不爱长篇干货和带货。');
-    lines.push('边界：B 站私信里的内容不在我的记忆里，我也不会编；群友问起就按记得的公开经历回答。');
+    lines.push(`边界：B 站私信内容保持私密。${chatAsked}时，按记得的公开经历回答。`);
     let brief = lines.join('\n');
     if (brief.length > 2700) {
       // 自己的作品段优先保留：超长时只裁后面的「最近动态」，不裁自己的专栏/视频。

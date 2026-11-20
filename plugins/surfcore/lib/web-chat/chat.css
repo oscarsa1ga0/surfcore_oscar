@@ -237,3 +237,51 @@ main > header, #history-search > header, #history-context > header {
 #history-messages { max-height: 64vh; overflow: auto; padding: 8px; }
 .row.history-target .bubble { outline: 2px solid var(--focus); outline-offset: 3px; }
 button.quote-inline { display: block; max-width: 100%; text-align: left; overflow-wrap: anywhere; border-top: 0; border-right: 0; border-bottom: 0; }
+
+.room-nav {
+  width: 100%; margin-top: 8px; text-align: left; padding: 10px 12px;
+  border-color: var(--line); background: #0e1c36; color: #cfdef8; font-weight: 650;
+}
+.chat-header-tools, .room-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.room-mobile { display: none; }
+#room-panel { width: min(920px, 93vw); max-height: 88dvh; padding: 0; overflow: auto; }
+#room-panel[open] { display: block; }
+.room-hero {
+  min-height: 190px; display: flex; justify-content: space-between; align-items: end; gap: 12px; padding: 24px;
+  background: linear-gradient(90deg, #0b1731 14%, #0b1731bf 49%, #0b17312b 85%),
+    url('/fish-cottage.webp') right 51% / auto 195% no-repeat, #0b1731;
+  border-bottom: 1px solid var(--line);
+}
+.room-hero h2 { font-size: clamp(22px, 4vw, 32px); margin: 0 0 6px; overflow-wrap: anywhere; }
+.room-hero p, .room-empty, #room-diary-date { color: var(--muted); margin: 0; }
+.room-tools button { margin: 0; background: #112145eb; }
+#room-status { padding: 0 20px; color: var(--warning); font-size: 14px; }
+#room-status:empty { display: none; }
+.room-cards {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 16px;
+}
+.room-card {
+  padding: 16px; min-width: 0; border: 1px solid var(--line); border-radius: 12px;
+  background: #101f3f; overflow-wrap: anywhere;
+}
+.room-card:last-child { grid-column: 1 / -1; }
+.room-card h3 { margin: 0 0 12px; font-size: 16px; }
+#room-mood { margin: 0 0 12px; color: #b9dbff; font-weight: 700; }
+#room-metrics label { display: grid; grid-template-columns: 3em minmax(0, 1fr); gap: 12px; align-items: center; margin-bottom: 4px; color: var(--muted); font-size: 13px; }
+#room-metrics meter { width: 100%; height: 16px; }
+#room-diary-shares { margin-top: 12px; }
+#room-diary-shares blockquote {
+  white-space: pre-wrap; margin: 0 0 10px; padding: 9px 11px; border-left: 2px solid #749fd3; background: #14274a; line-height: 1.5;
+}
+#room-diary-shares blockquote footer { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.room-watch { display: flex; gap: 8px 18px; flex-wrap: wrap; justify-content: space-between; align-items: baseline; margin: 0; padding: 9px 0; }
+.room-watch + .room-watch { border-top: 1px solid var(--line); }
+.room-watch a { color: #b9dbff; text-underline-offset: 3px; }
+.room-watch small { color: var(--muted); }
+@media (max-width: 620px) {
+  .room-mobile { display: inline-block; }
+  .chat-header-tools { gap: 5px; justify-content: flex-end; }
+  .chat-header-tools button { padding: 6px; white-space: nowrap; }
+  .room-hero { min-height: 145px; align-items: start; flex-direction: column; padding: 16px; }
+  .room-cards { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+}

@@ -41,7 +41,7 @@ const ROOT_CANDIDATES = [
 
 function looksLikeQqbotRoot(dir) {
   try {
-    return fs.existsSync(path.join(dir, 'config.json')) && fs.existsSync(path.join(dir, 'src', 'bridge.js'));
+    return fs.existsSync(path.join(dir, 'config.json')) && fs.existsSync(path.join(dir, 'plugins', 'surfcore', 'package.json'));
   } catch {
     return false;
   }

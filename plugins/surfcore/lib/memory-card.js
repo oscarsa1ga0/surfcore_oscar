@@ -12,11 +12,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BACKUP_DIR, QQ_CONFIG, QQ_STATE_DIR, maskPath } from './paths.js';
+import { BACKUP_DIR, BILI_DIR, QQ_STATE_DIR, maskPath } from './paths.js';
 import {
   activeMemoryPaths, activePlatformStateDir,
 } from '../../../src/character-persona.js';
-import { backupFile, listBackups, readJson, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
+import { backupFile, listBackups, readUnified, writeJsonAtomic, writeTextAtomic } from './store.js';
 import {
   DEFAULT_MEMORY_CARD_CONFIG, addManualMemory, archiveDecayedToFull, clearFirstMeeting,
   compactMemoryCard, createEmptyCard, designateFirstMeeting, fullMemoryCardStatus, loadMemoryCard,
@@ -33,40 +33,15 @@ function pathsNow() {
   return activeMemoryPaths();
 }
 
-/** 当前角色的 B站 行为目录；旧布局回退到仓库 state/。 */
-function biliStateDir() {
-  return activePlatformStateDir(QQ_STATE_DIR);
+function biliStateFile(name) {
+  const current = path.join(activePlatformStateDir(BILI_DIR), name);
+  return fs.existsSync(current) ? current : path.join(activePlatformStateDir(QQ_STATE_DIR), name);
 }
 
-function biliMemoryFile() {
-  return path.join(biliStateDir(), 'bili-memory.json');
-}
-
-function biliPostsFile() {
-  return path.join(biliStateDir(), 'bili-posts.jsonl');
-}
-
-function normalizeIdList(value) {
-  const list = Array.isArray(value) ? value : String(value ?? '').split(/[\s,，;；]+/);
-  return [...new Set(list.map((item) => String(item ?? '').trim()).filter((item) => /^\d{4,15}$/.test(item)))];
-}
-
-/**
- * 私聊读群记忆的运行时边界：白名单/黑名单/主人 QQ 只在这里读，不落进 unified config。
- * 这样用户在设置页只保存“开关 + 可选群号 + 条数”，群清单始终跟 QQ 白名单同步。
- */
+/** 旧私聊档案保留主人归属。 */
 export function memoryCardRuntimeSharing() {
-  let qq = {};
-  try { qq = readJson(QQ_CONFIG, {}) ?? {}; } catch {}
-  let unified = {};
-  try { unified = readUnified().config ?? {}; } catch {}
-  const ownerQQ = String(qq.ownerQQ ?? unified.admin?.qq ?? '').replace(/^private:/i, '').trim();
-  return {
-    ownerPrivateKey: /^\d{5,12}$/.test(ownerQQ) ? `private:${ownerQQ}` : '',
-    privateAllowedGroups: normalizeIdList(qq.allow?.groups),
-    privateDeniedGroups: normalizeIdList(qq.deny?.groups),
-    allowAllWhenEmpty: qq.allowAllWhenEmpty === true,
-  };
+  const owner = String(readUnified().config.admin?.qq ?? '').trim();
+  return { ownerPrivateKey: /^\d{5,12}$/.test(owner) ? `private:${owner}` : '' };
 }
 
 let chain = Promise.resolve();
@@ -100,7 +75,7 @@ function readBiliEntries() {
   const entries = [];
   const seen = new Set();
   try {
-    const raw = JSON.parse(fs.readFileSync(biliMemoryFile(), 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(biliStateFile('bili-memory.json'), 'utf8'));
     for (const entry of Array.isArray(raw?.entries) ? raw.entries : []) {
       const id = String(entry?.id ?? '');
       if (id) seen.add(id);
@@ -109,7 +84,7 @@ function readBiliEntries() {
   } catch {}
   // 自由动态 / 原创专栏是 append-only 的 bili-posts.jsonl；B站 memory 刷新前也能先入库。
   try {
-    const text = fs.readFileSync(biliPostsFile(), 'utf8');
+    const text = fs.readFileSync(biliStateFile('bili-posts.jsonl'), 'utf8');
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       try {
@@ -181,6 +156,13 @@ export function memoryCardSnapshot(config = memoryCardConfig(), runtimeSharing =
   const card = readCardSafe();
   const now = Date.now();
   const status = memoryCardStatus(card, config);
+  const promptWeb = config.enabled === false ? '' : renderMemoryCard(card, {
+    config, platform: 'web', maxChars: config.injectMaxChars.qq, now,
+    runtimeSharing: { ...runtimeSharing, excludeRecentQq: true },
+  });
+  const promptBili = config.enabled === false ? '' : renderMemoryCard(card, {
+    config: { ...config, includeQqInBili: false }, platform: 'bili', maxChars: config.injectMaxChars.bili, now,
+  });
   const records = [...card.records]
     // 初次相遇永远第一；其次置顶；同为置顶按最近活动/重要度排。
     .sort((a, b) => {
@@ -228,6 +210,7 @@ export function memoryCardSnapshot(config = memoryCardConfig(), runtimeSharing =
     loadedLabel: '衰减记忆卡（日常加载）',
     status: {
       ...status,
+      promptChars: { ...status.promptChars, web: promptWeb.length, bili: promptBili.length },
       enabled: config.enabled !== false,
       alertLevel: status.level > 0 ? Math.max(status.level, Number(card.alerts?.level) || 0) : 0,
       acknowledgedLevel: Number(card.alerts?.acknowledgedLevel) || 0,
@@ -244,7 +227,8 @@ export function memoryCardSnapshot(config = memoryCardConfig(), runtimeSharing =
     },
     markdown: renderMemoryCard(card, { config, full: true, now }),
     promptQq: renderMemoryCard(card, { config, platform: 'qq', maxChars: config.injectMaxChars.qq, now }),
-    promptBili: renderMemoryCard(card, { config, platform: 'bili', maxChars: config.injectMaxChars.bili, now }),
+    promptBili,
+    promptWeb,
     firstMet: (() => {
       const record = card.records.find((item) => item.id === String(card.meta.firstMetEventId ?? ''))
         ?? card.records.find((item) => item.firstMet)
@@ -434,7 +418,7 @@ export function applyMemoryCardAction(action, payload = {}, { config = memoryCar
         text: String(payload.text ?? ''),
         title: String(payload.title ?? ''),
         importance: payload.importance,
-        scope: payload.scope,
+        scope: payload.scope ?? 'web',
         tags: Array.isArray(payload.tags) ? payload.tags : [],
       }, config, now);
       if (!result.added) return { ok: false, error: '内容为空或重复' };

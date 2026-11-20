@@ -31,5 +31,5 @@ assert.ok(client.includes('/timeout-mute'), '超时“不再提示”必须写�
 assert.ok(plugin.includes("endsWith('/timeout-mute')") && plugin.includes('saveBiliConfig'), '超时静音必须写 bili.config.json');
 
 assert.ok(store.includes("'qq'"), '配置必须接受 qq 类型');
-assert.ok(client.includes('QQ 私聊管理员'), '设置页必须提供 QQ 推送选项');
+assert.ok(client.includes('["web", "鱼姬之家"]'), '设置页必须提供鱼姬之家推送选项');
 console.log('✅ 通知通道测试通过');

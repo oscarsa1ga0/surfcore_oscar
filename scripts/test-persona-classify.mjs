@@ -11,10 +11,11 @@ await assert.rejects(() => off.classify('一张人格卡'), (error) => {
   return true;
 });
 
-const parsed = off.parse('```json\n{"core":"核心","tone":"语气","daily":"日常","scenes":{"qq-group":"群"}}\n```');
+const parsed = off.parse('```json\n{"core":"核心","tone":"语气","daily":"日常","scenes":{"qq-group":"群","qq-private":"原本的私聊风格"}}\n```');
 assert.equal(parsed.core, '核心');
 assert.equal(parsed.tone, '语气');
-assert.equal(parsed.scenes['qq-group'], '群');
+assert.equal(parsed.scenes.web, '原本的私聊风格');
+assert.equal(Object.hasOwn(parsed.scenes, 'qq-group'), false);
 assert.equal(parsed.scenes.pet, '');
 assert.throws(() => off.parse('没有 JSON'), /JSON/);
 
@@ -29,7 +30,7 @@ const retryClassifier = createPersonaClassifier({
           calls += 1;
           const text = calls === 1
             ? '好的，我来帮你拆分这张人格卡。'
-            : '{"core":"核心2","tone":"语气2","daily":"日常2","scenes":{"qq-group":"群2"}}';
+            : '{"core":"核心2","tone":"语气2","daily":"日常2","scenes":{"web":"网页风格"}}';
           return (async function* () {
             yield { type: 'text-delta', text };
             yield { type: 'finish', reason: { kind: 'stop' } };
@@ -44,6 +45,7 @@ const retried = await retryClassifier.classify('一张人格卡');
 assert.equal(calls, 2, '第一次不是 JSON 必须重试一次');
 assert.equal(retried.core, '核心2');
 assert.equal(retried.tone, '语气2');
+assert.equal(retried.scenes.web, '网页风格');
 
 const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
 const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');

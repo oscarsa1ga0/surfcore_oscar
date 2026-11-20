@@ -1,13 +1,4 @@
-/**
-          rfcore —— 客户端半边：DSH 设置里的「SurfCore」窗口。
- *
- * 这是合体后唯一的设置入口。它按标签页装下：
- *   概览 / 角色 / QQ / 语音 / 桌宠 / B站 / Token 额度 / 观看历史 / 记忆 / 对齐 / 扩展 / 全部参数 / 诊断
- *
- * 数据流：本组件 ⇄ /dsh-surfcore/api/*（同源 fetch）⇄ 原生配置文件。
- * 不制造第二份配置：QQ 仍写 <surfcore>/config.json，B站仍写
- * ~/.dsh/surfcore/bili.config.json，跨域设置写 ~/.dsh/surfcore/config.json。
- */
+/** SurfCore 本地聊天、角色和活动设置。 */
 window.__ModuleLoader__.load({
   id: "surfcore",
   factory: (require) => {
@@ -545,7 +536,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
       };
       return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
         h("h4", null, "DSH 注册（MCP / bundle）"),
-        h("p", null, "DSH 升级后如果 QQ 会话没有 qq_* 工具（只能收不能发），点这里重写 profile 的 MCP 与 bundle。"),
+        h("p", null, "DSH 升级后如果 SurfCore 设置或网页工具缺失，可以用这里修复注册。"),
         h("p", { className: "qbw-hint" }, "只在 DSH 升级/注册丢失时用；脚本不会重启 DSH，点完要完全退出并重开。"),
         h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "4px", paddingTop: "0" } },
           h("input", {
@@ -668,7 +659,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
       return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) onClose?.(); } },
         h("div", { className: "qbw-modal", style: { maxWidth: "680px", maxHeight: "84vh", overflow: "auto" } },
           h("h3", null, "⚠️ 开启“温柔 / 绝不回嘴”前请确认"),
-          h("p", null, "开启后 QQ 和 B站 都会对管理员使用这套规则。这不是普通语气开关，会改变她的行为边界："),
+          h("p", null, "开启后，鱼姬之家和 B 站会对管理员使用这套规则。"),
           h("ul", { style: { paddingLeft: "20px", lineHeight: "20px" } },
             h("li", null, "对管理员更温柔、先接情绪；"),
             h("li", null, "“绝不回嘴”：不反驳、不顶撞、不阴阳、不冷嘲、不抬杠；"),
@@ -692,7 +683,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
           h("ul", { style: { paddingLeft: "20px", lineHeight: "20px" } },
             h("li", null, h("b", null, "只关闭，保留上下文："), "不丢聊天记忆；但旧语气可能残留，直到历史自然滚出或会话重置。"),
             h("li", null, h("b", null, "关闭并丢弃上下文："), "清空相关会话上下文，旧规则不再存在；但当前聊天记忆会丢失，且无法恢复。")),
-          h("p", { className: "qbw-hint" }, "不确定就选“保留上下文”；之后仍可在设置里重置会话。选择后仍需点页面底部保存；丢弃上下文的选项会自动重启桥接。"),
+          h("p", { className: "qbw-hint" }, "不确定就选“保留上下文”；之后仍可在设置里重置会话。选择后仍需点页面底部保存；"),
           h("div", { className: "qbw-actions", style: { marginTop: "12px" } },
             h(Btn, { kind: "qbw-btn2", onClick: onKeep }, "只关闭，保留上下文"),
             h(Btn, { onClick: onDiscard }, "关闭并丢弃上下文"),
@@ -700,18 +691,12 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
     }
 
     function AdminCard({ admin, onChange, qqPrivate = [], qqAllowAll = false, toast, onDiscardContext, onSave, busy, canSave = true }) {
-      const [auditOpen, setAuditOpen] = useState(false);
       const [gentlePrompt, setGentlePrompt] = useState(null); // enable | disable
       const [uidCheck, setUidCheck] = useState(null); // {ok, match, actualName, error, hint}
       const [uidChecking, setUidChecking] = useState(false);
       const value = admin && typeof admin === "object" ? admin : {};
       const set = (key, next) => onChange({ ...value, [key]: next });
-      const configured = Boolean(value.qq || value.biliMid || value.biliName);
-      const aligned = Boolean(value.qq && value.biliMid);
-      const privateList = (Array.isArray(qqPrivate) ? qqPrivate : []).map(String);
-      const blockedPrivate = Boolean(value.qq) && !qqAllowAll && !privateList.includes(String(value.qq));
-      const badge = aligned ? "ok" : configured ? "warn" : "bad";
-      const badgeText = aligned ? "同一个人 ✓" : configured ? "只填了一边" : "未设置";
+      const configured = Boolean(value.biliMid);
       const digits = (next) => String(next ?? "").replace(/[^\d]/g, "");
       // 核查 UID 与昵称是否同一个人：查 B站 公开名片，把真实昵称带回来比对。
       const checkUid = async () => {
@@ -736,20 +721,12 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
         h("div", { className: "qbw-admin-head" },
           h("div", null,
             h("div", { className: "qbw-admin-title" },
-              "管理员（QQ ⇄ B站 · 同一个人）",
-              h("span", { className: "qbw-badge " + badge }, badgeText),
+              "管理员",
+              h("span", { className: "qbw-badge" }, configured ? "已设置" : "未设置"),
               h("span", { className: "qbw-pill" }, value.gentle === true ? "温柔 · 不回嘴" : "普通模式 · 只按人格卡")),
             h("div", { className: "qbw-hint" },
-              "默认就是同一个人：这里填一次，QQ 的 ownerQQ 和 B站 的 owner.mid 会同时写成这两个号（QQ 侧保存后需重启桥接，B站 下一轮生效）。"))),
+              "称呼供鱼姬之家使用，B 站 UID 用于识别你在 B 站的账号。"))),
         h("div", { className: "qbw-admin-grid" },
-          h("label", { className: "qbw-admin-field" },
-            h("span", null, "管理员 QQ"),
-            h("input", {
-              className: "qbw-input", inputMode: "numeric", placeholder: "例如 3287064288",
-              value: value.qq ?? "",
-              onChange: (e) => set("qq", digits(e.target.value)),
-            }),
-            h("small", null, "审批、管理命令、封闭模式都用这个 QQ")),
           h("label", { className: "qbw-admin-field" },
             h("span", null, "管理员 B站 UID（mid）"),
             h("input", {
@@ -801,18 +778,10 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
             h("span", null, "对管理员更温柔、绝不回嘴")),
           h("span", { className: "qbw-hint" },
             value.gentle === true
-              ? "QQ 消息和 B站 回复都适用；关闭前会解释旧上下文的影响。"
+              ? "B 站回复时生效。"
               : "默认关闭；开启前会弹窗列出全部行为风险，管理员权限不受影响。")),
-        blockedPrivate
-          ? h("div", { className: "qbw-warnbox" }, "⚠️ 管理员 QQ 不在私聊白名单 allow.private 里：私聊会被拦截（白名单为空时也没人放行）。去下面的「QQ 白名单」把 TA 加进去。")
-          : null,
-        configured && !aligned
-          ? h("div", { className: "qbw-warnbox" }, "⚠️ 只填了一边：QQ 和 B站 要分别是同一个人的两个号，两边才都认得出。")
-          : null,
-        h("div", { className: "qbw-actions", style: { marginTop: "8px" } },
-          h(Btn, { kind: "qbw-btn3", onClick: () => setAuditOpen(true) }, "管理操作记录（最近 50 条）"),
-          onSave ? h(Btn, { onClick: onSave, disabled: !!busy || !canSave }, busy ? "保存中…" : "保存管理员并重启桥接") : null,
-          onSave ? h("span", { className: "qbw-hint" }, "QQ 侧改完必须重启桥接才生效；这里只保存一次。") : null),
+        onSave ? h("div", { className: "qbw-actions" },
+          h(Btn, { onClick: onSave, disabled: !!busy || !canSave }, busy === "save" ? "保存中…" : "保存管理员")) : null,
         gentlePrompt === "enable"
           ? h(AdminGentleEnableModal, {
             onClose: () => setGentlePrompt(null),
@@ -837,8 +806,7 @@ select.qbw-select option{background:var(--qbw-surface);color:var(--qbw-text)}
               setGentlePrompt(null);
             },
           })
-          : null,
-        auditOpen ? h(AuditModal, { onClose: () => setAuditOpen(false), toast }) : null);
+          : null);
     }
 
     // ── QQ 白名单（群 / 人）──────────────────────────────────────────────────
@@ -1444,7 +1412,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
     ];
 
     const BILI_FIELDS = [
-      { group: "她自己（只读）", note: "管理员（主人）的 QQ 与 B站 mid 在标签页顶部统一设置 →", fields: [
+      { group: "她自己（只读）", note: "主人身份在页面顶部设置。", fields: [
         // owner.mid / owner.name 不在这里：已上移到「管理员」卡片，和 QQ 号一起保存。
         F("self.mid", "她自己 mid", "只读（来自 cookie / nav）", "text", { readOnly: true }),
         F("self.name", "她自己昵称", "只读（来自 nav）", "text", { readOnly: true }),
@@ -1555,7 +1523,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("fishGuard.failedLikeCooldownHours", "点赞失败后冷却（小时）", "默认 24；同一个 rpid 失败过就先跳过", "number", { min: 0 }),
         F("fishGuard.failCooldownMinutes", "风控失败冷却（分钟）", "默认 60；遇到 -509/12015 等码自动停手", "number", { min: 1 }),
       ]},
-      { group: "B站 会话权限", note: "只影响她自己的 DSH 会话（bili-whale-*），不影响 QQ 桥接；改完下一次 tick 生效", fields: [
+      { group: "B站 会话权限", note: "控制 B 站会话，下一轮生效。", fields: [
         F("agent.sandbox", "会话权限", "danger-full-access = 定时醒来能跑 bili.mjs（推荐；C:\\Users\\Mieksido 用 workspace-write 会因 WRITE_OWNER 起不了命令）；workspace-write = 更安全但可能什么都跑不了", "select", {
           options: [["danger-full-access", "完全访问（推荐，能跑工具）"], ["workspace-write", "仅工作区（更安全，可能跑不了命令）"]],
         }),
@@ -1575,8 +1543,8 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       { group: "日记与推送", fields: [
         F("diary.push", "推送日记摘要", "日记照写；只控制推不推", "switch"),
         F("diary.enabled", "写日记（锁定开）", "旧版本可关；现在照写不可关", "switch", { readOnly: true }),
-        F("notify.type", "推送方式", "不推送 / 桌面通知 / QQ 私聊 / Webhook / 自定义命令", "select", { options: [["none", "不推送"], ["desktop", "桌面通知"], ["qq", "QQ 私聊管理员"], ["webhook", "Webhook"], ["command", "自定义命令"]] }),
-        F("notify.url", "Webhook 地址", "飞书/钉钉/企业微信/QQ机器人", "text", { wide: true }),
+        F("notify.type", "推送方式", "不推送 / 桌面通知 / 鱼姬之家 / Webhook / 自定义命令", "select", { options: [["none", "不推送"], ["desktop", "桌面通知"], ["web", "鱼姬之家"], ["webhook", "Webhook"], ["command", "自定义命令"]] }),
+        F("notify.url", "Webhook 地址", "飞书、钉钉或企业微信", "text", { wide: true }),
         F("notify.template", "模板", "纯文本 / markdown", "select", { options: [["text", "纯文本"], ["markdown", "markdown"]] }),
         F("notify.cmd", "自定义命令", "可执行文件；消息自动作为最后一个参数", "text", { wide: true }),
         F("notify.args", "命令参数", "JSON 数组", "json"),
@@ -1960,7 +1928,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             ev.evidence?.path ? h("div", { className: "qbw-hint" }, "设置位置：" + ev.evidence.path) : null,
             ev.evidence?.setting ? h("div", { className: "qbw-hint" }, `配置项：${ev.evidence.setting} · 当前 ${ev.evidence.current ?? "?"} / 上限 ${ev.evidence.limit ?? "?"}`) : null),
           h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "2px", paddingTop: "0" } },
-            h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.(ev.evidence?.tab || "qq") }, "去改设置"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.(TABS.some(([id]) => id === ev.evidence?.tab) ? ev.evidence.tab : "overview") }, "去改设置"),
             ev.ack ? null : h(Btn, { kind: "qbw-btn2", onClick: () => onAck?.(ev.id) }, "知道了（本限制提醒）"),
             ev.ack ? null : h(Btn, { kind: "qbw-btn2", onClick: () => onMute?.(ev) }, "永久不再显示")))));
     }
@@ -1984,7 +1952,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             h(Btn, { kind: "qbw-btn2", onClick: onClose }, "关闭"))));
     }
 
-    function WebChatTab({ reload }) {
+    function WebChatTab({ reload, goTab }) {
       const [status, setStatus] = useState(null);
       const [error, setError] = useState("");
       const [working, setWorking] = useState(false);
@@ -2006,7 +1974,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           } else {
             setStatus(result);
             if (action === "transcription") setTranscription(result.transcription || {});
-            if (['primary', 'rollback'].includes(action)) await reload();
+            if (action === "primary") await reload();
           }
         } catch (e) { setError([e.message, e.hint].filter(Boolean).join(" · ")); }
         finally { setWorking(false); }
@@ -2020,9 +1988,12 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         h("div", { className: "qbw-actions" },
           active ? h(Btn, { onClick: () => update("pair"), disabled: working }, "打开并配对")
             : h(Btn, { onClick: () => update("enable"), disabled: working || !status }, "启用本机聊天"),
-          primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("rollback"), disabled: working }, "切回 QQ 私聊投递")
-            : active ? h(Btn, { kind: "qbw-btn2", onClick: () => update("primary"), disabled: working }, "切换到网页私聊投递") : null,
+          !primary && active ? h(Btn, { kind: "qbw-btn2", onClick: () => update("primary"), disabled: working }, "切换到网页私聊投递") : null,
           active && !primary ? h(Btn, { kind: "qbw-btn2", onClick: () => update("disable"), disabled: working }, "停用本机聊天") : null),
+        h("p", { className: "qbw-hint" }, "在网页的「小屋近况」查看鱼姬的心境、活动、日记分享和 B 站观看记录。"),
+        h("div", { className: "qbw-actions" },
+          ...[["emotion", "心境"], ["diary", "日记"], ["bili", "B 站"], ["voice", "语音合成"]].map(([id, label]) =>
+            h(Btn, { key: id, kind: "qbw-btn2", onClick: () => goTab(id) }, label))),
         status?.desktopSupported ? h("div", { className: "qbw-actions" },
           h(Btn, { kind: "qbw-btn2", disabled: working, onClick: () => update("notifications", { enabled: !status.desktopNotifications }) },
             status.desktopNotifications ? "关闭关页到达通知" : "开启关页到达通知"),
@@ -2045,7 +2016,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       const [error, setError] = useState("");
       const [stopError, setStopError] = useState("");
       const [stopping, setStopping] = useState(false);
-      const labels = { qq: "QQ", bili: "B 站", diary: "日记", web: "鱼姬之家" };
+      const labels = { bili: "B 站", diary: "日记", web: "鱼姬之家", pet: "桌宠" };
       const stages = { preparing: "准备中", submitting: "正在提交", running: "工作中", checking: "等待 DSH 核对" };
       useEffect(() => {
         let mounted = true;
@@ -2087,27 +2058,13 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     }
 
     function OverviewTab({ overview, reload, busy, setBusy, toast, unified, setUnified, goTab }) {
-      const bridge = overview?.bridge ?? {};
-      const qqSessionFailure = bridge.snowluma?.sessionFailure;
       const bili = overview?.bili ?? {};
-      const memory = overview?.memory ?? {};
-      const align = overview?.alignment ?? {};
       const scheduler = overview?.scheduler ?? {};
-      const snow = overview?.snowluma ?? {};
-      const externalOneBot = snow.provider === "onebot";
-      const platformStart = overview?.platformStart ?? {};
-      const qqStart = platformStart.qq !== false;
-      const biliStart = platformStart.bili !== false;
-      // ── 一键启动 / 停止（QQ+B站+桌宠+语音）────────────────────────────
+      const biliStart = overview?.platformStart?.bili !== false;
       const launch = overview?.launch ?? {};
-      const [launchSel, setLaunchSel] = useState({ qq: true, bili: true, pet: false, voice: false, vector: false });
-      const [hideConsoles, setHideConsoles] = useState(unified?.platforms?.hideConsoles !== false);
+      const [launchSel, setLaunchSel] = useState({ bili: true, pet: false, vector: false });
+
       const [vectorPack, setVectorPack] = useState("");
-      const [snowAccountOpen, setSnowAccountOpen] = useState(false);
-      const [snowAccountData, setSnowAccountData] = useState(null);
-      const [snowAccountErr, setSnowAccountErr] = useState(null);
-      const [snowAccountBusy, setSnowAccountBusy] = useState("");
-      const [snowWebuiPass, setSnowWebuiPass] = useState("");
       useEffect(() => {
         if (vectorPack) return;
         const v = launch?.vector;
@@ -2222,28 +2179,13 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         } finally { setBusy(""); }
       };
       // 闸门事件：L2/L3 才弹；L0/L1 只留在通知列表，不打断。
-      const gateOverviewRef = useRef(overview);
-      useEffect(() => { gateOverviewRef.current = overview; }, [overview]);
       const loadGateEvents = useCallback(async () => {
         try {
           const r = await api("/gate-events?limit=30&includeAcked=0");
-          let events = r.events ?? [];
-          // 已经连上 SnowLuma 时，旧的「send-channel-down」不该再弹（用户明明连着）。
-          // 顺手自动确认掉，避免每次打开设置页都弹同一个 L2。
-          const sl = gateOverviewRef.current?.bridge?.snowluma ?? {};
-          // 已连接 → 旧的“断线”告警是历史；从没连过 → SnowLuma 根本还没启动，也不该弹。
-          const connected = sl.connected === true;
-          const neverStarted = sl.everConnected === false;
-          if (connected || neverStarted) {
-            const stale = events.filter((e) => e.dedupeKey === "snowluma:send-channel-down");
-            if (stale.length) {
-              api("/gate-events", { method: "POST", body: { ids: stale.map((e) => e.id) } }).catch(() => {});
-              events = events.filter((e) => !stale.includes(e));
-            }
-          }
-          setGateData({ ...r, events });
-          // 概览还没加载时先不弹：否则无法判断“现在是否其实连着”，会误弹一次旧告警。
-          if (!gateOverviewRef.current) return;
+          const events = (r.events ?? []).filter((e) => e.gate !== "snowluma" && e.evidence?.tab !== "qq"
+            && !/^(?:group|private):\d+$/.test(e.subject?.key ?? ""));
+          const counts = { ...r.counts, unacked: events.filter((e) => !e.ack).length, L3: events.filter((e) => e.level === "L3").length };
+          setGateData({ ...r, counts, events });
           const top = events.find((x) => (x.level === "L3" || x.level === "L2") && !dismissedGates.current.has(x.id));
           if (top) setGateAlert(top);
           else setGateAlert(null);
@@ -2261,106 +2203,18 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           await loadGateEvents();
         } catch (e) { toast(`✗ 确认失败：${e.message}`); }
       };
-      // pickedPath 为空 = 在常见位置里猜；点了「浏览…」就把用户选的路径传进去验证并保存。
-      const detectSnowLuma = async (pickedPath = "") => {
-        setBusy("detect-snowluma");
-        try {
-          const body = { action: "detect-snowluma", ...(pickedPath ? { path: pickedPath } : {}) };
-          const result = await api("/bridge", { method: "POST", body });
-          if (result.ok) {
-            toast(`✓ ${result.message}`);
-            await reload();
-          } else {
-            // 失败必须弹出来（不能只 toast 一下就没）；弹窗里直接给「浏览…」和下载页两个下一步。
-            setSnowError({
-              title: result.title || "没找到 SnowLuma",
-              message: result.error || "没找到 SnowLuma",
-              hint: result.hint || "点「浏览…」选 SnowLuma2 解压出来的根目录（里面有 app）。",
-              tried: Array.isArray(result.tried) ? result.tried : [],
-            });
-          }
-        } catch (error) {
-          setSnowError({
-            title: "检测失败",
-            message: String(error?.message || error),
-            hint: "确认 DSH 插件正常（必要时重启 DSH）后重试；还不行就点「浏览…」直接选目录。",
-          });
-        } finally {
-          setBusy("");
-        }
-      };
-      // 手动导入：只接受 SnowLuma 的启动文件（SnowLuma.exe / launcher.bat）。
-      // 选完让后端验证并保存安装目录；失败会弹窗说明"这个文件为什么不行"。
-      const pickSnowLumaFile = async () => {
-        setSnowImport(false);
-        try {
-          const r = await browseNative("file", "选择 SnowLuma 的启动文件（SnowLuma.exe 或 app\launcher.bat）", "snowluma");
-          if (r.ok && r.path) await detectSnowLuma(String(r.path));
-          else if (!r.cancelled) toast(`✗ ${r.error || "打不开选择框"}`);
-        } catch (e) { toast(`✗ ${e.message}`); }
-      };
-      // 弹窗里的「浏览…」：选完直接重试检测。
-      const pickSnowLuma = async () => {
-        try {
-          const r = await browseNative("dir", "选择 SnowLuma2 解压出来的根目录（里面有 app）");
-          if (r.ok && r.path) await detectSnowLuma(String(r.path));
-          else if (!r.cancelled) toast(`✗ ${r.error || "打不开选择框"}`);
-        } catch (e) { toast(`✗ ${e.message}`); }
-      };
-      const act = async (action) => {
-        setBusy(action);
-        try {
-          const res = await api("/bridge", { method: "POST", body: { action } });
-          toast(res.ok ? `✓ ${res.message ?? "完成"}` : `✗ ${res.error ?? "失败"}`);
-          await reload();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const loadSnowAccounts = async (password = snowWebuiPass) => {
-        setSnowAccountBusy("read");
-        try {
-          const r = await api("/snowluma/accounts", { method: "POST", body: { password } });
-          setSnowAccountData(r);
-          if (r.ok === false) setSnowAccountErr({ code: r.code, message: r.error || "读取 SnowLuma 账号失败", hint: r.hint });
-          else setSnowAccountErr(null);
-        } catch (e) {
-          setSnowAccountErr({ code: e.code, message: e.message, hint: e.hint });
-        } finally { setSnowAccountBusy(""); }
-      };
-      const openSnowAccounts = () => {
-        setSnowAccountOpen(true);
-        void loadSnowAccounts();
-      };
-      const loadSnowAccount = async (pid) => {
-        setSnowAccountBusy(`load:${pid}`);
-        try {
-          const r = await api("/snowluma/load", { method: "POST", body: { pid, password: snowWebuiPass } });
-          if (r.ok === false) {
-            setSnowAccountErr({ code: r.code, message: r.error || "加载 QQ 失败", hint: r.hint });
-            toast(`✗ ${r.error || "加载 QQ 失败"}${r.hint ? `；${r.hint}` : ""}`);
-          } else {
-            setSnowAccountErr(null);
-            toast("✓ 已提交加载，正在等 SnowLuma 登录…");
-            await loadSnowAccounts();
-            setTimeout(() => { void loadSnowAccounts(); }, 2500);
-          }
-        } catch (e) {
-          setSnowAccountErr({ code: e.code, message: e.message, hint: e.hint });
-          toast(`✗ ${e.message}${e.hint ? `；${e.hint}` : ""}`);
-        } finally { setSnowAccountBusy(""); }
-      };
       const runLaunch = async (mode) => {
         const ids = mode === "stop"
-          ? ["qq", "bili", "pet", "vector"]
+          ? ["bili", "pet", "vector"]
           : Object.entries(launchSel).filter(([, on]) => on).map(([id]) => id);
         if (!ids.length) { toast("✗ 至少勾选一项"); return; }
         setBusy(mode === "stop" ? "launch-stop" : "launch-start");
         setLaunchErr(null);
         try {
-          const res = await api("/bridge", { method: "POST", body: {
+          const res = await api("/components", { method: "POST", body: {
             action: mode === "stop" ? "stop-selected" : "start-selected",
             components: ids,
             vectorPack: launchSel.vector ? vectorPack : "",
-            hideConsoles: hideConsoles === true,
           } });
           setLaunchResult({ ...res, _mode: mode });
           const bad = (res.items ?? []).filter((x) => !x.ok);
@@ -2368,101 +2222,25 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
             ? `✗ ${bad.length} 项失败：${bad.map((x) => x.label).join("、")}`
             : `✓ ${mode === "stop" ? "已停止" : "已启动"}：${(res.items ?? []).map((x) => x.label).join("、")}`);
           await reload();
-          const qqItem = (res.items ?? []).find((item) => item.id === "qq");
-          if (mode === "start" && qqItem?.needsAccount === true) openSnowAccounts();
         } catch (e) {
           setLaunchErr({ message: e.message, code: e.code, hint: e.hint });
           toast(`✗ ${mode === "stop" ? "停止" : "启动"}失败：${e.message}${e.hint ? `；${e.hint}` : ""}`);
         } finally { setBusy(""); }
       };
-      const muteLimit = async (ev) => {
+      const muteTimeout = async (event) => {
+        if (!event) return;
         try {
-          const code = ev.reason?.code || ev.event;
-          if (ev.gate === "timeout") {
-            await api("/timeout-mute", { method: "POST", body: { code } });
-          }
-          await api("/limit-mute", { method: "POST", body: { code, setting: ev.evidence?.setting || "" } });
-          toast(ev.gate === "timeout" ? "✓ 以后不再提示这个超时" : "✓ 以后不再显示这个限制提醒");
+          await api("/bili/timeout-mute", { method: "POST", body: { code: event.reason?.code || event.event } });
           await loadGateEvents();
-        } catch (e) { toast("✗ " + e.message); }
+        } catch (error) { toast(error.message); }
       };
-      const limitEvents = (gateData?.events ?? []).filter((ev) => ev.gate === "limit" || ev.gate === "timeout" || ev.evidence?.setting);
+      const limitEvents = (gateData?.events ?? []).filter((event) => event.gate === "timeout");
       return h("div", null,
-        snowAccountOpen ? (() => {
-          const rows = Array.isArray(snowAccountData?.processes) ? snowAccountData.processes : [];
-          const accounts = Array.isArray(snowAccountData?.accounts) ? snowAccountData.accounts : [];
-          const needPass = ["SNOWLUMA_WEBUI_PASSWORD_MISSING", "SNOWLUMA_WEBUI_LOGIN_FAILED", "SNOWLUMA_WEBUI_AUTH"].includes(String(snowAccountErr?.code || ""));
-          return h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget && !snowAccountBusy) setSnowAccountOpen(false); } },
-            h("div", { className: "qbw-modal", style: { maxWidth: "720px", maxHeight: "82vh", overflow: "auto" } },
-              h("h3", null, "加载 QQ 账号"),
-              h("p", { className: "qbw-hint" },
-                // 2026-11-06：这句以前写死「SnowLuma 已启动」，控制台没起来时用户会以为是 QQ 没启动。
-                String(snowAccountErr?.code || "").startsWith("SNOWLUMA_WEBUI")
-                  ? `读不到 SnowLuma 控制台${snowAccountErr?.hint ? `（${snowAccountErr.hint}）` : ""}。先确认 SnowLuma 在运行、控制台端口正确，再点「刷新」。`
-                  : "SnowLuma 已启动，但还没加载 QQ。下面是从 SnowLuma 检测到的进程；选一个点「加载」，加载后桥接会自动连上，不用再去 SnowLuma 控制台。"),
-              snowAccountErr ? h("div", { className: "qbw-err", style: { margin: "6px 0", padding: "8px 10px", borderRadius: "8px", background: "rgba(192,57,43,.12)" } },
-                `${snowAccountErr.code ? `（${snowAccountErr.code}）` : ""}${snowAccountErr.message || "读取失败"}`,
-                snowAccountErr.hint ? h("div", { className: "qbw-hint" }, `建议：${snowAccountErr.hint}`) : null) : null,
-              snowAccountBusy === "read" ? h("div", { className: "qbw-hint" }, "正在读取 SnowLuma 账号…") : null,
-              rows.length ? h("div", { style: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" } },
-                rows.map((p) => h("div", { className: "qbw-row", key: `snow-proc-${p.pid}`, style: { alignItems: "center", border: "1px solid rgba(127,127,127,.24)", borderRadius: "10px", padding: "8px 10px" } },
-                  h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
-                    h("b", null, p.nickname || (p.uin ? `QQ ${p.uin}` : "QQ 进程")),
-                    h("div", { className: "qbw-hint" },
-                      `${p.uin ? `QQ ${p.uin} · ` : ""}PID ${p.pid ?? "—"} · ${p.loggedIn ? "已加载" : (p.status || "可加载")}${p.injected ? " · 已注入" : ""}`),
-                    p.error ? h("div", { className: "qbw-hint", style: { color: "var(--qbw-err-text)" } }, p.error) : null),
-                  h(Btn, {
-                    kind: "qbw-btn2",
-                    disabled: !!snowAccountBusy || p.loggedIn || !p.pid,
-                    onClick: () => loadSnowAccount(p.pid),
-                  }, p.loggedIn ? "已加载" : (snowAccountBusy === `load:${p.pid}` ? "加载中…" : "加载"))))) : null,
-              !rows.length && !snowAccountBusy ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
-                // 控制台读不到时进程列表必然是空的；这时叫用户「去启动 QQ」是错的建议。
-                String(snowAccountErr?.code || "").startsWith("SNOWLUMA_WEBUI")
-                  ? "进程列表读不到：上面那条错误解决之前，这里永远是空的（和 QQ 有没有启动无关）。"
-                  : "没检测到可加载的 QQ 进程。先启动 QQ 客户端（不是 SnowLuma 设置页），再点「刷新」；某些 SnowLuma 版本要求先在它的控制台里登录一次。") : null,
-              accounts.length ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
-                `已连接账号：${accounts.map((a) => `${a.nickname || a.uin}（${a.uin}）`).join(" · ")}`) : null,
-              needPass ? h("div", { style: { marginTop: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
-                h("input", { type: "password", className: "qbw-input", value: snowWebuiPass, placeholder: "SnowLuma WebUI 访问密码", onChange: (e) => setSnowWebuiPass(e.target.value) }),
-                h(Btn, { kind: "qbw-btn2", disabled: !!snowAccountBusy || !snowWebuiPass.trim(), onClick: () => loadSnowAccounts(snowWebuiPass) }, "用这个密码读取")) : null,
-              h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
-                h(Btn, { kind: "qbw-btn2", disabled: !!snowAccountBusy, onClick: () => loadSnowAccounts() }, snowAccountBusy === "read" ? "刷新中…" : "刷新"),
-                h(Btn, { kind: "qbw-btn2", onClick: () => setSnowAccountOpen(false), disabled: !!snowAccountBusy }, "关闭")),
-              snowAccountData?.webui ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `SnowLuma 控制台：${snowAccountData.webui}`) : null));
-        })() : null,
-        h(RoleDispatchCard),
-        h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteLimit }),
-        // 今日唤醒额度用完 = 它不回消息的最常见原因；以前只在 state/bridge.log 里写一行。
-        (() => {
-          const guard = bridge?.wakeGuard;
-          const blockedRows = Array.isArray(guard?.conversations) ? guard.conversations.filter((row) => row?.blocked) : [];
-          if (!blockedRows.length) return null;
-          const label = (key) => (String(key).startsWith("private:") ? `私聊 ${String(key).slice(8)}` : `群 ${String(key).slice(6)}`);
-          return h("div", { className: "qbw-warnbox" },
-            h("b", null, "⚠️ 今天叫不醒它：唤醒额度已用完"),
-            h("div", null, blockedRows.map((row) => `${label(row.key)} ${row.dayCount}/${row.maxDay}`).join("、"),
-              " —— 额度内不会再回消息，消息会留在未读（不会丢）。"),
-            h("div", null, "去「QQ → 高级 → Token 防爆破」调高「私聊每天最多醒」，或等次日 00:00 自动重置。"),
-            h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
-              h(Btn, { kind: "qbw-btn2", onClick: () => goTab?.("qq") }, "去调高额度")));
-        })(),
-        h("div", { className: "qbw-infobox" },
-          "一个窗口管两边：QQ 仍然由原来那个桥接进程收发消息，B站仍然用同一份 bili.config.json。",
-          "合体插件不复制配置，只把参数、记忆、身份对齐和扩展接口装到一起。"),
         h("div", { className: "qbw-grid" },
           h("div", { className: "qbw-card" },
-            h("h4", null, "QQ 桥接 ", h(StatusDot, { ok: bridge.running && bridge.ok, warn: bridge.running && !bridge.ok }, bridge.running ? "运行中" : "未运行")),
-            qqSessionFailure ? h("div", { className: "qbw-warnbox", role: "status" }, qqSessionFailure.error + "。" + qqSessionFailure.hint) : null,
-            h("div", { className: "qbw-kv" }, h("span", null, "端口"), h("span", null, bridge.port ?? "—")),
-            h("div", { className: "qbw-kv" }, h("span", null, "PID"), h("span", null, bridge.pid ?? bridge.lockPid ?? "—")),
-            h("div", { className: "qbw-kv" }, h("span", null, "模式"), h("span", null, overview?.mode?.effective ?? overview?.mode?.local ?? bridge.mode ?? "—")),
-            h("div", { className: "qbw-kv" }, h("span", null, "群白名单"), h("span", null, `${overview?.mode?.allowGroups ?? 0} 个`)),
-            h("div", { className: "qbw-kv" }, h("span", null, "私聊白名单"), h("span", null, `${overview?.mode?.allowPrivate ?? 0} 人`)),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: () => act("start"), disabled: !!busy || bridge.running }, "启动"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("restart"), disabled: !!busy }, "重启"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("stop"), disabled: !!busy || !bridge.running }, "停止"))),
+            h("h4", null, "鱼姬之家"),
+            h("p", null, overview?.web?.running ? "本机聊天运行中" : "本机聊天未启动"),
+            h(Btn, { onClick: () => goTab?.("web-chat") }, "鱼姬之家设置")),
           h("div", { className: "qbw-card" },
             h("h4", null, "B站 ", h(StatusDot, { ok: Boolean(bili.available), warn: bili.enabled && !bili.available }, bili.available ? "记忆已生成" : "暂无记忆")),
             h("div", { className: "qbw-kv" }, h("span", null, "记忆同步"), h("span", null, bili.enabled ? "开" : "关")),
@@ -2474,87 +2252,26 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 setBusy("refresh-bili");
                 try { const r = await api("/memory", { method: "POST", body: { action: "refresh-bili" } }); toast(r.ok ? "✓ B站记忆已刷新" : `✗ ${r.error ?? "失败"}`); await reload(); } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
               }, disabled: !!busy }, "刷新 B站记忆"))),
-          h("div", { className: "qbw-card" },
-            h("h4", null, "合体层 ", h(StatusDot, { ok: scheduler.running }, scheduler.running ? "生物钟在跑" : "生物钟未启动")),
-            h("div", { className: "qbw-kv" }, h("span", null, "身份对齐"), h("span", null, `${align.links ?? 0} 条 / 候选 ${align.candidates ?? 0}`)),
-            h("div", { className: "qbw-kv" }, h("span", null, "QQ→B站记忆"), h("span", null, memory.qqToBili?.enabled ? "开" : "关")),
-            h("div", { className: "qbw-kv" }, h("span", null, "B站→QQ记忆"), h("span", null, memory.biliToQq?.enabled ? "开" : "关")),
-            h("div", { className: "qbw-kv" }, h("span", null, "隐私策略"), h("span", null, `v${overview?.privacyPolicyVersion ?? "?"}`)),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { kind: "qbw-btn2", onClick: () => act("refresh-bili"), disabled: !!busy }, "刷新 B站记忆"))),
           h("div", { className: "qbw-card", style: { order: -1, gridColumn: "1 / -1" } },
-            h("h4", null, "启动"),
-            h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
-              "一键启动会按 QQ / B站 页里的「是否启动」开关拉起对应平台；也可以只启动一边。",
-              qqStart ? "" : " QQ 启动开关已关闭。",
-              biliStart ? "" : " B站 启动开关已关闭。"),
-            h("div", { className: "qbw-kv" },
-              h("span", null, "QQ"),
-              h("span", null, qqStart ? (bridge.running ? "启动开关开 · 运行中" : "启动开关开 · 未运行") : "启动开关关")),
-            h("div", { className: "qbw-kv" },
-              h("span", null, "B站"),
-              h("span", null, biliStart ? (scheduler.running ? "启动开关开 · 生物钟在跑" : "启动开关开 · 未运行") : "启动开关关")),
-            h("div", { className: "qbw-group", style: { marginTop: "8px" } }, "一键启动 SurfCore"),
-            h("div", { className: "qbw-actions", style: { marginTop: "4px" } },
-              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
-                h("input", { type: "checkbox", checked: launchSel.qq, onChange: (e) => setLaunchSel((v) => ({ ...v, qq: e.target.checked })) }),
-                h("span", null, `${externalOneBot ? "QQ（OneBot）" : "QQ（含 SnowLuma）"}${launch.qq?.running ? " · 运行中" : " · 未运行"}`)),
-              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
-                h("input", { type: "checkbox", checked: launchSel.bili, onChange: (e) => setLaunchSel((v) => ({ ...v, bili: e.target.checked })) }),
-                h("span", null, `B站${launch.bili?.running ? " · 运行中" : " · 未运行"}`)),
-              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginRight: "10px" } },
-                h("input", { type: "checkbox", checked: launchSel.pet, onChange: (e) => setLaunchSel((v) => ({ ...v, pet: e.target.checked })) }),
-                h("span", null, `桌宠${launch.pet?.running ? " · 运行中" : (launch.pet?.installed ? " · 未运行" : " · 未安装")}`)),
-              h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px" } },
-                h("input", { type: "checkbox", checked: launchSel.vector, onChange: (e) => setLaunchSel((v) => ({ ...v, vector: e.target.checked })) }),
-                h("span", null, `向量记忆${launch.vector?.running ? " · 运行中" : " · 未运行"}`))),
-            h("label", { className: "qbw-row", style: { alignItems: "center", gap: "6px", marginTop: "4px" } },
-              h("input", {
-                type: "checkbox", checked: hideConsoles,
-                onChange: (e) => { setHideConsoles(e.target.checked); setUnified?.(["platforms", "hideConsoles"], e.target.checked); },
-              }),
-              h("span", null, "隐藏启动后的命令行黑框"),
-              h("span", { className: "qbw-hint" }, externalOneBot ? "应用于可隐藏控制台的组件" : "勾选后一键启动不再弹 cmd / SnowLuma 控制台窗口")),
-            launchSel.vector ? (() => {
-              const models = (launch.vector?.models ?? []).filter((m) => m.valid);
-              const providers = (launch.vector?.providers ?? []).filter((p) => p.hasKey);
-              const total = models.length + providers.length;
-              return h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: 0, flexWrap: "wrap" } },
-                h("span", { className: "qbw-hint" }, "向量模型（勾选后会把记忆方式切到向量）："),
-                h("select", {
-                  className: "qbw-select", value: vectorPack, disabled: !!busy || !total,
-                  onChange: (e) => setVectorPack(e.target.value),
-                },
-                  models.map((m) => h("option", { key: `local:${m.id}`, value: `local:${m.id}` }, `本地 · ${m.name}`)),
-                  providers.map((p) => h("option", { key: `cloud:${p.id}`, value: `cloud:${p.id}` }, `云端 · ${CLOUD_PROVIDER_BY_ID[p.id]?.name ?? p.id}`))),
-                total ? null : h("span", { className: "qbw-hint" }, launch.vector?.ok === false && launch.vector?.lastError ? `状态读取失败：${launch.vector.lastError}` : "还没有已安装的本地模型或已保存 Key 的云端服务商"));
-            })() : null,
-            h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
-              h(Btn, { onClick: () => runLaunch("start"), disabled: !!busy }, busy === "launch-start" ? "启动中…" : "一键启动 SurfCore"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => runLaunch("stop"), disabled: !!busy }, busy === "launch-stop" ? "停止中…" : "一键停止（全部）"),
-              h(Btn, { kind: "qbw-btn2", onClick: openSnowAccounts, disabled: !!busy }, "加载 QQ 账号"),
-              h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("qq"), disabled: !!busy }, "去 QQ 页改启动开关"),
-              h(Btn, { kind: "qbw-btn3", onClick: () => goTab?.("bili"), disabled: !!busy }, "去 B站 页改启动开关")),
-            [["qq", "QQ"], ["bili", "B站"], ["pet", "桌宠"], ["voice", "语音"], ["vector", "向量记忆"]].map(([id, label]) =>
-              launch[id]?.lastError && (id !== "vector" || launchSel.vector) ? h("div", { className: "qbw-hint", key: `launch-err-${id}`, style: { color: "var(--qbw-err-text)", marginTop: "2px" } },
-                `${label}：${launch[id].lastError}`) : null),
-            launchErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } },
-              `${launchErr.code ? `（${launchErr.code}）` : ""}${launchErr.message}`,
-              launchErr.hint ? h("div", { className: "qbw-hint" }, `建议：${launchErr.hint}`) : null) : null,
-            (launchResult?.items ?? []).length ? h("div", { style: { marginTop: "6px" } },
-              ...(launchResult.items).map((it) => h("div", { className: "qbw-kv", key: it.id },
-                h("span", null, `${it.ok ? "✓" : "✗"} ${it.label}`),
-                h("span", null, it.ok ? (it.message || (launchResult?._mode === "stop" ? "已停止" : "已启动")) : `${it.error || "失败"}${it.hint ? `；${it.hint}` : ""}`)))) : null,
-            h("label", { className: "qbw-row", style: { alignItems: "center" } },
-              h("span", { className: "qbw-label" }, "一键启动成功后弹窗提示"),
-              h("input", {
-                type: "checkbox",
-                checked: unified?.bridge?.startupNotify !== false,
-                onChange: (e) => setUnified(["bridge", "startupNotify"], e.target.checked),
-              })),
-            h("div", { className: "qbw-hint" }, externalOneBot
-              ? "先在 LLBot 登录 QQ，并在「QQ」页配置 OneBot。启动 QQ 会拉起 SurfCore 桥接。人格卡在「角色」页维护。"
-              : "一键启动会按勾选项启动，已在跑的不重复启动；QQ 会按需打开已安装的 SnowLuma，并弹出「加载 QQ 账号」窗口自动检测进程（QQ 本身未登录时仍需扫码）。勾选「向量记忆」会启动 Embedding runtime 并把记忆方式切到向量（自检不过不会切）；一键停止会把记忆方式切回叙事。不会关闭 SnowLuma 本体。人格卡在「角色」页维护。")),
+            h("h4", null, "组件启停"),
+            h("div", { className: "qbw-actions" },
+              [["bili", "B 站"], ["pet", "桌宠"], ["vector", "向量记忆"]].map(([id, label]) =>
+                h("label", { key: id, className: "qbw-row" },
+                  h("input", { type: "checkbox", checked: launchSel[id], disabled: id === "bili" && !biliStart,
+                    onChange: (e) => setLaunchSel((value) => ({ ...value, [id]: e.target.checked })) }),
+                  `${label}${launch[id]?.running ? " · 运行中" : ""}`))),
+            launchSel.vector ? h("select", { value: vectorPack, onChange: (e) => setVectorPack(e.target.value), "aria-label": "选择向量模型" },
+              h("option", { value: "" }, "沿用当前模型"),
+              (launch.vector?.models ?? []).filter((x) => x.valid).map((model) =>
+                h("option", { key: model.id, value: `local:${model.id}` }, model.name)),
+              (launch.vector?.providers ?? []).filter((x) => x.hasKey).map((provider) =>
+                h("option", { key: provider.id, value: `cloud:${provider.id}` }, provider.id))) : null,
+            h("div", { className: "qbw-actions" },
+              h(Btn, { onClick: () => runLaunch("start"), disabled: !!busy }, "启动所选"),
+              h(Btn, { onClick: () => runLaunch("stop"), disabled: !!busy }, "停止组件")),
+            launchErr ? h("p", { className: "qbw-err" }, launchErr.message) : null,
+            (launchResult?.items ?? []).map((item) => h("p", { key: item.id, className: item.ok ? "qbw-hint" : "qbw-err" },
+              `${item.label} · ${item.error || item.message || "完成"}${!item.ok && item.hint ? " · " + item.hint : ""}`))),
           h("div", { className: "qbw-card" },
             h("h4", null, "更新 ", (() => {
               const rows = updates.results ?? [];
@@ -2730,62 +2447,12 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                 h(Btn, { kind: "qbw-btn2", onClick: () => ackGate(null), disabled: !(gateData?.counts?.unacked > 0) }, "全部确认"),
                 h(Btn, { kind: "qbw-btn2", onClick: loadGateEvents }, "刷新")))
             : null,
-          h(AdvancedSettings, { note: "QQ 网关 / 扩展与平台" },
-            externalOneBot ? null : h("div", { className: "qbw-card" },
-              h("h4", null, "SnowLuma 安装"),
-              (bridge.running && snow.everConnected === true && snow.diagnosis?.state && snow.diagnosis.state !== "ok")
-                ? h("div", { className: "qbw-err", style: { margin: "6px 0" } },
-                  `SnowLuma 连接异常（${snow.diagnosis.state}）：${snow.diagnosis.hint || "请检查 SnowLuma 是否运行并已登录"}`)
-                : null,
-              h("p", null, "第一次使用：下载官方 SnowLuma2 → 解压 → 点「检测已安装的 SnowLuma」→ 启动 QQ 并扫码。"),
-              h("div", { className: "qbw-kv" }, h("span", null, "当前安装目录"), h("span", null, snow.launcherPath || "未设置")),
-              h("div", { className: "qbw-actions" },
-                h(Btn, { kind: "qbw-btn2", onClick: () => window.open(snow.downloadUrl || "https://github.com/SnowLuma/SnowLuma/releases/latest", "_blank", "noopener") }, "打开官方下载页"),
-                h(Btn, { onClick: () => detectSnowLuma(), disabled: !!busy }, "检测已安装的 SnowLuma"),
-                h(Btn, { kind: "qbw-btn2", onClick: () => setSnowImport(true), disabled: !!busy }, "手动选择已安装的 SnowLuma"),
-                h(Browse, { mode: "dir", title: "选择 SnowLuma2 解压出来的根目录（里面有 app）", onPick: (picked) => detectSnowLuma(picked) }),
-                h(Btn, { kind: "qbw-btn2", onClick: () => act("start-snowluma"), disabled: !!busy }, "只打开 SnowLuma"),
-                h(Btn, { kind: "qbw-btn3", onClick: () => act("stop-snowluma"), disabled: !!busy }, "关闭 SnowLuma")),
-              h("div", { className: "qbw-hint" }, "检测只会在常见位置里猜。装在别处（例如 D:\软件\SnowLuma2）就点「手动选择已安装的 SnowLuma」，选 SnowLuma.exe 或 app\launcher.bat（也可以直接选解压根目录）。"),
-              h("div", { className: "qbw-hint" }, "「手动选择」只是告诉插件你装好的 SnowLuma 在哪：不下载、不安装、不移动、不删除任何文件。"),
-              h("div", { className: "qbw-hint" }, "SurfCore 只负责检测、打开和查看连接状态；SnowLuma2 本体按 EULA 不随插件分发，安装与扫码仍需你完成。")),
-            h("div", { className: "qbw-card" },
-              h("h4", null, "扩展与平台"),
-              h("div", { className: "qbw-kv" }, h("span", null, "已启用扩展"), h("span", null, `${(overview?.extensions ?? []).filter((x) => x.enabled).length} / ${(overview?.extensions ?? []).length}`)),
-              h("div", { className: "qbw-kv" }, h("span", null, "平台"), h("span", null, (overview?.platforms ?? []).map((x) => `${x.name}${x.status === "planned" ? "(预留)" : ""}`).join(" · "))),
-              h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "贴吧已预留接口：接适配器即可，不改主流程。")))),
-        h("div", { className: "qbw-actions" },
-          h(Btn, { kind: "qbw-btn2", onClick: reload, disabled: !!busy }, "刷新状态"),
-          h(Btn, { kind: "qbw-btn3", onClick: async () => {
-            setBusy("backup");
-            try { const r = await api("/diagnostics", { method: "POST", body: { action: "backup" } }); toast(`✓ 已备份 ${r.created?.length ?? 0} 个文件`); } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-          }, disabled: !!busy }, "立即备份配置")),
-        snowImport ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setSnowImport(false); } },
-          h("div", { className: "qbw-modal" },
-            h("h3", null, "导入 SnowLuma 的安装位置"),
-            h("p", null, "这里导入的是**你已经装好的 SnowLuma 的启动文件**，不是安装包；SurfCore 不会下载、不会安装、不会移动或删除任何文件。"),
-            h("p", { className: "qbw-hint" }, "请选择下面任意一个："),
-            h("ul", { style: { margin: "4px 0 8px", paddingLeft: "18px", fontSize: "12px", lineHeight: "19px" } },
-              h("li", null, "SnowLuma.exe —— SnowLuma2 目录里的主程序"),
-              h("li", null, "app\launcher.bat —— 标准布局里的启动脚本"),
-              h("li", null, "解压出来的 SnowLuma2 根目录（点「改为选择目录」）")),
-            h("p", { className: "qbw-hint" }, "选完只会做两件事：验证这个位置确实是 SnowLuma、把安装目录记进配置。不复制、不改名、不卸载。"),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: pickSnowLumaFile, disabled: !!busy }, "选择文件…"),
-              h(Btn, { kind: "qbw-btn2", onClick: async () => { setSnowImport(false); await pickSnowLuma(); } }, "改为选择目录"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => setSnowImport(false) }, "取消")))) : null,
-        snowError ? h(ErrorModal, {
-          title: snowError.title,
-          message: snowError.message,
-          hint: snowError.hint,
-          tried: snowError.tried,
-          disabled: !!busy,
-          actions: [
-            { label: "浏览…选择目录", onClick: async () => { setSnowError(null); await pickSnowLuma(); } },
-            { label: "打开官方下载页", kind: "qbw-btn2", onClick: () => window.open(snow.downloadUrl || "https://github.com/SnowLuma/SnowLuma/releases/latest", "_blank", "noopener") },
-          ],
-          onClose: () => setSnowError(null),
-        }) : null,
+          h(LimitReportCard, { events: limitEvents, goTab, onAck: ackGate, onMute: muteTimeout }),
+          h("div", { className: "qbw-card" },
+            h("h4", null, "扩展"),
+            h("p", null, `${(overview?.extensions ?? []).filter((x) => x.enabled).length} 个已启用`),
+            h(Btn, { onClick: () => goTab?.("extensions") }, "管理扩展"))),
+        h("div", { className: "qbw-actions" }, h(Btn, { onClick: reload, disabled: !!busy }, "刷新状态")),
         restartHint ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setRestartHint(null); } },
           h("div", { className: "qbw-modal" },
             h("h3", null, restartHint.staged ? "更新已下载：重启 DSH 后生效" : "有可用更新：安装后需要重启 DSH"),
@@ -2911,12 +2578,10 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
       };
 
       const doRun = async () => {
-        const toPet = (carrier ?? P.carrier) === "pet";
-        const toWeb = (carrier ?? P.carrier) === "web";
+        const toPet = (status?.carrier ?? carrier ?? P.carrier) === "pet";
         const ok = confirm(toPet
           ? "现在就让小肥鱼在桌宠气泡里主动搭话一次？\n\n会真的生成一句话（算一次模型回合）；语音载体还会合成语音。"
-          : toWeb ? "让鱼姬在网页主动搭话一次？这会运行一个 DSH 回合。"
-          : "现在就让小肥鱼按「目的机制」主动私聊你一次？\n\n这会真的发 QQ 消息（不占每日分享/评论额度，但会算一次模型回合）。");
+          : "让鱼姬在网页主动搭话一次？这会运行一个 DSH 回合。");
         if (!ok) return;
         setBusy("purpose-run");
         setMsg("");
@@ -2964,11 +2629,6 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           value: Math.round(Number(pv(key, fallback * 60000)) / 60000),
           onChange: (e) => setP(key, Math.max(0, Math.round(Number(e.target.value) || 0)) * 60000),
         }));
-      const textRow = (label, key, fallback, hint, placeholder) => h(Row, { label, hint },
-        h("input", {
-          className: "qbw-input", value: pv(key, fallback), placeholder,
-          onChange: (e) => setP(key, e.target.value),
-        }));
       const stepBox = (label, value, hint) => h("div", {
         key: label,
         style: { flex: "1 1 92px", minWidth: "92px", padding: "7px 9px", border: "1px solid var(--qbw-line)", borderRadius: "8px", background: "var(--qbw-surface-2)" },
@@ -2991,7 +2651,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         });
       const goals = Array.isArray(st.goals) ? st.goals : [];
       const flow = [
-        ["素材", st.materialCount ?? "—", "QQ/B站/记忆/人格"],
+        ["素材", st.materialCount ?? "—", "本地聊天、B 站、记忆和人格"],
         ["观察", st.observationCount ?? 0, "出现/谁提/正负"],
         ["目标假设", st.goalCount ?? goals.length, "归属/置信/风险"],
         ["候选", st.candidateCount ?? "—", "去重/多样性"],
@@ -3003,18 +2663,16 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("div", null,
             h("h4", { style: { margin: 0 } }, "主动找主人 · 目的机制",
               status ? h("span", { className: "qbw-badge " + (status.enabled ? "ok" : "warn") }, status.enabled ? "开" : "关") : null,
-              status?.carrier ? h("span", { className: "qbw-badge" }, status.carrier === "pet" ? "载体：桌宠" : "载体：QQ") : null,
+              status?.carrier ? h("span", { className: "qbw-badge" }, status.carrier === "pet" ? "载体：桌宠" : "载体：鱼姬之家") : null,
               status?.focus ? h("span", { className: "qbw-badge warn" }, "专注中 · 自动停") : null),
             h("p", { style: { marginTop: "4px" } },
-              "不是关键词触发器：从 QQ + B站 + 人格卡 + 记忆卡里形成「目标假设」，带归属 / 置信度 / 风险，再决定分享、索取、邀请还是倾诉。",
-              "载体在顶部卡片里选：桌宠 = 气泡/语音，QQ = 私聊；两边共用这一套逻辑与状态。")),
+              "鱼姬会结合聊天、B 站经历、记忆卡和人格卡，判断这次想跟你聊什么。")),
           h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新状态")),
         error ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, error) : null,
         status?.availability ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-          `载体现状：${status.availability.pet?.installed ? (status.availability.pet.running ? (status.availability.pet.online ? "桌宠在线" : "桌宠已启动 · 还没连上") : "桌宠已安装 · 未运行") : "桌宠未安装"}；` +
-          `QQ ${status.availability.qq?.running ? "桥接在跑" : "桥接没在跑"}${status.availability.qq?.mode ? `（模式 ${status.availability.qq.mode}）` : ""}。`) : null,
+          `鱼姬之家${status.availability.web?.running ? "已启动" : "未启动"} · ${status.availability.pet?.online ? "桌宠在线" : "桌宠离线"}`) : null,
         status?.focus ? h("div", { className: "qbw-hint", style: { marginTop: "4px", color: "var(--qbw-warn-text)" } },
-          "专注模式开着：自动主动搭话已暂停（QQ / 桌宠都不发）；手动「立即试一次」仍可用。去「桌宠」页或右键菜单关闭。") : null,
+          "专注模式暂停了自动搭话。「立即试一次」仍可用。") : null,
         status ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
           `今天 ${st.sentToday ?? 0}/${dailyMax || "不限"} 已投递 · 尝试 ${st.countToday ?? 0} 次 · 上次：${outcomeText}${st.lastRunAt ? `（${at(st.lastRunAt)}）` : ""} · 下次：${at(st.nextFireAt)}`,
           st.lastPurpose ? h("div", null, `上次的目的：${st.lastPurpose}`) : null,
@@ -3060,7 +2718,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
 
         h("details", { style: { marginTop: "8px" } },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "素材与目标"),
-          numberRow("翻多久以内的 QQ 记忆（小时）", "materialWindowHours", 72, "默认 72；B站 另有窗口", { min: 1, max: 336 }),
+          numberRow("近期聊天取材范围（小时）", "materialWindowHours", 72, "默认 72；B站 另有窗口", { min: 1, max: 336 }),
           numberRow("B站 记忆窗口（天）", "biliWindowDays", 7, "默认 7 天", { min: 1, max: 60 }),
           numberRow("最多带多少条素材", "maxMaterials", 36, "默认 36；太多会挤占提示词", { min: 6, max: 80 }),
           numberRow("素材少于多少就不硬找话", "minMaterials", 2, "有 pending / 人格卡 / 记忆卡时不受此限", { min: 0, max: 20 }),
@@ -3070,8 +2728,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "重试 / 上限 / 目标"),
           minutesRow("失败后多久重试（分钟）", "retryMs", 15, "投递失败 / 回合报错", { min: 1, max: 360 }),
           numberRow("最多重试几次", "maxAttempts", 3, "连续失败后回到正常间隔", { min: 1, max: 10 }),
-          numberRow("提示词硬上限（字符）", "promptMaxChars", 16000, "超出会截中间、保留头尾指令", { min: 4000, max: 30000, step: 1000 }),
-          textRow("找哪个 QQ（留空 = ownerQQ）", "ownerUin", "", "必须同时在 allow.private，且与小肥鱼互为好友", "3287064288")),
+          numberRow("提示词硬上限（字符）", "promptMaxChars", 16000, "超出会截中间、保留头尾指令", { min: 4000, max: 30000, step: 1000 })),
 
         h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "8px", paddingTop: "0", flexWrap: "wrap" } },
           h(Btn, { kind: "qbw-btn2", onClick: doPreview, disabled: !!busy }, busy === "purpose-preview" ? "生成中…" : "预览这一轮（不发）"),
@@ -3081,92 +2738,24 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("summary", null, `预览：${preview.selected?.text ?? "（没有选中目的）"}${preview.selected?.needLabel ? ` · 需求 ${preview.selected.needLabel}` : ""}${preview.selected?.actionLabel ? ` · 行动 ${preview.selected.actionLabel}` : ""} · 素材 ${preview.materials?.length ?? 0} 条`),
           h("textarea", { className: "qbw-textarea", readOnly: true, rows: 18, style: { marginTop: "6px" }, value: preview.prompt ?? "" })) : null,
         h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
-          "载体 = 桌宠时：所有节奏参数保存即生效（插件每次读配置）；不需要重启桥接。",
-          "载体 = QQ 时：节奏参数要重启桥接才生效（桥接只在启动时读 config.json），但切换载体本身 30 秒内生效。",
+          "主动搭话设置保存后生效。",
           "目的状态跟着当前角色走：换人格卡/记忆卡后按新角色重新生成动机，不会继承上一个角色。",
           "硬闸门：安静时段 / 每天上限 / 你正在聊天 / token 额度 / 好友关系，任一不过都不会发。"));
     }
 
-    // ── 目的机制 · 载体选择（桌宠 / QQ）──────────────────────────────────
-    // 2026-10-25 用户要求：目的机制独立成一个栏目；载体可选桌宠或 QQ，
-    // 未安装桌宠的用户默认 QQ。同一时刻只有一个载体在发，避免两边同时收到。
-    function PurposeCarrierCard({ cfg, set, busy, toast }) {
-      const P = cfg?.purpose && typeof cfg.purpose === "object" ? cfg.purpose : {};
-      const carrier = ["pet", "web"].includes(P.carrier) ? P.carrier : "qq";
-      const modality = P.petModality === "voice" ? "voice" : "text";
-      const [status, setStatus] = useState(null);
-      useEffect(() => {
-        api("/purpose/status").then(setStatus).catch(() => {});
-      }, []);
-      const pet = status?.availability?.pet ?? {};
-      const qq = status?.availability?.qq ?? {};
-      const choose = (value) => {
-        set(["purpose", "carrier"], value);
-        toast(`✓ 载体改为「${value === "pet" ? "桌宠" : "QQ"}」，记得点底部保存`);
-      };
-      const seg = (options, value, onChange) => h("div", { style: { display: "inline-flex", gap: "4px", padding: "2px", borderRadius: "999px", background: "var(--qbw-surface)", border: "1px solid var(--qbw-line)" } },
-        options.map(([val, label]) => h("button", {
-          key: val,
-          type: "button",
-          onClick: () => onChange(val),
-          style: {
-            border: "none",
-            borderRadius: "999px",
-            padding: "3px 12px",
-            fontSize: "12px",
-            lineHeight: 1.7,
-            cursor: "pointer",
-            background: value === val ? "var(--qbw-brand)" : "transparent",
-            color: value === val ? "var(--qbw-on-brand)" : "var(--qbw-muted)",
-          },
-        }, label)));
-      const cardStyle = (active) => ({
-        flex: "1 1 240px",
-        minWidth: "220px",
-        padding: "10px 12px",
-        borderRadius: "10px",
-        border: `1px solid ${active ? "var(--qbw-brand)" : "var(--qbw-line)"}`,
-        background: active ? "var(--qbw-hover)" : "var(--qbw-surface-2)",
-        cursor: "pointer",
-        boxShadow: active ? "0 0 0 2px var(--qbw-hover)" : "none",
-      });
-      const petText = !status ? "读取中…"
-        : !pet.installed ? "未安装桌宠：先去「桌宠」页安装，再回来选"
-        : !pet.running ? "已安装 · 未运行（去「桌宠」页启动）"
-        : pet.online ? `在线${pet.roleName ? ` · 角色「${pet.roleName}」` : ""}`
-        : "已启动 · 还没连上（等几秒，或看「桌宠」页状态）";
-      const qqText = qq.running
-        ? `桥接运行中${qq.mode ? ` · 模式 ${qq.mode}` : ""}`
-        : "桥接没在运行：选了也要先在「QQ」页启动";
-      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
-        h("h4", null, "触发载体",
-          h("span", { className: "qbw-badge" }, { pet: "桌宠", qq: "QQ", web: "鱼姬之家" }[carrier]),
-          status?.ok === false ? h("span", { className: "qbw-badge warn" }, "状态读不到") : null),
-        h("p", null, "目的机制只有一套（素材 → 驱动 → 目标假设 → 选择 → 回执）；这里决定这一句从哪个载体发出去。同一时刻只有一个执行者，不会桌宠和 QQ 同时收到。"),
-        h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" } },
-          h("div", { style: cardStyle(carrier === "qq"), onClick: () => choose("qq"), role: "button" },
-            h("div", { style: { fontWeight: 600, fontSize: "13px" } }, "QQ 私聊（默认）"),
-            h("div", { className: "qbw-hint" }, qqText),
-            h("div", { className: "qbw-hint" }, "没安装桌宠的用户保持这一项即可。")),
-          h("div", { style: cardStyle(carrier === "pet"), onClick: () => choose("pet"), role: "button" },
-            h("div", { style: { fontWeight: 600, fontSize: "13px" } }, "桌宠气泡 / 语音"),
-            h("div", { className: "qbw-hint" }, petText),
-            h("div", { className: "qbw-hint" }, "在桌面上说话：语音会念出来，气泡里始终显示文字。"))),
-        h("div", { style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "10px" } },
-          h("span", { style: { fontSize: "12px", opacity: 0.75 } }, "桌宠主动搭话形式"),
-          seg([["text", "文本"], ["voice", "语音"]], modality, (value) => {
-            set(["purpose", "petModality"], value);
-            toast(`✓ 桌宠主动搭话改为「${value === "voice" ? "语音" : "文本"}」，记得保存`);
-          }),
-          h("span", { className: "qbw-hint" }, carrier === "pet" ? "语音也会同时显示气泡文字" : "切到桌宠载体后生效")),
-        h(Row, { label: "桌宠没开着时回落到 QQ", hint: "开：桌宠没运行时由桥接照常私聊（按它自己的闸门/排程）；关：宁可这轮不发" },
-          h("input", {
-            className: "qbw-switch",
-            type: "checkbox",
-            checked: P.petFallbackToQQ !== false,
-            onChange: (e) => set(["purpose", "petFallbackToQQ"], e.target.checked),
-          })),
-        status?.ok === false ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, status.error || "") : null);
+    function PurposeCarrierCard({ cfg, set }) {
+      const purpose = cfg?.purpose ?? {};
+      const carrier = purpose.carrier === "pet" ? "pet" : "web";
+      return h("div", { className: "qbw-card" },
+        h("h4", null, "主动搭话投递"),
+        h(Row, { label: "投递到", hint: "选桌宠时，桌宠在线才发。" },
+          h("select", { value: carrier, onChange: (e) => set(["purpose", "carrier"], e.target.value) },
+            h("option", { value: "web" }, "鱼姬之家"),
+            h("option", { value: "pet" }, "桌宠"))),
+        carrier === "pet" ? h(Row, { label: "桌宠搭话形式" },
+          h("select", { value: purpose.petModality ?? "text", onChange: (e) => set(["purpose", "petModality"], e.target.value) },
+            h("option", { value: "text" }, "气泡"),
+            h("option", { value: "voice" }, "气泡和语音"))) : null);
     }
 
     // ── 桌宠对话测试：验证人设 / 模型 / 语音链路（也能看到气泡是否弹出）────
@@ -3213,7 +2802,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("select", { className: "qbw-select", value: modality, onChange: (e) => setModality(e.target.value) },
             h("option", { value: "text" }, "文本回复"), h("option", { value: "voice" }, "语音回复")),
           h(Btn, { kind: "qbw-btn2", onClick: send, disabled: !!busy || !proactive.online }, busy === "chat" ? "发送中…" : "发一句试试")),
-        !proactive.online ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, "桌宠没在线：先在「桌宠」页启动；也可以切回 QQ 载体。") : null,
+        !proactive.online ? h("div", { className: "qbw-hint", style: { marginTop: "4px" } }, "桌宠没在线：先在「桌宠」页启动；也可以把主动搭话投递到鱼姬之家。") : null,
         err ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, err) : null,
         reply ? h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
           `她回（${reply.modality === "voice" ? "语音" : "文本"}）：${reply.text}`) : null);
@@ -3222,8 +2811,8 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
     function PurposeTab({ qq, setQq, unified, setUnified, overview, busy, setBusy, toast, reload, goTab }) {
       return h("div", null,
         h("div", { className: "qbw-infobox" },
-          "「目的」现在是一个独立栏目：管小肥鱼什么时候主动找你、想说什么；载体可选桌宠、QQ 或鱼姬之家。",
-          "没装桌宠的用户默认走 QQ；装了桌宠后可以切到桌宠，同一时间只会有一个载体收到。"),
+          "设置鱼姬什么时候主动找你，以及投递到鱼姬之家还是桌宠。",
+          "同一时间只有一个投递载体。"),
         h(PurposeCarrierCard, { cfg: qq, set: setQq, busy, toast }),
         h(PurposeCard, { cfg: qq, set: setQq, busy, setBusy, toast, carrier: qq?.purpose?.carrier }),
         h(PetChatTestCard, { toast }),
@@ -3788,7 +3377,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
 
       const load = async () => {
         try {
-          const r = await api("/bridge", { method: "POST", body: { action: "token-summary" } });
+          const r = await api("/components", { method: "POST", body: { action: "token-summary" } });
           setData(r);
           setErr("");
           try {
@@ -4112,9 +3701,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             kv("动态回复", `一类 ${mine.best ?? 0} · 二创 ${mine.game ?? 0} · 动漫 ${mine.anime ?? 0} · 游戏 ${mine.gaming ?? 0}（每类 ${capText(L.mineDaily)}）`),
             kv("分享型", `${data.share?.used ?? 0} / ${data.share?.daily ?? "?"}`),
             h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `四类动态：${kindLine || "—"}`),
-            h("div", { className: "qbw-hint" }, `下一类：${data.dynamics?.next ? `${data.dynamics.next.label} ${data.dynamics.next.slotText}` : "—"}`),
-            h("div", { className: "qbw-hint" },
-              `QQ 分享：${data.qqShare?.enabled ? `下一班 ${data.qqShare.nextText ?? "—"} → ${(data.qqShare.groupsEffective ?? []).length} 个群` : "已关"}`))
+            h("div", { className: "qbw-hint" }, `下一类：${data.dynamics?.next ? `${data.dynamics.next.label} ${data.dynamics.next.slotText}` : "—"}`))
           : h("div", { className: "qbw-hint" }, "读取中…"));
     }
 
@@ -4987,7 +4574,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "主人账号：", accounts.owner?.configured ? `${accounts.owner.name || "（未取到昵称）"}（${accounts.owner.mid}）已扫码登录` : "未登录（点抓取会弹二维码）",
           " · 小肥鱼：", accounts.fish?.configured ? `${accounts.fish.name || "（未取到昵称）"}（${accounts.fish.mid}）已绑定` : "未绑定（B站 页可扫码）") : null,
         h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-          "抓取是只读的：读当前选中账号的观看历史 / 收藏夹 + 本地观看记录；不读浏览器登录的账号、不读 QQ 聊天、不点赞、不改账号。",
+          "抓取是只读的：读当前选中账号的观看历史 / 收藏夹 + 本地观看记录；不读浏览器登录的账号。",
           "抓主人需要先用主人的 B站 App 扫二维码；扫错号会被拒绝。"),
         scanErr ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, `✗ ${scanErr}`) : null,
         scan ? h("div", { style: { marginTop: "8px" } },
@@ -5133,7 +4720,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       return h("div", null,
         h(PlatformStartCard, {
           platform: "bili",
-          hint: "开 = DSH 启动时自动运行 B站 生物钟，并纳入「一键启动」；关 = 生物钟不自动跑、也不参与一键启动（保存后会停掉当前生物钟）。B站→QQ 的定时分享/记忆是桥接里的独立任务，由下面的「定时分享视频到群」和 QQ 侧「启用 B站 桥接」控制。",
+          hint: "开 = DSH 启动时自动运行 B站 生物钟，并纳入「一键启动」；关 = 生物钟不自动跑、也不参与一键启动（保存后会停掉当前生物钟）。",
           enabled: unified?.platforms?.start?.bili !== false,
           onChange: (value) => setUnified(["platforms", "start", "bili"], value),
           running: Boolean(overview?.scheduler?.running),
@@ -5147,7 +4734,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("p", null, "推荐扫码登录小肥鱼（用 B站 App 扫一扫）；手动粘贴 cookie 和待审核队列在「高级设置」里。"),
           h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: "6px", paddingTop: "0" } },
             h(Btn, { onClick: () => setQrFish(true), disabled: !!busy }, "扫码登录小肥鱼"))),
-        h(QqShareSection, { qq, set: setQqPath, data: automation, busy, setBusy, toast }),
         h(Section, { title: "作息窗口", note: "C 模式：每个窗口至少 1 次；全天上限见「每天最多醒来」，剩余次数按该时段最近评分分配，相邻两次至少隔「最小间隔」", defaultOpen: true },
           h("div", { style: { padding: "6px 0" } }, h(WindowsEditor, { value: cfg?.night?.windows, onChange: (v) => set(["night", "windows"], v) })),
           h("div", { className: "qbw-actions" },
@@ -5215,9 +4801,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [draft, setDraft] = useState({ full: "", core: "", tone: "", daily: "", scenes: {} });
       const [tab, setTab] = useState("full");
       const [split, setSplit] = useState(null);
-      const [scene, setScene] = useState("qq-group");
+      const [scene, setScene] = useState("web");
       const [err, setErr] = useState("");
-      const sceneLabels = data?.sceneLabels ?? { "qq-group": "QQ 群聊", "qq-private": "QQ 私聊", bili: "B站", pet: "桌宠" };
+      const sceneLabels = data?.sceneLabels ?? { web: "鱼姬之家", bili: "B 站", pet: "桌宠" };
       const layerPath = (key) => key === "scene"
         ? data?.layers?.scenes?.[scene]?.path
         : data?.layers?.[key]?.path;
@@ -5338,7 +4924,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         catch (e) { toast("✗ " + e.message + (e.hint ? "；" + e.hint : "")); } finally { setBusy(""); }
       };
       const box = (key, label, hint) => h("div", { className: "qbw-card", style: { marginBottom: "8px" } },
-        h("div", { className: "qbw-label" }, label, h("span", { className: "qbw-hint", style: { marginLeft: "8px" } }, ` · ${layerPath(key) || "未创建"} · ${(key === "scene" ? sceneText : draft[key] || "").length} 字`)),
+        h("div", { className: "qbw-label" }, label, h("span", { className: "qbw-hint", style: { marginLeft: "8px" } }, ` · ${key === "scene" ? (layerPath(key) ? "当前角色" : "未创建") : (layerPath(key) || "未创建")} · ${(key === "scene" ? sceneText : draft[key] || "").length} 字`)),
         h("div", { className: "qbw-hint", style: { marginBottom: "4px" } }, hint),
         h("textarea", {
           className: "qbw-textarea card",
@@ -5373,8 +4959,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(Btn, { kind: "qbw-btn2", onClick: classify, disabled: !!busy }, busy === "persona-classify" ? "拆分中…" : "智能拆分当前人格"),
           h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "重新读取"),
           h("span", { className: "qbw-hint" }, "拆分不会写盘；先检查草稿。")),
-        box("core", "人格核心", "身份、价值观、底线。不是每次群聊都加载；但身份底座会单独带。"),
-        box("tone", "人格语气", "口癖、句子长短、称呼、标点、语气词。拆分模式日常群聊默认只加载语气层。"),
+        box("core", "人格核心", "身份、价值观和底线。"),
+        box("tone", "人格语气", "口癖、句子长短、称呼和标点。"),
         box("daily", "人格日常", "近期状态、习惯、心情。保存时自动写入「你是谁、主人是谁」；拆分也会多留一份在日层层。"),
         h("div", { className: "qbw-group", style: { marginTop: "6px" } }, "场景人格", h("small", null, "平台差异；没有就留空")),
         h("div", { className: "qbw-actions", style: { marginTop: "2px", paddingTop: "2px" } },
@@ -5382,7 +4968,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             key: id, kind: scene === id ? undefined : "qbw-btn3", onClick: () => setScene(id), disabled: !!busy,
           }, label))),
         h("div", { className: "qbw-warnbox", style: { margin: "6px 0" } },
-          "场景说明包含 QQ 群聊、QQ 私聊、B站、桌宠等其他平台。不同平台之间不保证隐私完全隔离，请谨慎填写；出了事不负责。"),
+          "填写这个场景的说话和行动方式。不同平台之间不保证隐私完全隔离。"),
         box("scene", "场景补充：" + (sceneLabels[scene] || scene), "只写这个平台的差异；不知道就留空，不会清空别的层。"),
         split ? h("div", { className: "qbw-card", style: { marginTop: "8px", borderColor: "var(--qbw-warn)" } },
           h("h4", null, "拆分草稿（尚未保存）"),
@@ -5429,7 +5015,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         })) : null,
         data?.backups?.length ? h(Section, { title: "人格卡历史备份", note: `${data.backups.length} 份` },
           data.backups.slice(0, 8).map((b) => h("div", { key: b.name, className: "qbw-item" },
-            h("div", null, h("div", { className: "qbw-label" }, b.name), h("div", { className: "qbw-hint" }, `${fmtBytes(b.bytes)} · ${fmtTime(new Date(b.mtime).toISOString())}`)),
+            h("div", null, h("div", { className: "qbw-label" }, b.name.replace(/^persona-scene-qq-private-/, "网页场景 · ")), h("div", { className: "qbw-hint" }, `${fmtBytes(b.bytes)} · ${fmtTime(new Date(b.mtime).toISOString())}`)),
             h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy }, "恢复")))) : null);
     }
 
@@ -5437,7 +5023,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     // 和下面「双向脱敏同步」分开：那边是 QQ⇄B站 搬运，这边是她自己的记忆 +
     // 清晰度 / 遗忘 / 容量规则。容量 80/90/100% 时主界面还会弹窗提醒。
     function MemoryCardPanel({ data, reload, busy, setBusy, toast, unified, setUnified, onChanged, view = "all" }) {
-      const [manual, setManual] = useState({ open: false, text: "", importance: 70, scope: "qq" });
+      const [manual, setManual] = useState({ open: false, text: "", importance: 70, scope: "web" });
       const [selected, setSelected] = useState([]);
       const [mergeTitle, setMergeTitle] = useState("");
       const [mergePinned, setMergePinned] = useState(true);
@@ -5480,7 +5066,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             toast(`⚠️ 服务端已保存，但界面刷新失败：${reloadFailure.message}；请手动刷新后再确认`);
           } else {
             const r = result ?? {};
-            toast(action === "maintain" ? `✓ 已整理：新增 QQ ${r.addedQq ?? 0} / 桌宠 ${r.addedPet ?? 0} / B站 ${r.addedBili ?? 0} / 全量归档 ${r.addedFull ?? 0} 条`
+            toast(action === "maintain" ? `✓ 已整理：新增桌宠 ${r.addedPet ?? 0} / B站 ${r.addedBili ?? 0} / 全量归档 ${r.addedFull ?? 0} 条`
               : action === "compact" ? `✓ 已压缩（降级 ${r.steps ?? 0} 档）`
                 : action === "merge-memories" ? `✓ 已合并 ${r.merged ?? 0} 条为一个事件`
                   : action === "set-first-meet" ? `✓ 已设为初次相遇（${r.merged ?? 1} 条）`
@@ -5529,36 +5115,18 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const addManual = async () => {
         if (!manual.text.trim()) { toast("✗ 先写点内容"); return; }
         await act("add", { text: manual.text.trim(), importance: Number(manual.importance) || 70, scope: manual.scope });
-        setManual({ open: false, text: "", importance: 70, scope: "qq" });
+        setManual({ open: false, text: "", importance: 70, scope: "web" });
       };
-      const sharing = config.sharing && typeof config.sharing === "object" ? config.sharing : {};
-      const circles = Array.isArray(sharing.circles) ? sharing.circles : [];
-      const knownGroups = [];
-      const knownGroupIds = new Set();
-      for (const record of data.records ?? []) {
-        const gid = String(record.groupId || "").trim();
-        if (!/^\d+$/.test(gid) || knownGroupIds.has(gid)) continue;
-        knownGroupIds.add(gid);
-        knownGroups.push({ id: gid, name: record.groupName || "" });
-      }
-      const setSharing = (key, value) => setUnified(["memoryCard", "sharing", key], value);
-      const setCircles = (next) => setUnified(["memoryCard", "sharing", "circles"], next);
-      const updateCircle = (index, patch) => setCircles(circles.map((circle, i) => i === index ? { ...circle, ...patch } : circle));
-      const addCircle = () => setCircles([...circles, { id: `circle-${Date.now()}`, name: `互通圈 ${circles.length + 1}`, groups: [] }]);
-      const removeCircle = (index) => setCircles(circles.filter((_, i) => i !== index));
-      const parseGroupIds = (text) => [...new Set(String(text ?? "").split(/[\s,，]+/).map((x) => x.replace(/^group:/i, "")).filter((x) => /^\d+$/.test(x)))];
       const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("sv-SE"); } catch { return ""; } };
       const clarityLabel = { vivid: "清晰", clear: "清楚", fuzzy: "模糊", trace: "只剩印象", forgotten: "已遗忘" };
-      const platformLabel = { qq: "QQ", bili: "B站", shared: "共享" };
+      const platformLabel = { qq: "QQ 档案", web: "鱼姬之家", bili: "B站", shared: "共享" };
       const summary = h("div", null,
         h("div", { className: "qbw-infobox" },
           h("b", null, "当前提示词加载："),
           memoryMode === "vector" ? "向量记忆（按当前消息检索）" : (status.loadedLabel || "衰减记忆卡（日常加载）"),
           memoryMode === "vector"
             ? "。叙事记忆仍在继续写入，但本轮不注入；要改回叙事记忆在上面的「记忆方式」里切换。"
-            : "。全量记忆卡（所有记忆保持清晰、永不遗忘）只存档，不会自动注入；在下方「全量记忆卡」里查看 / 搜索。",
-          h("div", { className: "qbw-hint", style: { marginTop: "4px" } },
-            `QQ 注入文件：${status.paths?.promptQq ?? "—"} · B站 注入文件：${status.paths?.promptBili ?? "—"}`)),
+            : "。全量记忆卡（所有记忆保持清晰、永不遗忘）只存档，不会自动注入；在下方「全量记忆卡」里查看 / 搜索。"),
         h("div", { className: "qbw-card", style: { borderColor: level >= 2 ? "rgba(229,72,77,.45)" : level >= 1 ? "rgba(255,176,32,.45)" : undefined } },
           h("div", { className: "qbw-meter-head" },
             h("div", null, h("b", null, "记忆卡"), h("span", { className: "qbw-hint" }, "长期记忆 · 角色卡管“她是谁”，这张卡管“她记得什么”")),
@@ -5574,7 +5142,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               : "建议压缩：会先把最不重要的旧记忆模糊化，置顶的、和主人相关的重要记忆不会动。",
             !status.unlimited && level >= 3 ? "（已满 100%，新记忆会自动压缩，但仍建议检查。）" : "") : null,
           h("div", { className: "qbw-hint" },
-            `最近整理：${fmtTime(status.lastMaintenanceAt)} · 上次每日遗忘：${status.lastDecayDate || "还没跑"} · 注入预算 QQ ${config.injectMaxChars?.qq ?? 0} / B站 ${config.injectMaxChars?.bili ?? 0} 字`),
+            `最近整理：${fmtTime(status.lastMaintenanceAt)} · 上次每日遗忘：${status.lastDecayDate || "还没跑"} · 注入预算 鱼姬之家 ${config.injectMaxChars?.qq ?? 0} / B站 ${config.injectMaxChars?.bili ?? 0} 字`),
           h("div", { className: "qbw-search", style: { marginTop: "8px" } },
             h("span", { className: "qbw-label" }, "衰减卡字数上限"),
             h("input", {
@@ -5602,76 +5170,19 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             needsAttention ? h(Btn, { kind: "qbw-btn2", onClick: () => act("ack", { level }), disabled: !!busy }, "确认提醒") : null)),
         manual.open ? h("div", { className: "qbw-card" },
           h("h4", null, "手动记一条"),
-          h("div", { className: "qbw-hint" }, "自动记忆之外，你（管理员）可以直接写一条；scope=QQ 的不会进 B站 提示词。"),
+          h("div", { className: "qbw-hint" }, "默认只给鱼姬之家使用，也可把公开经历归到 B 站。"),
           h("textarea", { className: "qbw-textarea", style: { marginTop: "8px" }, value: manual.text, onChange: (e) => setManual((m) => ({ ...m, text: e.target.value })), placeholder: "例：2026-10-22 主人说周末带我去看海。" }),
           h("div", { className: "qbw-actions" },
             h("label", { className: "qbw-hint" }, "重要度 ",
               h("input", { className: "qbw-input", type: "number", min: 1, max: 100, value: manual.importance, onChange: (e) => setManual((m) => ({ ...m, importance: Number(e.target.value) })), style: { width: "90px", minWidth: "90px" } })),
             h("select", { className: "qbw-select", value: manual.scope, onChange: (e) => setManual((m) => ({ ...m, scope: e.target.value })) },
-              h("option", { value: "qq" }, "QQ（不进 B站）"),
+              h("option", { value: "web" }, "鱼姬之家"),
               h("option", { value: "bili" }, "B站（公开经历）"),
               h("option", { value: "shared" }, "共享（两边都可见）")),
             h(Btn, { onClick: addManual, disabled: !!busy }, "记下"))) : null);
       const details = h("div", null,
-        h(Section, { title: "记忆互通圈", note: "默认隔离；同圈至少两个群；私聊记忆永不进群", collapsible: false },
-          h(Row, { label: "主人私聊可读群记忆", hint: "只对主人私聊生效（需要先配好管理员 QQ）；群聊仍然只看自己 + 同圈；私聊记录永远不会进群。开启后，主人私聊会多一个「群里的近况」小节。" },
-            h("input", {
-              className: "qbw-switch", type: "checkbox",
-              checked: sharing.privateReadsGroups === true,
-              onChange: (e) => setSharing("privateReadsGroups", e.target.checked),
-            })),
-          sharing.privateReadsGroups === true ? h("div", { className: "qbw-row", style: { marginTop: "6px" } },
-            h("span", { className: "qbw-label" }, "可读群号"),
-            h("input", {
-              className: "qbw-input",
-              value: (sharing.privateGroupIds || []).join(", "),
-              placeholder: "留空 = 所有 QQ 白名单群；也可以只填 2~3 个，逗号/空格分隔",
-              onChange: (e) => setSharing("privateGroupIds", parseGroupIds(e.target.value)),
-              style: { flex: "1 1 320px" },
-            }),
-            h("span", { className: "qbw-hint" }, "留空 = 跟随 QQ 白名单；不会读黑名单群")) : null,
-          sharing.privateReadsGroups === true ? h("div", { className: "qbw-row", style: { marginTop: "6px" } },
-            h("span", { className: "qbw-label" }, "最多显示群记忆"),
-            h("input", {
-              className: "qbw-input", type: "number", min: 1, max: 30,
-              value: sharing.privateGroupLimit ?? 8,
-              onChange: (e) => setSharing("privateGroupLimit", Number(e.target.value) || 8),
-              style: { width: "100px", minWidth: "100px" },
-            }),
-            h("span", { className: "qbw-hint" }, "条；防止群记忆挤掉私聊自己的记忆")) : null,
-          sharing.privateReadsGroups === true ? h("div", { className: "qbw-row", style: { marginTop: "6px" } },
-            h("span", { className: "qbw-label" }, "群记忆字数"),
-            h("input", {
-              className: "qbw-input", type: "number", min: 200, max: 2000, step: 100,
-              value: sharing.privateGroupChars ?? 700,
-              onChange: (e) => setSharing("privateGroupChars", Number(e.target.value) || 700),
-              style: { width: "110px", minWidth: "110px" },
-            }),
-            h("span", { className: "qbw-hint" }, "字；单独预算，不占私聊自己的记忆")) : null,
-          h("div", { className: "qbw-hint", style: { marginBottom: "6px", marginTop: "8px" } },
-            knownGroups.length
-              ? `已知群：${knownGroups.map((g) => `${g.name || "未命名"}（${g.id}）`).join(" · ")}`
-              : "还没有带群来源的记忆；可以先填群号。"),
-          circles.map((circle, index) => h("div", { className: "qbw-card", key: circle.id || index, style: { marginTop: "6px" } },
-            h("div", { className: "qbw-row" },
-              h("input", {
-                className: "qbw-input", value: circle.name || "", placeholder: "互通圈名称",
-                onChange: (e) => updateCircle(index, { name: e.target.value }), style: { flex: "1 1 180px" },
-              }),
-              h(Btn, { kind: "qbw-btn2", onClick: () => removeCircle(index), disabled: !!busy }, "删除")),
-            h("div", { className: "qbw-row", style: { marginTop: "6px" } },
-              h("span", { className: "qbw-label" }, "群号"),
-              h("input", {
-                className: "qbw-input", value: (circle.groups || []).join(", "),
-                placeholder: "712144923, 733...（逗号/空格分隔）",
-                onChange: (e) => updateCircle(index, { groups: parseGroupIds(e.target.value) }),
-                style: { flex: "1 1 260px" },
-              }))),
-          ),
-          h("div", { className: "qbw-actions" },
-            h(Btn, { kind: "qbw-btn2", onClick: addCircle, disabled: !!busy }, "新增互通圈"))),
         h(Section, { title: "记忆卡规则", note: "容量 / 遗忘 / 注入边界", collapsible: false },
-          h(Row, { label: "启用记忆卡", hint: "关掉 = QQ / B站 都不再注入记忆（已存的文件不删）" },
+          h(Row, { label: "启用记忆卡", hint: "关闭后暂停鱼姬之家和 B 站的记忆卡注入，已有记录保留" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: config.enabled !== false, onChange: (e) => setConfig("enabled", e.target.checked) })),
           h(Row, { label: "全量卡上限（GB）", hint: "默认 10GB；填 0 = 不限制。全量卡只存档、不参与提示词，超过只告警、绝不自动删除" },
             h("input", {
@@ -5682,7 +5193,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 setConfig("fullMaxBytes", Number.isFinite(gb) && gb > 0 ? Math.round(gb * 1024 ** 3) : 0);
               },
             })),
-          h(Row, { label: "QQ 注入上限（字）", hint: "每条 QQ 提示词最多带这么多记忆；完整卡仍可在控制台看" },
+          h(Row, { label: "鱼姬之家注入上限（字）", hint: "网页单轮聊天的记忆预算" },
             h("input", { className: "qbw-input", type: "number", min: 400, max: 8000, value: config.injectMaxChars?.qq ?? 2200, onChange: (e) => setInject("qq", Number(e.target.value)) })),
           h(Row, { label: "B站 注入上限（字）", hint: "B站每次醒来注入的记忆预算" },
             h("input", { className: "qbw-input", type: "number", min: 400, max: 8000, value: config.injectMaxChars?.bili ?? 2000, onChange: (e) => setInject("bili", Number(e.target.value)) })),
@@ -5696,10 +5207,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("input", { className: "qbw-input", type: "number", min: 0, max: 23, value: config.dailyHour ?? 4, onChange: (e) => setConfig("dailyHour", Number(e.target.value)) })),
           h(Row, { label: "满 100% 自动压缩", hint: "仅正数上限时生效：自动把不重要的旧记忆压到 90%，并保留告警；0=无上限时不会自动压缩" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: config.autoCompact !== false, onChange: (e) => setConfig("autoCompact", e.target.checked) })),
-          h(Row, { label: "容量告警私聊管理员", hint: "80/90/100% 时私聊 ownerQQ；同一档 12 小时只发一次" },
-            h("input", { className: "qbw-switch", type: "checkbox", checked: config.notifyOwner !== false, onChange: (e) => setConfig("notifyOwner", e.target.checked) })),
-          h(Row, { label: "B站 提示词带 QQ 记忆", hint: "默认关：QQ 的私事不跨平台（隐私红线）" },
-            h("input", { className: "qbw-switch", type: "checkbox", checked: config.includeQqInBili === true, onChange: (e) => setConfig("includeQqInBili", e.target.checked) }))),
+          h(Row, { label: "在鱼姬之家通知容量告警", hint: "达到 80%、90% 或 100% 时通知。同一档 12 小时只发一次" },
+            h("input", { className: "qbw-switch", type: "checkbox", checked: config.notifyOwner !== false, onChange: (e) => setConfig("notifyOwner", e.target.checked) }))),
         h(Section, { title: "最近记忆", note: `${data.records?.length ?? 0} 条（按重要度）`, collapsible: false },
           h("div", { className: "qbw-infobox" },
             h("b", null, "初次相遇："),
@@ -5751,8 +5260,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h(Btn, { kind: "qbw-btn2", onClick: () => forget(record), disabled: !!busy }, "忘记"))))),
         h("div", { className: "qbw-cols" },
           h("div", null,
-            h("div", { className: "qbw-group" }, "QQ 注入预览 ", h("small", null, `${status.promptChars?.qq ?? 0} 字`)),
-            h("div", { className: "qbw-scroll" }, h("pre", null, data.promptQq || "（还没有记忆；点「立即整理」）"))),
+            h("div", { className: "qbw-group" }, "鱼姬之家注入预览 ", h("small", null, `${status.promptChars?.web ?? 0} 字`)),
+            h("div", { className: "qbw-scroll" }, h("pre", null, data.promptWeb || "（还没有记忆；点「立即整理」）"))),
           h("div", null,
             h("div", { className: "qbw-group" }, "B站 注入预览 ", h("small", null, `${status.promptChars?.bili ?? 0} 字`)),
             h("div", { className: "qbw-scroll" }, h("pre", null, data.promptBili || "（还没有 B站 记忆）")))),
@@ -5784,7 +5293,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       useEffect(() => { load(q); }, [load, reloadKey]);
       const status = data?.status ?? {};
       const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("sv-SE"); } catch { return ""; } };
-      const platformLabel = { qq: "QQ", bili: "B站", shared: "共享" };
+      const platformLabel = { qq: "QQ 档案", web: "鱼姬之家", bili: "B站", shared: "共享" };
       const search = async () => { await load(q); };
       return h("div", { className: "qbw-card" },
         h("div", { className: "qbw-meter-head" },
@@ -5794,7 +5303,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("div", null, h("span", { className: "qbw-chip" }, "未加载到提示词"))),
         h("div", { className: "qbw-warnbox" },
           h("b", null, "当前提示词加载的是上面的衰减记忆卡。"),
-          " 这张全量卡只用于「以后回查/召回」：日常 QQ / B站 不会自动带它；需要某段记忆时，用下面的搜索找到原文。"),
+          "在这里搜索记忆原文。"),
         h("div", { className: "qbw-meter-head", style: { marginTop: "6px" } },
           h("span", null, `${status.records ?? 0} 条 · ${fmtBytes(status.bytes ?? 0)} / ${status.unlimited ? "不限制" : fmtBytes(status.maxBytes ?? 0)}（${status.percent ?? 0}%）`),
           h("span", { className: "qbw-hint" },
@@ -5837,7 +5346,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     // ── 语音页：语音包安装 / 启停 / 试听 / 触发规则 ─────────────────
 
     // ── 语音页：BreezeBlue 合成 + 触发规则（2026-11-16 删掉本地/火山语音包） ──
-    function VoiceTab({ toast }) {
+    function VoiceTab({ toast, onSettingsChanged }) {
       const [rules, setRules] = useState(null);
       const [err, setErr] = useState("");
       const [stages, setStages] = useState(null);
@@ -5856,6 +5365,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           await load();
           toast?.("已保存 ✓");
           done && done();
+          await onSettingsChanged?.();
         } catch (e) { toast?.("✗ " + e.message); }
       };
       const saveBreeze = async (fields) => patch({ breeze: fields });
@@ -5876,7 +5386,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("strong", null, "语音（BreezeBlue）"),
             h(Btn, { onClick: runCheck, disabled: busy }, busy ? "自检中…" : "跑一次自检")),
           h("div", { className: "qbw-hint", style: { marginTop: "8px" } },
-            "只有 BreezeBlue 一条链路：文字 → 云端合成 → QQ 语音条。本地 voxd / 火山语音包已移除。"),
+            "BreezeBlue 为鱼姬之家和桌宠合成语音。"),
           err ? h("div", { style: { color: "var(--qbw-err-text)", marginTop: "6px" } }, err) : null,
           stages ? h("div", { style: { marginTop: "10px", padding: "10px", borderRadius: "8px", background: "rgba(127,127,127,.06)" } },
             h("div", { style: { fontWeight: 600, marginBottom: "6px" } }, stages.ok ? "✓ 自检通过" : "✗ 自检有问题"),
@@ -5887,19 +5397,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("label", { style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "8px", fontSize: "13px" } },
             h("input", { type: "checkbox", checked: !!rules.aiEnabled, onChange: (e) => patch({ aiEnabled: e.target.checked }) }),
             "允许 AI 主动发语音"),
-          h("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "10px", fontSize: "13px", alignItems: "center" } },
-            "每分钟", h("input", { type: "number", min: 1, max: 60, defaultValue: rules.maxPerMinute || 2, onBlur: (e) => patch({ maxPerMinute: Number(e.target.value) }), style: { width: "70px" } }),
-            "每小时", h("input", { type: "number", min: 1, max: 600, defaultValue: rules.maxPerHour || 10, onBlur: (e) => patch({ maxPerHour: Number(e.target.value) }), style: { width: "80px" } })),
-          h("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "10px", fontSize: "13px", alignItems: "center" } },
-            "谁能触发",
-            h("select", { value: rules.triggerWho || "owner", onChange: (e) => patch({ triggerWho: e.target.value }) },
-              h("option", { value: "owner" }, "仅主人"),
-              h("option", { value: "anyone" }, "任何人"),
-              h("option", { value: "list" }, "名单"))),
-          h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "频率与触发规则保存后立即生效；总闸改动后建议重启桥接。")),
+          h("p", { className: "qbw-hint" }, "网页语音转写在鱼姬之家设置。")),
         h("div", { className: "qbw-card" },
           h("strong", null, "BreezeBlue"),
-          h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "API Key 只写本机 config.json；输出 wav_24000，直接进 QQ 语音条。发语音时她自己可传 tone（开心/温柔/委屈/生气/疲惫/撒娇/平静/兴奋）改变语气；预设可用 config 的 socialV2.voice.tonePresets 覆盖。"),
+          h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, "API Key 存在本机的 SurfCore 配置。鱼姬可以给每条语音选择语气。"),
           h("div", { style: { marginTop: "10px", fontSize: "13px" } }, "Base URL",
             h("input", { className: "qbw-input", defaultValue: bz.baseUrl || "", onBlur: (e) => saveBreeze({ baseUrl: e.target.value }), style: { marginLeft: "8px", width: "320px" } })),
           h("div", { style: { marginTop: "8px", fontSize: "13px" } }, "Voice ID",
@@ -6503,33 +6004,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       useEffect(() => { setPane(memoryMode); }, [memoryMode]);
       const vectorConfig = unified?.vectorMemory ?? {};
       const vectorServiceOk = vector?.service?.ok !== false;
-      const biliToQq = qq?.biliBridge?.memory?.enabled !== false && qq?.biliBridge?.enabled !== false;
-      // 开关必须绑“可编辑草稿”，不能直接绑服务端快照 qq.biliBridge：
-      // 旧写法点了只改 unified.__biliToQqToggle，checked 却读 qq 快照 → 点完立刻弹回（PITFALLS #16）。
-      const biliToQqDraft = typeof unified?.__biliToQqToggle === "boolean" ? unified.__biliToQqToggle : biliToQq;
-      const qqToBili = unified?.memory?.qqToBili ?? {};
-      const webPrimary = qq?.purpose?.carrier === "web";
-      const setQqToBili = (key, value) => setUnified(["memory", "qqToBili", key], value);
-      const syncNow = async () => {
-        setBusy("sync");
-        try { const r = await api("/memory", { method: "POST", body: { action: "sync" } }); toast(r.ok ? `✓ 已同步（${r.stats?.kept ?? 0} 条，脱敏 ${r.stats?.redactions ?? 0} 处）` : `✗ ${r.error ?? "失败"}`); await load(); await reload(); }
-        catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const scan = async () => {
-        setBusy("scan");
-        try { const r = await api("/memory", { method: "POST", body: { action: "scan-align" } }); toast(`✓ 扫描完成：QQ 候选 +${r.qq?.added ?? 0}，B站候选 +${r.bili?.added ?? 0}`); await load(); await reload(); }
-        catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const purge = async () => {
-        if (!confirm("清空 QQ→B站 记忆和原始公开 feed？对齐表与 B站→QQ 简报不受影响。")) return;
-        setBusy("purge");
-        try {
-          const r = await api("/memory", { method: "POST", body: { action: "purge" } });
-          toast(r.ok ? "✓ 已清空 QQ→B站 记忆" : `✗ ${r.error ?? "失败"}`);
-          await load();
-          await reload();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
+      const biliMemory = unified?.localChat?.biliMemory ?? {};
       const status = data?.status ?? overview?.memory ?? {};
       const memoryPanes = [["narrative", "叙事记忆"], ["vector", "向量记忆"]];
       const usageProvider = CLOUD_PROVIDER_BY_ID[usageCloudProvider] || CLOUD_PROVIDER_BY_ID.siliconflow;
@@ -6603,7 +6078,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   : `共 ${library.total ?? 0} 条；显示最近 ${library.items?.length ?? 0} 条${Number(library.total) > Number(library.visible) ? `；已隐藏 ${Number(library.total) - Number(library.visible)} 条敏感记录` : ""}`),
               (library.items ?? []).map((item) => h("div", { key: item.id, className: "qbw-card", style: { marginTop: "6px", padding: "8px 10px" } },
                 h("div", { className: "qbw-kv" },
-                  h("span", null, `${fmtTime(item.createdAt)} · ${item.platform === "bili" ? "B站" : item.platform === "pet" ? "桌宠" : item.platform === "qq" ? "QQ" : (item.platform || "未知")}${item.source ? ` · ${item.source}` : ""}`),
+                  h("span", null, `${fmtTime(item.createdAt)} · ${item.platform === "bili" ? "B站" : item.platform === "pet" ? "桌宠" : item.platform === "qq" ? "QQ 档案" : item.platform === "web" ? "鱼姬之家" : (item.platform || "未知")}${item.source ? ` · ${item.source}` : ""}`),
                   library.mode === "search" ? h("span", null, `相似度 ${Math.round((Number(item.score) || 0) * 100)}%`) : null),
                 h("div", { style: { whiteSpace: "pre-wrap", lineHeight: 1.55, marginTop: "2px" } }, item.text))),
               !(library.items ?? []).length ? h("div", { className: "qbw-hint" }, "没有可显示的记录。") : null,
@@ -6613,74 +6088,26 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                       h(EmbeddingPackPanel, { unified, setUnified, toast, busy, setBusy }),)
           : h("div", null,
         h(MemoryCardPanel, { view: "summary", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
-        h("div", { className: "qbw-group" }, "双向脱敏同步（QQ ⇄ B站）", h("small", null, "只搬运公开、脱敏后的近况；和上面的记忆卡不是一回事")),
-        h("div", { className: "qbw-dangerbox" },
-          h("b", null, "隐私红线（锁定，不可关）："),
-          "私信/私聊永不跨平台；密码、令牌、cookie、手机号、身份证、银行卡、住址、真实姓名、精确位置、外部链接一律剔除；",
-          "QQ 号/群号/B站 mid 不写进记忆正文；生成后还要过一遍 assertSafeOutput，命中就拒绝落盘。"),
-        h("div", { className: "qbw-grid" },
-          h("div", { className: "qbw-card" },
-            h("h4", null, webPrimary ? "B站 → 鱼姬之家" : "B站 → QQ"),
-            h("p", null, "默认开启，保持原行为。B站只读公开打分/评论/收藏/公开动态/日记公开见闻；不读任何私信。"),
-            h(Row, { label: "同步 B站记忆", hint: "控制聊天中是否注入 B 站简报和相关回忆" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: biliToQqDraft, onChange: (e) => {
-                // 保存时由 normalizedQq 落到 biliBridge.memory.enabled（见主组件）。
-                setUnified(["__biliToQqToggle"], e.target.checked);
-              } })),
-            h("div", { className: "qbw-hint" }, `状态：${biliToQqDraft ? "开" : "关"} · 简报 ${status.biliToQq?.briefChars ?? 0} 字 · ${fmtTime(status.biliToQq?.generatedAt)}`),
-            h("div", { className: "qbw-kv" }, h("span", null, "隐私复检"), h("span", null, status.biliToQq?.blocked ? "命中拦截" : "通过")),
-            h("div", { className: "qbw-hint" }, webPrimary ? "保存后由 SurfCore 更新 B 站简报。" : "保存后重启 QQ 桥接即可生效。"),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { kind: "qbw-btn2", onClick: async () => {
-                setBusy("refresh-bili");
-                try { const r = await api("/memory", { method: "POST", body: { action: "refresh-bili" } }); toast(r.ok ? "✓ 已刷新" : `✗ ${r.error ?? "失败"}`); await load(); } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-              }, disabled: !!busy }, "立即刷新"))),
-          h("div", { className: "qbw-card" },
-            h("h4", null, "QQ → B站"),
-            h("p", null, webPrimary ? "网页主聊期间，B 站接续鱼姬之家近况。QQ 群近况同步暂停。" : "默认关闭。只读白名单群里的公开消息。"),
-            h(Row, { label: "同步 QQ 记忆到 B站", hint: "开启后 B站每次醒来会看到群里的近况（已脱敏）" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.enabled === true, onChange: (e) => setQqToBili("enabled", e.target.checked) })),
-            h("div", { className: "qbw-kv" }, h("span", null, "上次同步"), h("span", null, fmtTime(status.qqToBili?.last?.at))),
-            h("div", { className: "qbw-kv" }, h("span", null, "保留条数 / 字数"), h("span", null, `${status.qqToBili?.last?.kept ?? 0} 条 / ${status.qqToBili?.chars ?? 0} 字`)),
-            h("div", { className: "qbw-kv" }, h("span", null, "丢弃（隐私/命令/媒体）"), h("span", null, status.qqToBili?.last?.dropped ?? 0)),
-            h("div", { className: "qbw-actions" },
-              h(Btn, { onClick: syncNow, disabled: !!busy || webPrimary || qqToBili.enabled !== true }, busy === "sync" ? "同步中…" : "立即同步"),
-              h(Btn, { kind: "qbw-btn2", onClick: scan, disabled: !!busy }, "扫描身份候选"),
-              h(Btn, { kind: "qbw-btn2", onClick: purge, disabled: !!busy }, busy === "purge" ? "清理中…" : "清空 QQ→B站 记忆")))),
-        h(AdvancedSettings, { note: "记忆卡规则 / 最近记忆 / 全量卡 / 同步范围 / 注入预览 / 审计：展开后同样可改" },
+        h(Section, { title: "B 站记忆与鱼姬之家" },
+          h(Row, { label: "在聊天中读取 B 站经历" },
+            h("input", { type: "checkbox", checked: biliMemory.enabled !== false,
+              onChange: (e) => setUnified(["localChat", "biliMemory", "enabled"], e.target.checked) })),
+          h(Row, { label: "B 站读取网页收尾摘要", hint: "只使用鱼姬明确留下的可公开近况。" },
+            h("input", { type: "checkbox", checked: unified?.memory?.webHandoff?.enabled !== false,
+              onChange: (e) => setUnified(["memory", "webHandoff", "enabled"], e.target.checked) })),
+          h("p", { className: "qbw-hint" }, `简报 ${status.biliToQq?.briefChars ?? 0} 字 · ${fmtTime(status.biliToQq?.generatedAt)}`),
+          h(Btn, { disabled: !!busy, onClick: async () => {
+            setBusy("refresh-bili");
+            try {
+              const result = await api("/memory", { method: "POST", body: { action: "refresh-bili" } });
+              toast(result.ok ? "已刷新 B 站记忆" : result.error);
+              await load();
+            } catch (error) { toast(error.message); } finally { setBusy(""); }
+          } }, "立即刷新")),
+        h(AdvancedSettings, { note: "记忆卡规则、全量记忆卡、B 站简报" },
           h(MemoryCardPanel, { view: "details", data: card, reload: loadCard, busy, setBusy, toast, unified, setUnified, onChanged: () => setFullVersion((v) => v + 1) }),
           h(FullMemoryCardPanel, { reloadKey: fullVersion, busy, toast }),
-          h(Section, { title: "同步范围与隐私参数", note: "QQ → B站", collapsible: false },
-            h(Row, { label: "回看天数", hint: "只读最近 N 天的公开群消息" },
-              h("input", { className: "qbw-input", type: "number", min: 1, max: 90, value: qqToBili.lookbackDays ?? 7, onChange: (e) => setQqToBili("lookbackDays", Number(e.target.value)) })),
-            h(Row, { label: "最多消息条数", hint: "防止一次读太多" },
-              h("input", { className: "qbw-input", type: "number", min: 20, max: 5000, value: qqToBili.maxMessages ?? 300, onChange: (e) => setQqToBili("maxMessages", Number(e.target.value)) })),
-            h(Row, { label: "记忆最大字符", hint: "超过会截断，保留边界说明" },
-              h("input", { className: "qbw-input", type: "number", min: 1200, max: 20000, value: qqToBili.maxChars ?? 6000, onChange: (e) => setQqToBili("maxChars", Number(e.target.value)) })),
-            h(Row, { label: "包含管理员消息", hint: "默认不包含：管理员消息常含指令/隐私" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.includeOwner === true, onChange: (e) => setQqToBili("includeOwner", e.target.checked) })),
-            h(Row, { label: "使用群昵称", hint: "关掉 = 只写「群友」；开 = 用群名片（不带 QQ 号）" },
-              h("input", { className: "qbw-switch", type: "checkbox", checked: qqToBili.useNicknames !== false, onChange: (e) => setQqToBili("useNicknames", e.target.checked) })),
-            h(Row, { label: "只同步这些群", hint: "逗号分隔群号；留空 = 跟随 allow.groups", },
-              h(IdListEditor, {
-                value: qqToBili.includeGroups ?? [],
-                placeholder: "群号，逗号分隔：123456789，987654321",
-                emptyHint: "留空 = 跟随 allow.groups",
-                onChange: (list) => setQqToBili("includeGroups", list),
-              }))),
-          h("div", { className: "qbw-cols" },
-            h("div", null,
-              h("div", { className: "qbw-group" }, "QQ → B站 预览 ", h("small", null, status.qqToBili?.path ?? "")),
-              h("div", { className: "qbw-scroll" }, h("pre", null, data?.qqPreview?.text || "（还没有生成；开启同步后点「立即同步」）"))),
-            h("div", null,
-              h("div", { className: "qbw-group" }, "B站 → QQ 简报预览 ", h("small", null, status.biliToQq?.path ?? "")),
-              h("div", { className: "qbw-scroll" }, h("pre", null, data?.biliPreview || "（还没有生成；点「立即刷新」）")))),
-          h(Section, { title: "同步审计（只记数量，不记内容）", note: `${data?.audit?.length ?? 0} 条`, collapsible: false },
-            (data?.audit ?? []).slice().reverse().map((item, i) => h("div", { className: "qbw-item", key: i },
-              h("div", null,
-                h("div", { className: "qbw-label" }, `${item.direction ?? "?"} ${item.ok === false ? "失败" : "成功"}`),
-                h("div", { className: "qbw-hint" }, `扫描 ${item.scanned ?? 0} · 保留 ${item.kept ?? 0} · 丢弃 ${item.dropped ?? 0} · 脱敏 ${item.redactions ?? 0} 处 · ${fmtTime(item.at)}`)))))),
-            ),
+          h("pre", { className: "qbw-scroll" }, data?.biliPreview || "暂无 B 站简报"))),
         indexPickerOpen ? h("div", { className: "qbw-modal-backdrop", onClick: (e) => { if (e.target === e.currentTarget) setIndexPickerOpen(false); } },
           h("div", { className: "qbw-modal", style: { maxWidth: "680px", maxHeight: "86vh", overflowY: "auto" } },
             h("h3", null, "为多个模型重建索引"),
@@ -6752,7 +6179,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 h("li", null, "选中一个模型，点「一键启动 runtime + 选中模型」，等到提示自检维度 / 延迟。"),
                 h("li", null, "回到「向量记忆」：如果当前模型还没有索引（或刚导入模型），点一次「重建索引」；runtime 在跑时，新记忆会自动补，不用每次重建。"),
                 h("li", null, "最上方「记忆方式」选「向量记忆」，再点底部「保存并生效」。"),
-                h("li", null, "验证：展开「记忆库」看最近记录 / 语义搜索；QQ 或 B站聊一句，看会不会出现旧事。"),
+                h("li", null, "展开「记忆库」查看近期记录，或用语义搜索回查旧事。"),
                 h("li", null, "失败：先看红字提示；runtime 没启动就先启动，没有索引就先重建；还不行把提示原文发开发者。")))
               : h("div", null,
                 h("div", { className: "qbw-card", style: { marginTop: "8px", lineHeight: 1.65 } },
@@ -6832,7 +6259,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             h("input", { className: "qbw-input", type: "number", min: 1, max: 5, value: cfg.maxAttempts ?? 2, onChange: (e) => set("maxAttempts", Number(e.target.value) || 2) })),
           h(Row, { label: "允许自主暂存候选", hint: "允许她在聊天中把值得回顾的事临时记下来，晚上再决定写不写。" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.captureEnabled !== false, onChange: (e) => set("captureEnabled", e.target.checked) })),
-          h(Row, { label: "私人日记出站硬闸", hint: "未用 diary_share 授权过的私人日记原文，发送时会被桥接拦下；日记读不到时放行，不影响聊天。" },
+          h(Row, { label: "私人日记出站硬闸", hint: "未用 diary_share 授权过的私人日记原文，发送时会被鱼姬之家的分享检查拦下。" },
             h("input", { className: "qbw-switch", type: "checkbox", checked: cfg.leakGuard !== false, onChange: (e) => set("leakGuard", e.target.checked) })),
         ),
         h("div", { className: "qbw-card", style: { marginTop: "10px" } },
@@ -7032,7 +6459,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           "后续功能从这里接：杀戮尖塔启动器、B站自主直播、贴吧，都不需要改主流程。",
           "扩展默认关闭；开启等于允许它在本机执行代码，请只打开你信得过的。"),
         h(AdvancedSettings, { note: "平台接入 / 扩展目录：内置平台和文档入口，平时不用改" },
-          h("div", { className: "qbw-group" }, "平台接入 ", h("small", null, "QQ/B站内置，贴吧预留")),
+          h("div", { className: "qbw-group" }, "平台接入 ", h("small", null, "B 站内置，贴吧预留")),
           h("div", { className: "qbw-grid" }, platforms.map((p) => h("div", { className: "qbw-card", key: p.id },
             h("h4", null, p.name, h("span", { className: "qbw-badge " + (p.status === "active" ? "ok" : "warn") }, p.status === "active" ? "已接入" : "预留")),
             h("p", null, `${p.capabilities?.join(" · ") || "—"}`),
@@ -7056,12 +6483,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     // ── 全部参数 ────────────────────────────────────────────────────────────
-    function AdvancedTab({ qq, bili, unified, setQqPath, setBiliPath, setUnifiedPath, busy }) {
+    function AdvancedTab({ bili, unified, setBiliPath, setUnifiedPath, busy }) {
       const [query, setQuery] = useState("");
-      const [scope, setScope] = useState("qq");
-      const current = scope === "qq" ? qq : scope === "bili" ? bili : unified;
-      const setter = scope === "qq" ? setQqPath : scope === "bili" ? setBiliPath : setUnifiedPath;
-      const fields = useMemo(() => flattenFields(current ?? {}), [current]);
+      const [scope, setScope] = useState("unified");
+      const current = scope === "bili" ? bili : unified;
+      const setter = scope === "bili" ? setBiliPath : setUnifiedPath;
+      const fields = useMemo(() => flattenFields(current ?? {}).filter(({ path }) =>
+        !path.some((key) => /qq|snowluma/i.test(key)) && path.slice(0, 2).join(".") !== "memoryCard.sharing"), [current]);
       const filtered = query.trim()
         ? fields.filter((f) => `${f.label} ${f.path.join(".")}`.toLowerCase().includes(query.trim().toLowerCase()))
         : fields;
@@ -7076,11 +6504,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       }, [filtered]);
       return h("div", null,
         h("div", { className: "qbw-dangerbox" },
-          "这里是“真正全部”的参数树：上面标签页没列出的键也能在这里改。",
+          "这里可以修改 SurfCore 和 B 站的进阶设置。",
           "改完仍然要按底部「保存」；不确定的键建议先备份。"),
         h("div", { className: "qbw-search" },
           h("select", { className: "qbw-select", value: scope, onChange: (e) => setScope(e.target.value) },
-            h("option", { value: "qq" }, "QQ config.json"),
             h("option", { value: "bili" }, "B站 bili.config.json"),
             h("option", { value: "unified" }, "合体 unified config")),
           h("input", { className: "qbw-input", placeholder: "搜索参数名 / 路径", value: query, onChange: (e) => setQuery(e.target.value) }),
@@ -7097,219 +6524,24 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     }
 
     // ── 诊断 ────────────────────────────────────────────────────────────────
-    function DiagnosticsTab({ busy, setBusy, toast, reload }) {
-      const [diag, setDiag] = useState(null);
-      const [logs, setLogs] = useState(null);
-      const [err, setErr] = useState("");
-      const [backups, setBackups] = useState([]);
-      const [flow, setFlow] = useState(null);   // 一键安装：页面内弹窗（不依赖原生 confirm/prompt）
-
+    function DiagnosticsTab({ busy, setBusy, toast }) {
+      const [data, setData] = useState(null);
+      const [error, setError] = useState("");
       const load = useCallback(async () => {
-        try {
-          const r = await api("/diagnostics");
-          setDiag(r);
-          setErr("");
-        } catch (e) { setErr(e.message); }
-        try {
-          const c = await api("/config");
-          setBackups(c.backups ?? []);
-        } catch {}
+        try { setData(await api("/diagnostics")); setError(""); }
+        catch (failure) { setError(failure.message); }
       }, []);
-      useEffect(() => { load(); }, [load]);
-
-      const loadLogs = async () => {
-        setBusy("logs");
-        try {
-          const r = await api("/logs?lines=160");
-          setLogs(r);
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const openInstall = async () => {
-        setFlow({ phase: "scan", owner: "", selected: [], groups: [], snow: null, steps: [], error: "" });
-        try {
-          const scan = await api("/diagnostics", { method: "POST", body: { action: "install-scan" } });
-          const groups = scan.groups ?? [];
-          setFlow({
-            phase: "form",
-            snow: scan.snow ?? {},
-            groups,
-            selected: groups.map((g) => g.id),
-            owner: scan.snow?.uin || "",
-            steps: [],
-            error: scan.error || "",
-          });
-        } catch (e) {
-          setFlow({ phase: "error", steps: [], groups: [], selected: [], owner: "", snow: null,
-            error: /未知 action/.test(String(e.message)) ? "后端还是旧版本：关掉 DSH 再开一次" : e.message });
-        }
-      };
-      const startInstall = async () => {
-        const chosen = flow?.selected ?? [];
-        setFlow((f) => ({ ...f, phase: "running", steps: [] }));
-        try {
-          await api("/diagnostics", { method: "POST", body: {
-            action: "install-run",
-            ownerQQ: String(flow?.owner ?? "").trim(),
-            groups: chosen,
-          } });
-          for (let i = 0; i < 120; i += 1) {
-            await new Promise((r) => setTimeout(r, 2500));
-            const d = await api("/diagnostics").catch(() => null);
-            if (!d) continue;
-            setDiag(d);
-            setFlow((f) => (f ? { ...f, steps: d.install?.steps ?? [], phase: d.install?.running ? "running" : "done" } : f));
-            if (!d.install?.running) break;
-          }
-          await reload();
-        } catch (e) {
-          setFlow((f) => (f ? { ...f, phase: "error", error: e.message } : f));
-        }
-      };
-      const doctorFix = async () => {
-        setBusy("doctor");
-        try {
-          const r = await api("/diagnostics", { method: "POST", body: { action: "doctor-fix" } });
-          const changed = r.changed ?? [];
-          toast(changed.length
-            ? `✓ 已补齐：${changed.join("、")}${r.restartRequired ? "（重启 DSH 生效）" : ""}`
-            : "✓ 没有需要补的");
-          await load();
-        } catch (e) {
-          const msg = /未知 action/.test(String(e.message))
-            ? "后端还是旧版本：关掉 DSH 再开一次，让插件加载新代码"
-            : e.message;
-          toast(`✗ ${msg}`);
-        } finally { setBusy(""); }
-      };
-      const backupAll = async () => {
-        setBusy("backup");
-        try {
-          const r = await api("/diagnostics", { method: "POST", body: { action: "backup" } });
-          toast(`✓ 已备份 ${r.created?.length ?? 0} 个文件`);
-          await load();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-      const restore = async (name) => {
-        if (!confirm(`确定用备份 ${name} 覆盖当前文件？会先自动备份当前文件。`)) return;
-        setBusy("restore");
-        try {
-          const r = await api("/diagnostics", { method: "POST", body: { action: "restore", name } });
-          toast(`✓ 已恢复 ${r.target}`);
-          await load();
-          await reload();
-        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
-      };
-
-      const checkRows = (diag?.checks ?? []).map((c) => h("div", { className: "qbw-kv", key: c.name },
-        h("span", null, `${c.level === "warn" ? "⚠️" : c.ok ? "✓" : "✗"} ${c.name}`),
-        h("span", null, `${c.detail ?? ""}${c.fix ? ` · 怎么补：${c.fix}` : ""}`)));
-      const pathRows = Object.entries(diag?.paths ?? {}).map(([k, v]) => h("div", { className: "qbw-kv", key: k },
-        h("span", null, k),
-        h("span", null, String(v))));
-      const backupRows = backups.slice(0, 20).map((b) => h("div", { className: "qbw-item", key: b.name },
-        h("div", null,
-          h("div", { className: "qbw-label" }, b.name),
-          h("div", { className: "qbw-hint" }, `${fmtBytes(b.bytes)} · ${fmtTime(new Date(b.mtime).toISOString())}`)),
-        h(Btn, { kind: "qbw-btn2", onClick: () => restore(b.name), disabled: !!busy }, "恢复")));
-
-      const actionBar = h("div", { className: "qbw-actions", style: { borderTop: "none", marginTop: 0, paddingTop: 0 } },
-        h(Btn, { kind: "qbw-btn", onClick: openInstall }, "一键安装（全部）"),
-        h(Btn, { kind: "qbw-btn2", onClick: doctorFix, disabled: !!busy }, busy === "doctor" ? "配置中…" : "只补缺失项"),
-        h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "重新体检"),
-        h(Btn, { kind: "qbw-btn2", onClick: backupAll, disabled: !!busy }, "备份全部配置"));
-
-      const installRows = (diag?.install?.steps ?? []).map((x) => h("div", { className: "qbw-kv", key: x.key + x.at },
-        h("span", null, `${x.status === "ok" ? "✓" : x.status === "fail" ? "✗" : "⏳"} ${x.name}`),
-        h("span", null, x.detail ?? "")));
-      const installCard = (diag?.install?.steps ?? []).length
-        ? h("div", { className: "qbw-card" },
-            h("h4", null, "一键安装进度 ", h("span", { className: "qbw-badge " + (diag.install.running ? "" : "ok") }, diag.install.running ? "进行中" : "已结束")),
-            installRows)
-        : null;
-
-      const cards = diag ? h("div", { className: "qbw-grid", style: { marginTop: "8px" } },
-        h("div", { className: "qbw-card" },
-          h("h4", null, "体检 ", h("span", { className: "qbw-badge " + (diag.ok ? "ok" : "bad") }, diag.ok ? "通过" : "有项不可用")),
-          checkRows),
-        h("div", { className: "qbw-card" },
-          h("h4", null, "路径"),
-          pathRows),
-        installCard) : null;
-
-      const backupSection = h(Section, { title: `备份（${backups.length}）`, note: "写文件前自动生成", collapsible: false }, backupRows);
-
-      const logBlock = logs ? h("div", null,
-        h("div", { className: "qbw-group" }, "插件日志"),
-        h("div", { className: "qbw-out" }, logs.plugin || "（空）"),
-        h("div", { className: "qbw-group" }, "桥接日志"),
-        h("div", { className: "qbw-out" }, logs.bridge || "（空）")) : null;
-
-      const installModal = flow ? h("div", {
-        style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" },
-        onClick: (e) => { if (e.target === e.currentTarget && flow.phase !== "running") setFlow(null); },
-      },
-        h("div", {
-          style: { width: "min(620px, 92vw)", maxHeight: "80vh", overflow: "auto", background: "var(--qbw-surface)", color: "var(--qbw-text)", border: "1px solid var(--qbw-line)", borderRadius: "10px", padding: "16px 18px", boxShadow: "0 24px 70px rgba(0,0,0,.35)" },
-        },
-          h("h3", { style: { margin: "0 0 10px" } }, flow.phase === "done" ? "安装完成" : flow.phase === "error" ? "安装中断" : "一键安装"),
-
-          flow.phase === "scan" ? h("div", { className: "qbw-hint" }, "正在探测 SnowLuma（端口 / token / 群列表）…") : null,
-          flow.phase === "error" ? h("div", null,
-            h("div", { className: "qbw-err" }, flow.error || "未知错误"),
-            h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "常见原因：DSH 里跑的还是旧版本（关掉 DSH 再开一次），或 SnowLuma 没登录。")) : null,
-
-          flow.phase === "form" ? h("div", null,
-            h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
-              flow.snow?.online ? `已连上 SnowLuma：${flow.snow.nickname || ""}（${flow.snow.uin || "?"}）` : `没连上 SnowLuma：${flow.error || "先启动并扫码登录"}`),
-            h("div", { className: "qbw-group" }, "主人 QQ（你的号，不是机器人号）"),
-            h("input", { className: "qbw-input", value: flow.owner, onChange: (e) => setFlow({ ...flow, owner: e.target.value }), style: { width: "100%" } }),
-            h("div", { className: "qbw-group", style: { marginTop: "10px" } }, `把哪些群加进白名单（${flow.groups.length} 个）`),
-            flow.groups.length === 0
-              ? h("div", { className: "qbw-hint" }, "她还没进任何群。装好后把她拉进群，再到「QQ → 白名单」加群号。")
-              : h("div", null, flow.groups.map((g) => h("label", { key: g.id, style: { display: "flex", gap: "8px", alignItems: "center", padding: "4px 0" } },
-                  h("input", { type: "checkbox", checked: flow.selected.includes(g.id), onChange: (e) => setFlow({
-                    ...flow,
-                    selected: e.target.checked ? [...flow.selected, g.id] : flow.selected.filter((x) => x !== g.id),
-                  }) }),
-                  h("span", null, `${g.name}（${g.id}）`)))),
-            h("div", { className: "qbw-hint", style: { marginTop: "8px" } }, "不会自动放行：只有你勾选的群会被加白。")) : null,
-
-          flow.phase === "running" || flow.phase === "done" ? h("div", null,
-            (() => {
-              const steps = flow.steps ?? [];
-              const done = steps.filter((x) => x.status === "ok" || x.status === "fail").length;
-              const pct = steps.length ? Math.round((done / steps.length) * 100) : 0;
-              const cur = steps.find((x) => x.status !== "ok" && x.status !== "fail");
-              return h(ProgressBar, {
-                pct,
-                phase: flow.phase === "done" ? "安装完成" : `第 ${done + 1}/${steps.length || "?"} 步：${cur?.name ?? "准备中"}`,
-                indeterminate: flow.phase === "running" && !cur,
-              });
-            })(),
-            (flow.steps ?? []).map((x) => h("div", { className: "qbw-kv", key: x.key + x.at },
-              h("span", null, `${x.status === "ok" ? "✓" : x.status === "fail" ? "✗" : "⏳"} ${x.name}`),
-              h("span", null, x.detail ?? ""))),
-            flow.phase === "running" ? h("div", { className: "qbw-hint", style: { marginTop: "10px" } }, "安装中，请别关这个窗口…") : null,
-            flow.phase === "done" ? h("div", { className: "qbw-hint", style: { marginTop: "10px" } }, "如果刚注册过 DSH 组件，需要重启 DSH 才生效。") : null) : null,
-
-          h("div", { className: "qbw-actions", style: { marginTop: "14px" } },
-            flow.phase === "form" ? h(Btn, { kind: "qbw-btn", onClick: startInstall }, "开始安装") : null,
-            flow.phase === "form" ? h(Btn, { kind: "qbw-btn2", onClick: () => setFlow(null) }, "取消") : null,
-            flow.phase === "done" || flow.phase === "error" ? h(Btn, { kind: "qbw-btn", onClick: () => setFlow(null) }, "关闭") : null))) : null;
-
+      useEffect(() => { void load(); }, [load]);
       return h("div", null,
-        actionBar,
-        cards,
-        installModal,
-        h(AdvancedSettings, { note: "备份恢复 / 插件与桥接日志：排障时再展开" },
-          h("div", { className: "qbw-actions" }, h(Btn, { kind: "qbw-btn2", onClick: loadLogs, disabled: !!busy }, busy === "logs" ? "读取中…" : "读取日志")),
-          backupSection,
-          logBlock),
-        err ? h("div", { className: "qbw-err" }, err) : null);
+        h(Section, { title: "运行检查" },
+          error ? h("p", { className: "qbw-err" }, error) : null,
+          (data?.checks ?? []).map((item) => h("p", { key: item.name },
+            h(StatusDot, { ok: item.ok }, item.name),
+            " ", item.detail, !item.ok && item.fix ? " · " + item.fix : "")),
+          h(Btn, { onClick: load }, "刷新检查")),
+        h(DshRepairCard, { busy, setBusy, toast }));
     }
-    // ── 角色人格（角色包 + 人格卡 + 记忆卡 + 存档）──────────────────────────
-    // 数据层在 src/character-persona.js：每个角色一个目录包，切换时整套人格/记忆/行为账本
-    // 一起换；这里只做管理界面，不直接改 memory-card.json。
+
     function CharactersTab({ overview, busy, setBusy, toast, reload, goTab, unified, setUnified }) {
       const [data, setData] = useState(null);
       const [err, setErr] = useState("");
@@ -7598,13 +6830,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const totalPair = limits.total ?? { cny: null, tokens: null };
       const setScope = (scope, pair) => onChange({ ...limits, [scope]: pair });
       const sum = (unit) => {
-        const n = ["qq", "bili", "other"].reduce((acc, key) => acc + (Number(limits[key]?.[unit]) || 0), 0);
+        const n = ["bili", "other"].reduce((acc, key) => acc + (Number(limits[key]?.[unit]) || 0), 0);
         return n > 0 ? Math.round(n * 10000) / 10000 : null;
       };
       const totalRatio = Math.max(ratios.total?.cny ?? 0, ratios.total?.tokens ?? 0);
       const alertedText = alertedToday?.at ? fmtTime(new Date(alertedToday.at).toISOString()) : "";
       return h("div", null,
-        h(SaveTokenEntry, { set, setUnified, qq, unified, toast }),
+
         h(CostCard, { toast, set }),
         h("div", { className: "qbw-budget-summary" },
           h("div", null,
@@ -7613,27 +6845,16 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("b", null, fmtMoney(usage.total?.cost)),
               h("span", null, `${fmtTokenNum(usage.total?.tokens)} token`)),
             h("div", { className: "qbw-hint" },
-              "数据来源：DSH session/event 实时累计（QQ + 鱼姬之家 + B站 + 黑话学习等）。",
+              "数据来源：DSH 会话实时累计，包含鱼姬之家和 B 站。",
               totalPair.cny != null || totalPair.tokens != null
                 ? ` 总额度已用 ${fmtPercent(totalRatio)}。`
                 : " 还没设总额度。")),
           h("div", { className: "qbw-budget-status" },
-            blocked.total ? h("span", { className: "qbw-badge bad" }, "总额已达上限：QQ 不再唤醒 / B站 不再叫醒") : null,
+            blocked.total ? h("span", { className: "qbw-badge bad" }, "总额已达上限，后台任务会暂停") : null,
             alertedToday ? h("span", { className: "qbw-badge warn" }, `今天已提醒过${alertedText ? `（${alertedText}）` : ""}`) : null,
             h("span", { className: "qbw-badge" }, `价目表 ${budget.priceTable?.version ?? "—"}`),
             budget.source ? h("span", { className: "qbw-badge" }, budget.source) : null)),
         h("div", { className: "qbw-budget-grid" },
-          h(BudgetScopeCard, {
-            scope: "qq",
-            title: "QQ",
-            subtitle: "群聊 + 私聊 + 被 @ 唤醒；到上限后不再唤醒，消息留在未读。",
-            usage: usage.qq,
-            limits,
-            ratios: ratios.qq,
-            blocked: blocked.qq,
-            onChange: setScope,
-            disabled,
-          }),
           h(BudgetScopeCard, {
             scope: "bili",
             title: "B站",
@@ -7647,7 +6868,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           }),
           h(BudgetScopeCard, {
             scope: "other",
-            title: "其他花费",
+            title: "鱼姬之家与其他任务",
             subtitle: "鱼姬之家、黑话学习等共用其他额度，也计入 SurfCore 总额。",
             usage: otherUsage,
             limits,
@@ -7659,7 +6880,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(BudgetScopeCard, {
             scope: "total",
             title: "SurfCore 总额度",
-            subtitle: "整个插件的天花板：QQ + B站 + 其他一起算；任一单位到 100% 就同时停两边。",
+            subtitle: "累计 SurfCore 的全部模型用量。达到总上限后暂停模型任务。",
             usage: usage.total,
             limits,
             ratios: ratios.total,
@@ -7681,7 +6902,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                 h("button", {
                   type: "button", className: "qbw-chip", disabled,
                   onClick: () => setScope("total", { cny: sum("cny"), tokens: sum("tokens") }),
-                }, "= QQ+B站+其他 之和"),
+                }, "= 当前分项额度之和"),
                 h("button", {
                   type: "button", className: "qbw-chip" + ((totalPair.cny != null || totalPair.tokens != null) ? " on" : ""), disabled,
                   onClick: () => {
@@ -7691,7 +6912,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                     }
                     onChange({
                       ...limits,
-                      qq: { cny: null, tokens: null },
                       bili: { cny: null, tokens: null },
                       other: { cny: null, tokens: null },
                     });
@@ -7702,13 +6922,13 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
                   onClick: () => setScope("total", { cny: null, tokens: null }),
                 }, "清空总额")),
               h("div", { className: "qbw-hint", style: { marginTop: "6px" } },
-                "总限额是额外天花板：QQ / B站 的分项额度仍然各自生效，两者谁先到就按谁停。"))}),
+                "分项额度与总额度同时生效，先达到的上限优先。"))}),
         ),
         h("div", { className: "qbw-budget-note" },
           h("div", { className: "qbw-hint" },
             "· 金额与 token 是两套独立额度：可以只填一种，也可以两种都填；两种都填时先到的那条生效。",
             "· 80% 弹窗每天只弹第一次（分项或总额都算）；之后同一天其他项再到 80% 不再打扰，页面右上角会保留「今天已提醒过」。",
-            "· 保存后立即生效：QQ 下一次唤醒、B站 下一次叫醒开始按新额度判断。"),
+            "· 保存后下一轮按新额度判断。"),
           h(Btn, { onClick: onSave, disabled: !!busy }, busy === "save" ? "保存中…" : "保存额度")));
     }
 
@@ -7767,7 +6987,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       return h("div", null,
         h("div", { className: "qbw-infobox" },
-          "桌宠是独立组件：不随 SurfCore 安装，也不影响 QQ / B站 / 记忆 / 语音。",
+          "桌宠是独立安装的组件。",
           "填安装包地址 → 安装 → 填 Electron 路径 → 启动。卸载只删 ~/.dsh/surfcore/pet/app，不碰你的皮肤工程。"),
         h("div", { className: "qbw-card" },
           h("h4", null, "运行状态"),
@@ -7864,10 +7084,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("h4", null, "对话",
             h("span", { className: "qbw-badge " + (st?.proactive?.online ? "ok" : "warn") }, st?.proactive?.online ? "桌宠在线" : "桌宠离线"),
             st?.proactive?.carrier === "pet" ? h("span", { className: "qbw-badge" }, "主动搭话载体") : null),
-          h("p", null, "在桌宠上右键「文本对话 / 语音对话」打开对话框；回复会用对应形式（文本或语音），气泡里始终显示文字。人设卡、记忆卡、目的状态跟 QQ / B站 共用当前角色。"),
+          h("p", null, "在桌宠上右键「文本对话 / 语音对话」打开对话框；回复会用对应形式（文本或语音），气泡里始终显示文字。人设卡、记忆卡、目的状态和鱼姬之家、B 站共用当前角色。"),
           h("div", { className: "qbw-hint" },
             `角色：${st?.role?.name ?? "—"} · 模型：${st?.llm?.provider || "—"}/${st?.llm?.model || "—"} · 语音：${st?.voice?.enabled ? `${st.voice.route}（${st.voice.endpoint}）` : "未开启"} · 历史 ${st?.chat?.messages ?? 0} 条`),
-          h(Row, { label: "专注模式（不主动打扰）", hint: "开 = 不主动搭话、不弹主动气泡（QQ / 桌宠载体都停）；你自己打开对话仍然正常。桌宠右键菜单里也能切" },
+          h(Row, { label: "专注模式（不主动打扰）", hint: "开 = 不主动搭话、不弹主动气泡；你自己打开对话仍然正常。桌宠右键菜单里也能切" },
             h("input", {
               className: "qbw-switch",
               type: "checkbox",
@@ -7891,7 +7111,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("option", { value: "high" }, "high"), h("option", { value: "max" }, "max"))),
           h("div", { className: "qbw-hint" }, "改完点底部「保存」即生效（不用重启桌宠）；用量计入 token 额度「其他」。"),
           st?.proactive?.carrier !== "pet" ? h("div", { className: "qbw-hint" },
-            "「主动搭话」目前由 QQ 载体发出：在「目的」页可以把载体切成桌宠。") : null),
+            "主动搭话目前投递到鱼姬之家。在「目的」页可以切到桌宠。") : null),
         st && st.skins && st.skins.length ? h("div", { className: "qbw-card", style: { marginTop: "10px" } },
           h("h4", null, "内置形象"),
           h("div", { className: "qbw-chips" }, st.skins.map((x) => h("span", { className: "qbw-chip", key: x.id }, x.name))),
@@ -7950,6 +7170,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
       }
 
+      const sourceLabel = (key) => key?.startsWith("qq") ? "历史聊天" : state.sources[key];
       const settings = state?.settings;
       const initialization = state?.initialization;
       const ready = initialization?.status === "ready";
@@ -7977,14 +7198,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             value("期待", state.expectation),
             h("p", null, state.conflicts?.length ? "尚未平复的互动" : "互动档位 · 日常"),
             (state.conflicts ?? []).map((item, index) => h("p", { key: index },
-              `${state.sources[item.source]} · ${state.stages[item.stage]}${item.knot ? "（还有心结）" : ""} · 责怪压力 ${format(item.blame)}`)))),
+              `${sourceLabel(item.source)} · ${state.stages[item.stage]}${item.knot ? "（还有心结）" : ""} · 责怪压力 ${format(item.blame)}`)))),
         character ? h(Section, { collapsible: false, title: "情绪设置" },
           h("label", null, h("input", {
             type: "checkbox", checked: settings.enabled, disabled: busy,
             onChange: (e) => void update({ enabled: e.target.checked }),
           }), " 启用情绪"),
           h("p", null, "允许影响心情的经历来源"),
-          Object.entries(state.sources).map(([key, label]) => h("label", { key, style: { display: "block" } }, h("input", {
+          Object.entries(state.sources).filter(([key]) => !key.startsWith("qq")).map(([key, label]) => h("label", { key, style: { display: "block" } }, h("input", {
             type: "checkbox", checked: settings.sources[key], disabled: busy || !settings.enabled,
             onChange: (e) => void update({ sources: { [key]: e.target.checked } }),
           }), ` ${label}`)),
@@ -7999,7 +7220,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         character ? h(Section, { collapsible: false, title: "最近的情绪变化" },
           state.recent.length ? h("ul", null, state.recent.map((item, index) => h("li", { key: `${item.at}:${index}` },
             h("time", { dateTime: new Date(item.at).toISOString() }, new Date(item.at).toLocaleString()),
-            ` · ${state.sources[item.source]} · ${item.reason}`,
+            ` · ${sourceLabel(item.source)} · ${item.reason}`,
             Object.entries(item.changed).map(([key, delta]) =>
               ` · ${state.dimensions[key] || "责怪压力"} ${delta > 0 ? "+" : ""}${delta}`).join(""))))
             : h("p", null, "有新的经历后会显示在这里。")) : null);
@@ -8012,7 +7233,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["characters", "角色"],
       ["purpose", "目的"],
       ["emotion", "情绪"],
-      ["qq", "QQ"],
       ["voice", "语音"],
       ["pet", "桌宠"],
       ["bili", "B站"],
@@ -8021,7 +7241,6 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["watch", "观看历史"],
       ["memory", "记忆"],
       ["diary", "日记"],
-      ["align", "对齐"],
       ["extensions", "扩展"],
       ["advanced", "全部参数"],
       ["diag", "诊断"],
@@ -8117,7 +7336,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         budgetRef.current = r;
         setBudget(r);
         setTokenAlerted(r.alertedToday ?? null);
-        if (r.alert) setTokenAlert(r.alert);
+        const items = r.alert?.items?.filter((item) => item.scope !== "qq");
+        if (items?.length) setTokenAlert({ ...r.alert, items });
         setLimitDraft((prev) => {
           if (!prev) return r.limits;
           const dirtyNow = JSON.stringify(prev) !== JSON.stringify(previousLimits);
@@ -8182,26 +7402,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const budgetDirty = Boolean(limitDraft && budget && JSON.stringify(limitDraft) !== JSON.stringify(budget.limits));
       const dirty = qq && bili && unified && (JSON.stringify({ qq, bili, unified }) !== saved || budgetDirty);
 
-      // biliToQq 开关在 MemoryTab 里通过 unified.__biliToQqToggle 过渡；这里在保存前把它落到 QQ 配置。
-      const normalizedQq = useMemo(() => {
-        if (!qq) return qq;
-        const next = clone(qq);
-        const toggle = unified?.__biliToQqToggle;
-        if (typeof toggle === "boolean") {
-          next.biliBridge = next.biliBridge ?? {};
-          next.biliBridge.enabled = true;
-          next.biliBridge.memory = { ...(next.biliBridge.memory ?? {}), enabled: toggle };
-        }
-        return next;
-      }, [qq, unified]);
-      const normalizedUnified = useMemo(() => {
-        if (!unified) return unified;
-        const next = clone(unified);
-        delete next.__biliToQqToggle;
-        return next;
-      }, [unified]);
+      const normalizedQq = qq;
+      const normalizedUnified = unified;
 
-      const save = async (restartBridge = false) => {
+      const save = async () => {
         // 默认关闭；只有「从关到开」才弹确认，避免每次保存都打扰。
         const wasRolloverOn = (() => {
           try { return JSON.parse(saved || "{}").unified?.socialV2?.context?.rolloverEnabled === true; } catch { return false; }
@@ -8222,7 +7426,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         }
         setBusy("save"); setErr(""); setWarnings([]); setNotes([]);
         const resetSessions = adminDiscardContext;
-        const shouldRestart = restartBridge || resetSessions;
+
         try {
           if (budgetDirty && limitDraft) {
             const b = await api("/token-budget", { method: "POST", body: { limits: limitDraft } });
@@ -8231,7 +7435,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           }
           let r;
           try {
-            r = await api("/config", { method: "POST", body: { qq: normalizedQq, bili, unified: normalizedUnified, restartBridge: shouldRestart, resetSessions, baseStamp: configStamps } });
+            r = await api("/config", { method: "POST", body: { bili, unified: normalizedUnified, resetSessions, baseStamp: configStamps } });
           } catch (e) {
             // 409：配置在加载后被别处改过。不要盲目覆盖 —— 提示重新读取。
             if (/CONFIG_STALE|已被别处修改/.test(String(e.message))) {
@@ -8301,27 +7505,24 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const bridge = overview?.bridge ?? {};
       const biliStatus = overview?.bili ?? {};
       const platformStart = overview?.platformStart ?? {};
-      const qqStart = platformStart.qq !== false;
       const biliStart = platformStart.bili !== false;
       const active = (id) => tab === id;
       const renderTab = () => {
         if (tab === "overview") return h(OverviewTab, { overview, reload, busy, setBusy, toast: notify, unified, setUnified: setUnifiedPath, goTab: setTab });
         if (tab === "characters") return h(CharactersTab, { overview, busy, setBusy, toast: notify, reload, goTab: setTab, unified, setUnified: setUnifiedPath });
         if (tab === "emotion") return h(EmotionTab);
-        if (tab === "web-chat") return h(WebChatTab, { reload });
-        if (tab === "purpose") return h(PurposeTab, { qq, setQq: setQqPath, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
-        if (tab === "qq") return h(QQTab, { cfg: qq, set: setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
+        if (tab === "web-chat") return h(WebChatTab, { reload, goTab: setTab });
+        if (tab === "purpose") return h(PurposeTab, { qq: { purpose: unified?.localChat?.purpose }, setQq: (key, value) => setUnifiedPath(["localChat", ...key], value), unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, goTab: setTab });
         if (tab === "bili") return h(BiliTab, { cfg: bili, set: setBiliPath, qq: normalizedQq, setQqPath, admin: unified?.admin ?? {}, setAdmin, unified, setUnified: setUnifiedPath, qqPrivate: normalizedQq?.allow?.private ?? [], qqAllowAll: normalizedQq?.allowAllWhenEmpty === true, overview, busy, setBusy, toast: notify, reload, onSave: save, onAdminDiscardContext: setAdminDiscardContext, dirty });
         if (tab === "video") return h(VideoTab, { cfg: bili, set: setBiliPath, busy, setBusy, toast: notify });
         if (tab === "tokens") return h(TokenTab, { budget, limits: limitDraft, onChange: setLimitDraft, disabled: !!busy, alertedToday: tokenAlerted, onSave: () => save(false), busy, toast: notify, set: setQqPath, setUnified: setUnifiedPath, qq: normalizedQq, unified });
         if (tab === "watch") return h(WatchTab, { busy, setBusy, toast: notify, goTab: setTab });
-        if (tab === "voice") return h(VoiceTab, { toast: notify, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
+        if (tab === "voice") return h(VoiceTab, { toast: notify, onSettingsChanged: loadConfig, qq: normalizedQq, setQq: setQqPath, onSave: save, busy, onResource: () => setResourceOpen(true) });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload, onResource: () => setResourceOpen(true) });
         if (tab === "diary") return h(DiaryTab, { unified, setUnified: setUnifiedPath, busy, setBusy, toast: notify });
-        if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
       if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
-        if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });
+        if (tab === "advanced") return h(AdvancedTab, { bili, unified: normalizedUnified, setBiliPath, setUnifiedPath, busy });
         if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
         return null;
       };
@@ -8332,10 +7533,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h("h3", { className: "qbw-title" }, "SurfCore",
             h("span", { className: "qbw-badge" }, `v${overview?.version ?? "—"}`),
             h("span", { className: "qbw-dots" },
-              h(StatusDot, { ok: qqStart && bridge.running && bridge.ok, warn: qqStart && bridge.running && !bridge.ok }, qqStart ? "QQ" : "QQ 关"),
               h(StatusDot, { ok: biliStart && Boolean(biliStatus.available), warn: biliStart && Boolean(biliStatus.enabled) }, biliStart ? "B站" : "B站 关"),
               h(StatusDot, { ok: biliStart && overview?.scheduler?.running }, biliStart ? "生物钟" : "生物钟关"))),
-          h("p", { className: "qbw-sub" }, "SurfCore 一个窗口管两边：QQ 的桥接与参数、B站养鱼参数、记忆卡、双向脱敏记忆、身份对齐，以及后续扩展接口。"),
+          h("p", { className: "qbw-sub" }, "管理鱼姬之家、B 站、桌宠、日记和角色记忆。"),
           h("div", { className: "qbw-actions", style: { marginTop: "10px" } },
             h(Btn, { kind: "qbw-btn2", onClick: () => setResourceOpen(true) }, "获取网盘资源（语音、向量记忆模型）"))),
         h("div", { className: "qbw-tabs" }, TABS.map(([id, label]) => h("button", {
@@ -8350,8 +7550,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             notes.join(" ")) : null,
           renderTab()),
         h("div", { className: "qbw-foot" },
-          h(Btn, { onClick: () => save(true), disabled: !!busy || !dirty || unified?.platforms?.start?.qq === false, title: unified?.platforms?.start?.qq === false ? "QQ 启动开关已关闭；先打开再重启" : "保存配置并重启 QQ 桥接，让 QQ 侧设置立即生效" }, busy === "save" ? "保存中…" : "保存并生效"),
-          h(Btn, { kind: "qbw-btn2", onClick: () => save(false), disabled: !!busy || !dirty, title: "只写配置文件；QQ 侧要下次重启桥接才生效" }, "仅保存（不重启）"),
+          h(Btn, { onClick: () => save(false), disabled: !!busy || !dirty }, busy === "save" ? "保存中…" : "保存并生效"),
           h(Btn, { kind: "qbw-btn2", onClick: reset, disabled: !!busy || !dirty }, "撤销改动"),
           h(Btn, { kind: "qbw-btn2", onClick: reload, disabled: !!busy }, "重新读取"),
           h("span", { className: "spacer" }),
@@ -8404,7 +7603,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
               h("span", null, `${item.scopeLabel ?? item.scope}（${item.unitLabel ?? item.unit}）`),
               h("span", null, `${fmtBudgetValue(item.used, item.unit)} / ${fmtBudgetValue(item.limit, item.unit)} · ${fmtPercent(item.ratio)}`)))),
             h("p", { style: { marginTop: "10px" } },
-              "这是今天的第一次额度提醒，也是今天唯一一次。接下来不管 QQ、B站、其他分项还是 SurfCore 总额再到 80%，都不会再弹窗；你可以在「Token 额度」页随时看实时用量。到了 100% 才会真正停：QQ 分项到顶就停 QQ 唤醒，B站 分项到顶就停 B站 叫醒；总额到顶两边一起停。"),
+              "每天只弹出一次 80% 提醒。达到上限后，相应的模型任务将暂停。打开「Token 额度」查看实时用量。"),
             h("div", { className: "qbw-actions" },
               h(Btn, { onClick: () => { setTab("tokens"); setTokenAlert(null); } }, "去调高额度"),
               h(Btn, { kind: "qbw-btn2", onClick: () => setTokenAlert(null) }, "知道了")))) : null,

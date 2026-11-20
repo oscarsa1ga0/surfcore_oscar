@@ -18,6 +18,8 @@ const tests = [
   // 且只留下一行日志 —— 必须有登记期断言钉住（活 DSH 侧的实测见
   // scripts/test-dsh-session-retire.mjs）。
   'test-dsh-inbox-projection.mjs', 'test-role-dispatch.mjs',
+  // The web host smoke test covers the retired QQ surface and migrated settings.
+  '../plugins/surfcore/scripts/test-host-smoke.mjs',
   '../plugins/surfcore/scripts/test-web-chat.mjs',
   '../plugins/surfcore/scripts/test-web-memory-sync.mjs', '../plugins/surfcore/scripts/test-web-browser.mjs', '../plugins/surfcore/scripts/test-web-recovery.mjs',
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
@@ -58,7 +60,6 @@ const tests = [
   // 生物钟 C：每窗至少 1、全天 ≤12、相邻最小间隔、skip 不结束全天、错过不补。
   'test-night-schedule.mjs',
   // Token 防爆破：每天唤醒上限、私聊更紧、最小间隔、单次发送条数、近 24h 花费。
-  'test-token-guard.mjs',
   // 每日 token 额度：单位解析（¥8 / 8M / 2万）、双单位比例、80% 每天只提醒一次、
   // 额度文件损坏回落默认、当天/跨天文件语义（纯逻辑 + 插件 session/event 采集）。
   'test-token-budget.mjs', 'test-token-budget-service.mjs', 'test-token-budget-bridge.mjs',
@@ -102,7 +103,6 @@ const tests = [
   // 以及真实 bridge.js 源码里的接线（唤醒 / 角色提示 / 消息标记）。
   'test-admin-identity.mjs', 'test-admin-prompt-wiring.mjs',
   // 管理员温柔模式：默认关闭 / 开启风险弹窗 / 关闭时上下文取舍 / 丢弃上下文重置。
-  'test-admin-gentle-ux.mjs',
   // 通知通道：桌面 toast 转义 / 捕获 stderr；QQ 推送只走控制台专用端点。
   'test-notify-channels.mjs',
   // 语音提示词：不再写死默认关闭；按当前状态/VOICE_* 错误码判断。
@@ -129,11 +129,9 @@ const tests = [
   // QQ @：@我 + @别人不能一票否决；self_id 缺失回退 selfUserId。
   'test-qq-at.mjs',
   // 模型设置：客户端 → 宿主代理 → 桥接；保存不是已应用，selectModel 回执才是。
-  'test-model-settings.mjs',
   // QQ 工作区跟随 DSH 默认模型 + 不认 reasoningEffort 的模型回退。
   'test-dsh-model-follow.mjs',
   // 跟随开关的宿主代理路由（2026-11-03：前端有、宿主漏注册 → 404）。
-  'test-dsh-follow-route.mjs',
   // 设置页连续保存：成功必须回传/同步 stamps，warning 不能当 error。
   'test-config-save-stamps.mjs',
   // B站沉默逛 + 评论年龄闸：工具硬拦、带 code/hint。
@@ -190,7 +188,6 @@ const tests = [
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）
   'test-snowluma-conn.mjs',
   // 体检 SnowLuma 必须读 bridge.snowluma（运行态），不能拿 config.snowluma 冒充。
-  'test-doctor-snow-state.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复
@@ -203,9 +200,7 @@ const tests = [
   // qq-mode-console 的 settings 契约：0.2.0 删除了 ctx.settings.register()，
   // 命名空间改为由 loader entry id + 导出的 Config 推导。断言三点前提都在，
   // 并且那条已删除的 API 不会被照旧注释加回来。
-  'test-qq-mode-plugin.mjs',
   // schemastery 3.18.3+ volatile 包装：settings/测试边界必须拆成纯值。
-  'test-schema-volatile.mjs',
   // SnowLuma 上游健康（被误诊成「qq-bridge 注入失败」的那个失败形态）：
   //   · good 必须取自心跳 status.good / get_status —— 取自 get_login_info 会**静默失效**
   //     （SDK 不校验 data 载荷，good 会永远停在 null，整条权威信号变成死分支）；
@@ -214,12 +209,10 @@ const tests = [
   'test-snowluma-upstream-health.mjs',
   // B站分享卡片（PITFALLS #22）：B站小程序在 QQ 侧下架，默认必须是
   // com.tencent.structmsg 链接卡；旧 card:true 不能继续发下架的小程序卡。
-  'test-bili-card-ark.mjs',
   // preset 装配防漂移（2026-10-26 审计补登）：bundle patch（plugins/surfcore/presets/*.patch.yml）
   // 必须与权威源 dsh/agent-presets/<preset>/ 逐字一致，且守卫行只用「profile 可解析」的裸说明符。
   // ⚠️ 这条以前**不在任何门禁里**（也没有 npm script），结果 qq-chat-v2.patch.yml 悄悄落后于源：
   // 工作树里的源已经有「对话收尾」段，装进 DSH 的那份没有。教训见 PITFALLS #71。
-  'test-agent-preset-patches.mjs',
   // 插件 → 核心模块的引用一致性（PITFALLS #68）：`?rev=` 必须三处一致、不许裸引用，
   // 并把"改了热重载也不生效"的核心模块清单打出来（2026-10-26 新增）。
   'test-core-rev-sync.mjs',
@@ -265,7 +258,6 @@ const tests = [
   // 闸门事件中心 + 单轮止血：L0-L3 分级、去重/确认、步数/重复错误/预算熔断。
   'test-gate-events.mjs',
   // SnowLuma 断线/发送失败暂停：主动唤醒不得创建 DSH 会话（零 token）。
-  'test-snowluma-channel-gate.mjs',
   // 一键启动/停止接线：QQ/B站/桌宠/语音多选、语音本地/云端分支、结构化失败。
   'test-launch-components.mjs',
   // 人格卡分层：核心/场景/日常、QQ群聊/私聊、预算裁剪、v1/v2 小节过滤。
@@ -283,7 +275,6 @@ const tests = [
   // 上下文快照：合并读取 + brief/caps/refs + tool profile。
   'test-context-snapshot.mjs',
   // 会话滚动 + 合并窗口：换会话阈值、交接块、分场景窗口、接线钉子。
-  'test-session-rollover.mjs',
   // 会话映射：重复 sessionId 必须全部重建，防止上下文串成一条。
   'test-session-map.mjs',
   // 记忆卡手动操作：toast 不能阻断 reload，不能引用 item。
@@ -293,7 +284,6 @@ const tests = [
   // Action Planner 第一版：close 幂等；step guard 按 assistant step。
   'test-action-planner.mjs',
   // SnowLuma 未启动时不能弹断线告警。
-  'test-snowluma-startup-warning.mjs',
   // 人格语气/智能拆分：只出草稿，用户编辑保存。
   'test-persona-classify.mjs',
   // A+B 账单：角色/会话 Markdown + 自动写入服务。

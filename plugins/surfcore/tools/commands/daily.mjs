@@ -91,6 +91,23 @@ const BVARG = String(opt.bvid ?? '').trim()
 // 2026-10-21：管理员会先看候选再拍板 —— 他钦定了哪条，就**照办**（覆盖 --bvid ✓）
 const PINNED = pinOf(KIND)
 
+// 2026-11-19 主人要求：推一条视频之前必须真看过。没有字幕缓存就拒发，
+// 有就把开头几行打出来，让「它到底在说什么」当场进到我眼睛里。
+if (BVARG && KIND !== 'best') {
+  const sub = path.join(HOME, '.dsh', 'shots', 'subs', `${BVARG}-debrief.txt`)
+  if (!fs.existsSync(sub)) {
+    console.error(`✗ ${BVARG} 还没 debrief 过，没有字幕也没有抽帧 —— 没看过的片子不许推 ✗`)
+    console.error(`  先跑：node bili.mjs debrief ${BVARG}`)
+    process.exit(6)
+  }
+  try {
+    const lines = fs.readFileSync(sub, 'utf8').split('\n').filter((l) => l.trim()).slice(0, 4)
+    if (lines.length) console.log('  先说它讲了什么：')
+    for (const l of lines) console.log('   ', l.trim().slice(0, 60))
+  } catch {}
+}
+
+
 // ── 状态（先读，补发要用）──────────────────────────────────────
 function loadState() {
   let j = {}

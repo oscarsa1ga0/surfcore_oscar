@@ -2,16 +2,14 @@
   "name": "surfcore",
   "version": "0.8.9",
   "private": true,
-  "description": "SurfCore —— QQ × B站合体插件：统一设置窗口、双向脱敏记忆、QQ/B站身份对齐、鱼群保护、可扩展的平台接入层（贴吧预留）与插件接口。",
+  "description": "SurfCore 鱼姬之家、B 站、桌宠与日记",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./qq-mode": "./lib/qq-mode.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
-    "./qq-tool-restrict.mjs": "./qq-tool-restrict.mjs",
     "./diary-tool-guard.mjs": "./diary-tool-guard.mjs",
     "./web-tool-guard.mjs": "./web-tool-guard.mjs"
   },
@@ -23,7 +21,6 @@
   },
   "files": [
     "lib",
-    "qq-mode",
     "tools",
     "extensions",
     "platforms",
@@ -34,7 +31,6 @@
     "icon.svg",
     "README.md",
     "presets",
-    "qq-tool-restrict.mjs",
     "diary-tool-guard.mjs",
     "web-tool-guard.mjs"
   ],
@@ -42,8 +38,6 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml",
-        "./presets/qq-chat.patch.yml",
-        "./presets/qq-chat-v2.patch.yml",
         "./presets/surfcore-diary.patch.yml",
         "./presets/web-chat.patch.yml"
       ]

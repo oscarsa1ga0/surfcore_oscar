@@ -6,6 +6,8 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-19 | [鱼姬之家小屋近况](2026-11-19-fish-home-room.md) | 近况面板与设置页整理 | 网页端 |
+| 2026-11-19 | [网页端退役 QQ](2026-11-19-web-only.md) | 迁移通用配置并拆除 QQ 管理和后台接入 | 网页端 |
 | 2026-11-16 | [私信卡片只剩标题](2026-11-16-dm-card-loss.md) | dm-await 只取 content 丢了 jump_url，卡片/图片都退化成文字 | macOS 分支 |
 | 2026-11-16 | [同一天写了三篇日记](2026-11-16-diary-same-day-append.md) | diary_write 只会新建；改成默认追加，另开要 newEntry | macOS 分支 |
 | 2026-11-16 | [生物钟整轮没醒](2026-11-16-bili-window-last-minute-missed.md) | 叫醒点落进窗口最后一分钟，60s tick 到点已是 missed | macOS 分支 |

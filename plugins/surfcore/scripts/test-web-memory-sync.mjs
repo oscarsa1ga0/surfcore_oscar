@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { createBiliMemory } from '../../../src/bili-memory.js';
 import { addMemoryRecord, createEmptyCard, maintainMemoryCard, resolveMemoryCardPaths } from '../../../src/memory-card.js';
 import { localDay } from '../../../src/diary-store.js';
 import { buildDailyDigest } from '../lib/diary-scheduler.js';
@@ -79,4 +80,15 @@ test('保护记忆填满后仍保留 B 站经历，旧索引补回一次并尊�
   assert.deepEqual(first.card.records.filter(({ platform }) => platform === 'bili').map(({ sourceId }) => sourceId), ['coral']);
   assert.match(fs.readFileSync(paths.promptBili, 'utf8'), /珊瑚礁/);
   assert.equal(maintainMemoryCard({ paths, config: cfg, biliEntries, now }).bili, 0);
+});
+
+test('B 站简报在网页主聊下使用鱼姬之家身份', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-memory-web-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const memory = createBiliMemory({ stateDir: dir, home: dir, chatPlatform: 'web' });
+  const result = await memory.refresh({ force: true });
+  assert.equal(result.ok, true, result.error);
+  const brief = fs.readFileSync(memory.paths.brief, 'utf8');
+  assert.match(brief, /鱼姬之家和 B 站里的我都是同一个角色/);
+  assert.doesNotMatch(brief, /QQ|群友/);
 });

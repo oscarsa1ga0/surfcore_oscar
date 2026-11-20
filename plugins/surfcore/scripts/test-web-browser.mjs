@@ -31,6 +31,7 @@ class Node {
 const nodes = new Map();
 const inputs = [];
 let holdPost = false;
+let roomError = false;
 const reads = [];
 let uuid = 0;
 const fixtureMessage = (id, seq, text) => ({ id, seq, text, author: 'user', at: Date.now(), attachments: [] });
@@ -40,6 +41,7 @@ const document = {
     return nodes.get(id);
   },
   createElement() { return new Node(); },
+  querySelectorAll(selector) { return selector === '[data-open-room]' ? [this.getElementById('test-open-room')] : []; },
   addEventListener() {},
 };
 const scope = vm.createContext({
@@ -49,6 +51,14 @@ const scope = vm.createContext({
   crypto: { randomUUID: () => 'fixture-' + (++uuid) },
   async fetch(url, options) {
     if (url.endsWith('/state')) return new Promise(() => {});
+    if (url.includes('/room?')) {
+      if (roomError) return { ok: false, status: 503, json: async () => ({ ok: false, error: '近况读不到。', hint: '点「刷新」重试。' }) };
+      return { ok: true, json: async () => ({
+        ok: true, chat: 'fish', name: '鱼姬', activity: 'bili', mood: { label: '兴致不错', metrics: { curiosity: 84 } },
+        diary: { reviewedDay: '2026-11-19', shares: [{ date: '2026-11-19', excerpt: '只给你看的分享' }] },
+        watches: [{ bvid: 'BV1xx411c7mD', at: new Date().toISOString(), title: '海底漫游' }],
+      }) };
+    }
     if (url.includes('state?')) {
       reads.push(url);
       return { ok: true, json: async () => ({ ok: true }) };
@@ -68,6 +78,7 @@ const scope = vm.createContext({
     return { ok: true, json: async () => ({ ok: true, message: fixtureMessage(body.id, 51, body.text) }) };
   },
 });
+vm.runInContext(fs.readFileSync(new URL('../lib/web-chat/room.js', import.meta.url), 'utf8'), scope);
 vm.runInContext(fs.readFileSync(new URL('../lib/web-chat/chat.js', import.meta.url), 'utf8'), scope);
 scope.initial = {
   chat: 'fish', cursor: 50, more: true, messages: [fixtureMessage('old', 50, 'older chat')],
@@ -80,6 +91,24 @@ await submit({ preventDefault() {} });
 assert.equal(inputs.length, 2);
 assert.equal(inputs[0].id, inputs[1].id, 'HTTP retry keeps the request ID even when no message was quoted');
 assert.equal(nodes.get('message').value, '');
+
+await nodes.get('test-open-room').onclick();
+assert.equal(nodes.get('room-panel').open, true);
+assert.equal(nodes.get('room-cards').hidden, false);
+assert.equal(nodes.get('room-mood').textContent, '兴致不错');
+assert.match(nodes.get('room-activity').textContent, /逛 B 站/);
+assert.equal(nodes.get('room-diary-shares').children[0].textContent, '只给你看的分享');
+assert.equal(nodes.get('room-watches').children[0].children[0].href, 'https://www.bilibili.com/video/BV1xx411c7mD');
+roomError = true;
+await nodes.get('room-refresh').onclick();
+assert.equal(nodes.get('room-cards').hidden, true);
+assert.match(nodes.get('room-status').textContent, /近况读不到.*刷新/);
+assert.equal(nodes.get('room-refresh').disabled, false);
+roomError = false;
+await nodes.get('room-refresh').onclick();
+assert.equal(nodes.get('room-cards').hidden, false);
+nodes.get('room-close').onclick();
+assert.equal(nodes.get('room-panel').open, false);
 
 const timeline = nodes.get('timeline');
 timeline.scrollTop = 40;

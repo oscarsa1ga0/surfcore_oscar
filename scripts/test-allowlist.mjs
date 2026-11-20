@@ -77,7 +77,7 @@ const FRIEND = '2602648498';
   ok(bridge.includes('wakeBacklogConversations'), '桥接启动补唤醒接线');
   ok(bridge.includes("normalizeAllowlist({ allow, ownerQQ, selfUserId })"), '控制台白名单保存也归一化');
   const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
-  ok(index.includes('normalizeAllowlist'), '插件写入使用同一套归一化');
+  ok(!index.includes('normalizeAllowlist'), '网页宿主不再写入 QQ 白名单');
   ok(!/const priv = owner \\? \\[owner\\]/.test(index), 'install-apply 不再用 [owner] 整体替换');
   const guard = fs.readFileSync(path.resolve('src/token-guard.js'), 'utf8');
   ok(guard.includes('msUntilNextLocalDay'), 'day 拦截给出到零点的 retryAfterMs');

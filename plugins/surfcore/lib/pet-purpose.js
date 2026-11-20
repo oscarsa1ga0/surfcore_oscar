@@ -41,9 +41,10 @@ import {
   selectPurpose,
   summarizePurposeState,
 } from '../../../src/purpose-engine.js';
-import { activeBiliDir, activeMemoryPaths } from '../../../src/character-persona.js';
-import { QQ_STATE_DIR } from './paths.js';
-import { readQqConfig, readUnified, writeJsonAtomic } from './store.js';
+import { activeBiliDir, activeMemoryPaths, readCurrentCharacter } from '../../../src/character-persona.js';
+import { STATE_DIR } from './paths.js';
+import { readWebDiaryHistory } from './web-chat/journal.js';
+import { localEditorConfig, readUnified, writeJsonAtomic } from './store.js';
 
 const ONE_SECOND = 1000;
 const MINUTE = 60 * ONE_SECOND;
@@ -69,17 +70,14 @@ function clip(text, max = 120) {
  * @param {object} opts.chat        pet-chat 服务（生成 / 历史 / 语音 / 事件）
  * @param {object} [opts.tokenBudget]
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
- * @param {(path:string, opts?:object)=>Promise<{ok:boolean,status?:number,data?:any,error?:string}>} [opts.callBridge]
  */
-export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, callBridge = null, emotion = null } = {}) {
+export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = () => {}, emotion = null } = {}) {
   const emotionScope = dialogueEmotionScope('pet', 'desktop', 'owner');
   let stateFile = '';
   let running = false;
   let lastTickAt = 0;
   let lastError = '';
   let timer = null;
-  let fallbackAt = 0;
-  let lastFallback = null;
   let lastFocusLogAt = 0;
 
   function focusNow() {
@@ -88,7 +86,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
   function purposeConfig() {
     const unified = (() => { try { return readUnified().config ?? {}; } catch { return {}; } })();
-    const qq = (() => { try { return readQqConfig().config ?? {}; } catch { return {}; } })();
+    const qq = (() => { try { return localEditorConfig(); } catch { return {}; } })();
     const raw = qq?.purpose && typeof qq.purpose === 'object' ? qq.purpose : {};
     const normalized = normalizePurposeConfig({
       ...raw,
@@ -97,9 +95,8 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }, { ownerQQ: qq?.ownerQQ || '' });
     return {
       config: normalized,
-      carrier: ['pet', 'web'].includes(raw.carrier) ? raw.carrier : 'qq',
+      carrier: raw.carrier === 'pet' ? 'pet' : 'web',
       modality: raw.petModality === 'voice' ? 'voice' : 'text',
-      fallbackToQQ: raw.petFallbackToQQ !== false,
       ownerUin: String(normalized.ownerUin || qq?.ownerQQ || '').replace(/[^\d]/g, ''),
       chatEnabled: unified?.pet?.chat?.enabled !== false,
     };
@@ -137,16 +134,15 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
 
   // ── 素材 ────────────────────────────────────────────────────────────────
   function conversationsFromDisk() {
-    const raw = readJson(path.join(QQ_STATE_DIR, 'social-v2.json'), {});
-    const map = raw?.conversations && typeof raw.conversations === 'object' ? raw.conversations : {};
-    return Object.entries(map).map(([key, value]) => ({
-      key,
-      recentMessages: Array.isArray(value?.recentMessages) ? value.recentMessages : [],
-      unread: Number(value?.unread) || 0,
-      activeTopics: Array.isArray(value?.activeTopics) ? value.activeTopics : [],
-      pendingThoughts: Array.isArray(value?.pendingThoughts) ? value.pendingThoughts : [],
-      lastIncomingAt: Number(value?.lastIncomingAt) || 0,
-    }));
+    try {
+      const role = readCurrentCharacter();
+      const directory = path.join(STATE_DIR, 'web-chat');
+      const day = new Date().toLocaleDateString('sv-SE');
+      const recentMessages = readWebDiaryHistory(directory, role?.id, day).slice(-40).map((row) => ({
+        at: row.time, text: row.text, isOwner: !row.isSelf, isSelf: row.isSelf,
+      }));
+      return [{ key: 'web', recentMessages, lastIncomingAt: recentMessages.filter((row) => row.isOwner).at(-1)?.at ?? 0 }];
+    } catch { return []; }
   }
 
   function biliEntries() {
@@ -173,12 +169,10 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
   }
 
   function ownerIdleMs(now) {
-    const p = purposeConfig();
-    const conv = conversationsFromDisk().find((c) => c.key === `private:${p.ownerUin}`);
-    const lastQq = Number(conv?.lastIncomingAt) || 0;
+    const lastWeb = Number(conversationsFromDisk()[0]?.lastIncomingAt) || 0;
     let lastChat = 0;
     try { lastChat = Number(chat.status()?.chat?.lastUserAt) || 0; } catch {}
-    const last = Math.max(lastQq, lastChat);
+    const last = Math.max(lastWeb, lastChat);
     return last > 0 ? Math.max(0, now - last) : Number.POSITIVE_INFINITY;
   }
 
@@ -350,7 +344,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       enabled: p.config.enabled !== false,
       chatEnabled: p.chatEnabled,
       modality: p.modality,
-      fallbackToQQ: p.fallbackToQQ,
       ownerUin: p.ownerUin,
       ownerName: chat.ownerInfo().name,
       online: chat.online().online,
@@ -359,7 +352,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       running,
       lastTickAt,
       lastError,
-      lastFallback,
       config: p.config,
       state: summarizePurposeState(state, { config: p.config, now }),
       stateFile,
@@ -404,7 +396,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     if (running) return { ok: false, reason: 'busy' };
     const p = purposeConfig();
     if (!p.chatEnabled) return { ok: false, reason: 'chat-disabled', error: '桌宠对话已关闭' };
-    if (p.carrier !== 'pet') return { ok: false, reason: 'carrier-qq', error: '当前载体是 QQ，请用 QQ 那边的目的机制' };
+    if (p.carrier !== 'pet') return { ok: false, reason: 'carrier-web', error: '主动搭话当前投递到鱼姬之家' };
     if (force !== true && p.config.enabled === false) return { ok: false, reason: 'disabled' };
     // 专注模式：自动轮次完全不出声（手动「试一次」仍可，用户自己点的）。
     if (force !== true && !previewOnly && focusNow()) {
@@ -559,25 +551,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }
   }
 
-  /** 桌宠没开着：按默认策略把这一轮交给 QQ 桥接（它有自己的闸门和排程）。 */
-  async function fallbackToQQ() {
-    const p = purposeConfig();
-    if (p.carrier !== 'pet' || !p.fallbackToQQ || !callBridge) return { ok: false, reason: 'no-fallback' };
-    const now = Date.now();
-    if (now - fallbackAt < 5 * MINUTE) return { ok: false, reason: 'fallback-throttled' };
-    fallbackAt = now;
-    try {
-      const result = await callBridge('/api/purpose/run', { method: 'POST', body: { force: false }, timeoutMs: 25000 });
-      const data = result?.data ?? null;
-      lastFallback = { at: new Date(now).toISOString(), ok: Boolean(data?.ok), reason: data?.reason || data?.error || result?.error || '', status: result?.status ?? null };
-      pluginLog('[pet-purpose] 桌宠离线，已回落到 QQ：', JSON.stringify(lastFallback));
-      return { ok: Boolean(data?.ok), fallback: 'qq', ...(data ?? {}) };
-    } catch (error) {
-      lastFallback = { at: new Date(now).toISOString(), ok: false, reason: String(error?.message ?? error).slice(0, 120) };
-      return { ok: false, reason: 'fallback-failed', error: lastFallback.reason };
-    }
-  }
-
   async function tick() {
     const p = purposeConfig();
     if (p.carrier !== 'pet' || p.config.enabled === false || !p.chatEnabled) return;
@@ -585,15 +558,12 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       // 不刷屏：专注期间每 10 分钟最多记一条。
       if (Date.now() - lastFocusLogAt > 10 * 60 * 1000) {
         lastFocusLogAt = Date.now();
-        pluginLog('[pet-purpose] 专注模式：跳过主动搭话（不会回落到 QQ）');
+        pluginLog('[pet-purpose] 专注模式：跳过主动搭话');
       }
       return;
     }
     lastTickAt = Date.now();
-    if (!chat.online().online) {
-      await fallbackToQQ();
-      return;
-    }
+    if (!chat.online().online) return;
     const state = loadState();
     ensurePurposeDay(state, lastTickAt);
     if (state.nextFireAt && lastTickAt < state.nextFireAt) return;
@@ -612,7 +582,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     }
     timer = setInterval(() => { void tick(); }, TICK_MS);
     timer.unref?.();
-    // DSH 重启 / 插件重载后别等满一分钟：桌宠在线且到点就立刻走一轮；离线则尽早回落 QQ。
+    // DSH 重启 / 插件重载后别等满一分钟：桌宠在线且到点就立刻走一轮。
     setTimeout(() => { void tick(); }, 3000).unref?.();
   }
 
@@ -628,7 +598,6 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
     status,
     preview,
     run: runOnce,
-    fallbackToQQ,
     config: purposeConfig,
     stateFile: () => stateFile,
   };

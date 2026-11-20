@@ -18,6 +18,7 @@
 
 | 会话 | 工作目录 | 分支 | 负责范围 | 状态 |
 | --- | --- | --- | --- | --- |
+| 鱼姬之家小屋 | `surfcore-fish-home-room` | `feat/fish-home-room` | DSH 可见设置与网页近况 | 专项通过，待实际安装与浏览器验收 |
 | 鱼姬之家网页私聊 | `surfcore-web-chat` | `feat/web-chat` | 本机聊天、真实 DSH 会话、主动投递 | 专项通过，待安装分支合入和真机验收 |
 | QQ 群聊情绪 | `surfcore-qq-group-emotion` | `fix/qq-group-emotion-weight` | 调低群聊情绪变化 | 独立工作树，待本机安装分支合入 |
 | QQ 私聊疲惫 | `surfcore-qq-private-fatigue` | `fix/qq-private-fatigue` | 调低普通私聊的疲惫变化 | 已合入本机安装分支 |

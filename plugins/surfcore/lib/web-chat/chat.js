@@ -25,6 +25,7 @@ let quoted = null;
 let payload = null;
 let streamConnection;
 let chat;
+const room = createRoomPanel({ api, element, make, getChat: () => chat });
 let cursor = 0;
 let connected = false;
 let submitted = false;
@@ -42,14 +43,14 @@ async function api(route, data) {
     });
   } catch (error) {
     if (!signal.aborted) throw error;
-    throw new Error('本机服务暂未返回。若消息已经出现就无需重发，否则请重试。');
+    throw new Error(data === undefined ? '本机服务暂未返回。' : '本机服务暂未返回。若消息已经出现就无需重发，否则请重试。');
   }
   const value = await response.json().catch(() => {
-    if (signal.aborted) throw new Error('本机服务暂未返回完整回执。请核对气泡后重试。');
+    if (signal.aborted) throw new Error(data === undefined ? '本机服务暂未完整返回。' : '本机服务暂未返回完整回执。请核对气泡后重试。');
     return {};
   });
   if (!response.ok || value.ok !== true) {
-    throw Object.assign(new Error([value.error, value.hint].filter(Boolean).join(' ') || '本机服务未返回有效结果。请稍后再试。'), { status: response.status, code: value.code });
+    throw Object.assign(new Error([value.error, value.hint].filter(Boolean).join(' ') || '本机服务未返回有效结果。请稍后再试。'), { status: response.status, code: value.code, hint: value.hint });
   }
   return value;
 }
@@ -282,6 +283,7 @@ document.addEventListener('visibilitychange', () => {
 
 function apply(value, initial = false) {
   const nearEnd = nearLatest();
+  const roleChanged = chat !== value.chat;
   if (chat !== value.chat || value.reset) {
     const switched = Boolean(chat && chat !== value.chat);
     rows.clear();
@@ -306,6 +308,7 @@ function apply(value, initial = false) {
     element('older').hidden = !value.more;
   }
   chat = value.chat;
+  room.update(value, roleChanged);
   if (typeof value.transcriptionEnabled === 'boolean' && transcriptionEnabled !== value.transcriptionEnabled) {
     transcriptionEnabled = value.transcriptionEnabled;
     if (audioFile) renderAttachments();
@@ -319,7 +322,7 @@ function apply(value, initial = false) {
     if (addMessage(message) && !initial && !value.reset && message.author !== 'user' && (!nearEnd || document.hidden)) unread++;
   }
   const { run } = value;
-  const source = { bili: 'B 站', diary: '日记', qq: 'QQ' }[value.occupied];
+  const source = { bili: 'B 站', diary: '日记', pet: '桌宠' }[value.occupied];
   const states = {
     idle: run.read ? '已读' : '在线',
     queued: source ? '等候中 · ' + source + '回合进行中' : '消息已保存，等待本轮',

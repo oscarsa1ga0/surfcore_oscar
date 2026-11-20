@@ -12,7 +12,7 @@
 //   node notify.mjs --test                              （发一条测试消息；设置页「发条测试」用它）
 //
 // 配置（~/.dsh/surfcore/bili.config.json 的 notify 段）：
-//   { "type": "none|desktop|qq|webhook|command", "url": "", "template": "text|markdown", "cmd": "" }
+//   { "type": "none|desktop|web|webhook|command", "url": "", "template": "text|markdown", "cmd": "" }
 //   · qq：只私聊管理员本人（走本机桥接的 /api/notify/owner；不发群）
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -24,7 +24,8 @@ import { createHash } from 'node:crypto'
 import { currentCharacter } from '../lib/state-paths.mjs'
 import { WEB_CHAT_API, WEB_CHAT_PORT } from '../../lib/web-chat/port.js'
 import { buildDesktopToastScript } from '../lib/desktop-toast.mjs'
-import { QQ_CONFIG, QQ_STATE_DIR, STATE_DIR } from '../../lib/paths.js'
+import { STATE_DIR } from '../../lib/paths.js'
+import { createGateEventStore } from '../../../../src/gate-events.js'
 
 const argv = process.argv.slice(2)
 const DRY = argv.includes('--dry')
@@ -47,13 +48,7 @@ if (TEST) {
 if (!text) { console.error('用法: node notify.mjs "消息正文" [--title 标题] | --test'); process.exit(2) }
 
 const n = config().notify ?? { type: 'none' }
-let type = String(n.type ?? 'none')
-if (type === 'qq') {
-  const file = process.env.SURFCORE_QQ_CONFIG || QQ_CONFIG
-  try {
-    if (JSON.parse(fs.readFileSync(file, 'utf8'))?.purpose?.carrier === 'web') type = 'web'
-  } catch {}
-}
+const type = n.type === 'qq' ? 'web' : String(n.type ?? 'none')
 const notifyRole = currentCharacter()?.id || 'default'
 const payload = { title, text, at: new Date().toISOString() }
 
@@ -105,7 +100,7 @@ async function sendDesktop() {
   } catch (error) {
     const detail = String(error?.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' ');
     const message = `[DESKTOP_TOAST_FAILED] 桌面通知失败：${detail || error?.message || 'PowerShell 未返回错误详情'}`;
-    await reportTimeout('DESKTOP_TOAST_FAILED', message, '检查 PowerShell 是否可用；或改用 QQ / Webhook；在概览错误报告可永久静音这类超时');
+    await reportTimeout('DESKTOP_TOAST_FAILED', message, '检查 PowerShell 是否可用；或改用 鱼姬之家 / Webhook；在概览错误报告可永久静音这类超时');
     throw new Error(message)
   } finally {
     try { fs.rmSync(script, { force: true }) } catch {}
@@ -113,35 +108,12 @@ async function sendDesktop() {
   console.log('桌面通知已发送 ✓')
 }
 
-function qqBridgeInfo() {
-  const qqConfigFile = process.env.SURFCORE_QQ_CONFIG || QQ_CONFIG
-  let qq = {}
-  try { qq = JSON.parse(fs.readFileSync(qqConfigFile, 'utf8')) } catch {}
-  let token = String(qq.consoleToken ?? '').trim()
-  if (!token) {
-    try { token = fs.readFileSync(path.join(QQ_STATE_DIR, 'console-token'), 'utf8').trim() } catch {}
-  }
-  return { ownerQQ: String(qq.ownerQQ ?? '').trim(), port: Number(qq.consolePort) || 3100, token }
-}
-
 async function reportTimeout(code, message, hint) {
   if (Array.isArray(n.timeoutMutes) && n.timeoutMutes.includes(code)) return
-  const info = qqBridgeInfo()
-  if (!info.token) return
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 2500)
-  try {
-    await fetch(`http://127.0.0.1:${info.port}/api/notice/timeout`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-console-token': info.token },
-      body: JSON.stringify({ code, message: String(message).slice(0, 300), hint: String(hint).slice(0, 300), source: 'notify' }),
-      signal: controller.signal,
-    })
-  } catch {
-    // 通知失败本身不能因为“上报失败”再抛一次。
-  } finally {
-    clearTimeout(timer)
-  }
+  createGateEventStore({ dir: STATE_DIR }).record({
+    source: 'notify', gate: 'timeout', event: code, level: 'L2',
+    reason: { code, message: String(message).slice(0, 300), hint: String(hint).slice(0, 300) },
+  })
 }
 
 async function sendWeb() {
@@ -158,43 +130,6 @@ async function sendWeb() {
   const result = await response.json().catch(() => ({}))
   if (!response.ok || !result.ok) throw new Error(result.error || '鱼姬之家拒绝接收推送。')
   console.log('鱼姬之家已收件 ✓')
-}
-
-async function sendQQ() {
-  const { ownerQQ, port, token } = qqBridgeInfo()
-  if (!ownerQQ) throw new Error('[QQ_NOTIFY_NO_OWNER] QQ 推送失败：config.json 未配置 ownerQQ（管理员 QQ）')
-  if (!token) throw new Error('[QQ_NOTIFY_NO_TOKEN] QQ 推送失败：没有控制台令牌（检查 config.json.consoleToken / state/console-token）')
-  if (DRY) {
-    console.log(`[dry] QQ 私聊管理员 ${ownerQQ}：${String(text).slice(0, 60)}`)
-    return
-  }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/notify/owner`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-console-token': token },
-      body: JSON.stringify({ title, message: String(text) }),
-      signal: controller.signal,
-    })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok || body?.ok === false) {
-      throw new Error(`QQ 推送失败：${body?.error || `桥接 HTTP ${res.status}`}${body?.hint ? `；${body.hint}` : ''}`)
-    }
-    console.log(`QQ 私聊管理员已发送 ✓${body?.messageId ? `（messageId ${body.messageId}）` : ''}`)
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      const message = '[QQ_NOTIFY_TIMEOUT] QQ 推送超时：桥接 15 秒没响应；确认 SnowLuma/QQ 在线，重启桥接后重试';
-      await reportTimeout('QQ_NOTIFY_TIMEOUT', message, '检查 SnowLuma/QQ 是否在线；重启 QQ 桥接；在概览错误报告可永久静音这类超时');
-      throw new Error(message)
-    }
-    if (!String(error?.message || '').startsWith('QQ 推送失败')) {
-      throw new Error(`[QQ_NOTIFY_UNREACHABLE] QQ 推送失败：${error?.message || error}；确认 QQ 桥接已启动（默认 http://127.0.0.1:${port}）`)
-    }
-    throw error
-  } finally {
-    clearTimeout(timer)
-  }
 }
 
 async function sendCommand(cmd) {
@@ -233,8 +168,6 @@ try {
     console.log(DRY ? '[dry] 方式=none（不推送）→ 什么也不做 ✓' : '（方式=none：不推送）')
   } else if (type === 'desktop') {
     await sendDesktop()
-  } else if (type === 'qq') {
-    await sendQQ()
   } else if (type === 'web') {
     await sendWeb()
   } else if (type === 'webhook') {

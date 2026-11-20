@@ -20,7 +20,7 @@ try {
 
 const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
 const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
-assert.ok(index.includes('result.stamps = {'), 'POST /config 成功响应必须返回新 stamps');
+assert.ok(index.includes('stamps: stamps()'), 'POST /config 成功响应必须返回新 stamps');
 assert.ok(index.includes('result.notes =') || index.includes('notes: []'), '例行提示用 notes，不混进 warnings');
 assert.ok(client.includes('setConfigStamps(r.stamps)'), '保存成功后前端必须同步 stamps');
 assert.ok(!client.includes('setConfigStamps(latestStamps)'), '409 不能自动套用 stamps，否则会覆盖别人的修改');

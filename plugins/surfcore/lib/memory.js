@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  AUDIT_LOG, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED,
+  AUDIT_LOG, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR,
   QQ_ALIGNMENT_BRIEF, QQ_CONFIG, QQ_STATE_DIR, ensureDirs,
 } from './paths.js';
 import {
@@ -34,9 +34,12 @@ import { backupFile, readAll, readJson, writeJsonAtomic, writeTextAtomic } from 
 
 const FEED_FILE = path.join(QQ_STATE_DIR, 'qq-public-feed.jsonl');
 const syncStateFile = () => path.join(activeMemoryPaths().dir, 'sync-state.json');
-// B站 记忆简报/长文在**当前角色**的 bili 目录里（旧布局回退 repo/state）。
-const biliBriefFile = () => path.join(activePlatformStateDir(QQ_STATE_DIR), 'bili-memory-brief.md');
-const biliDocFile = () => path.join(activePlatformStateDir(QQ_STATE_DIR), 'bili-memory.md');
+function biliSummaryFile(name) {
+  const current = path.join(activePlatformStateDir(BILI_DIR), name);
+  return fs.existsSync(current) ? current : path.join(activePlatformStateDir(QQ_STATE_DIR), name);
+}
+const biliBriefFile = () => biliSummaryFile('bili-memory-brief.md');
+const biliDocFile = () => biliSummaryFile('bili-memory.md');
 const qqForBiliFile = () => activeMemoryPaths().qqForBili;
 
 const TOPIC_RULES = [
@@ -344,7 +347,7 @@ export function readQqForBili({ maxChars = 6000 } = {}) {
 /** B站 → QQ：桥接侧生成，本模块只复检与展示。 */
 export function biliToQqStatus() {
   const all = readAll();
-  const enabled = all.qq?.biliBridge?.enabled !== false && all.qq?.biliBridge?.memory?.enabled !== false;
+  const enabled = all.unified.localChat.biliMemory.enabled !== false;
   let brief = '';
   let doc = '';
   try { brief = fs.readFileSync(biliBriefFile(), 'utf8'); } catch {}

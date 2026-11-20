@@ -210,6 +210,8 @@ export const SECRET_PATHS = new Set([
   'snowluma.wsAccessToken',
   'webSearch.apiKey',
   'consoleToken',
+  'localChat.voice.tts.breeze.apiKey',
+  'socialV2.voice.tts.breeze.apiKey',
 ]);
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -378,7 +380,9 @@ export function readQqConfig() {
 
 export function readBiliConfig() {
   const user = readJson(BILI_CONFIG, {}) ?? {};
-  return { config: deepMerge(BIDI_DEFAULTS, user), hasUserFile: Object.keys(user).length > 0 };
+  const config = deepMerge(BIDI_DEFAULTS, user);
+  if (config.notify?.type === 'qq') config.notify.type = 'web';
+  return { config, hasUserFile: Object.keys(user).length > 0 };
 }
 
 /**
@@ -408,11 +412,87 @@ export function platformStartsFrom(user = {}) {
   };
 }
 
+/** Shared settings used by the web and desktop clients after retiring QQ. */
+export function localChatFromLegacy(legacy = {}) {
+  const purpose = { ...(legacy.purpose ?? {}) };
+  purpose.carrier = purpose.carrier === 'pet' ? 'pet' : 'web';
+  delete purpose.petFallbackToQQ;
+  const voice = legacy.socialV2?.voice ?? {};
+  const bili = legacy.biliBridge ?? {};
+  const interval = Number(bili.memory?.refreshIntervalMs) || 600000;
+  return {
+    purpose,
+    voice: { tts: voice.tts ?? {}, tonePresets: voice.tonePresets ?? {} },
+    batchMs: legacy.socialV2?.web?.batchMs ?? legacy.socialV2?.wake?.batchWindowPrivateMs ?? 4000,
+    biliMemory: {
+      enabled: bili.enabled !== false && bili.memory?.enabled !== false,
+      refreshIntervalMs: Math.max(60000, Math.min(3600000, interval)),
+    },
+    cost: legacy.socialV2?.cost ?? {},
+    pricing: legacy.pricing ?? {},
+    model: String(legacy.dsh?.model ?? ''),
+    pet: legacy.pet ?? {},
+  };
+}
+
+export function localChatConfig() {
+  return readUnified().config.localChat;
+}
+
+/** Used by editors that still share the old form field layout. */
+export function localEditorConfig(config = readUnified().config) {
+  const local = config.localChat;
+  return {
+    purpose: local.purpose,
+    ownerQQ: config.admin?.qq ?? '',
+    socialV2: { voice: local.voice, cost: local.cost },
+    dsh: { model: local.model },
+    pricing: local.pricing,
+    pet: local.pet,
+  };
+}
+
+export function migrateLocalChatConfig() {
+  const original = readJson(UNIFIED_FILE, {}) ?? {};
+  if (isPlainObject(original.localChat)) return false;
+  const { config } = readUnified();
+  const next = {
+    ...original,
+    localChat: config.localChat,
+    admin: config.admin,
+    memory: { ...original.memory, webHandoff: { enabled: original.memory?.qqLastContext?.enabled !== false, ...original.memory?.webHandoff } },
+    platforms: { ...original.platforms, enabled: config.platforms.enabled, start: config.platforms.start },
+    bridge: { ...original.bridge, autoStart: false },
+  };
+  if (fs.existsSync(UNIFIED_FILE) && !backupFile(UNIFIED_FILE, 'before-local-chat-migration')) {
+    throw Object.assign(new Error('通用配置未能备份。'), { code: 'BACKUP_FAILED' });
+  }
+  writeJsonAtomic(UNIFIED_FILE, next);
+  return true;
+}
+
 export function readUnified() {
   const user = readJson(UNIFIED_FILE, {}) ?? {};
   const config = deepMerge(DEFAULT_UNIFIED, user);
+  config.memory ??= {};
+  config.memory.webHandoff ??= { enabled: user.memory?.qqLastContext?.enabled !== false };
   config.platforms = isPlainObject(config.platforms) ? config.platforms : {};
-  config.platforms.start = platformStartsFrom(user);
+  config.platforms.start = { ...platformStartsFrom(user), qq: false };
+  config.platforms.enabled = (Array.isArray(config.platforms.enabled) ? config.platforms.enabled : ['bili'])
+    .filter((item) => item !== 'qq');
+  const legacy = !isPlainObject(user.localChat) || !isPlainObject(user.admin) ? readQqConfig().config : {};
+  config.localChat = isPlainObject(user.localChat)
+    ? deepMerge(localChatFromLegacy(), user.localChat)
+    : localChatFromLegacy(legacy);
+  if (!isPlainObject(config.localChat.purpose)) config.localChat.purpose = { carrier: 'web' };
+  config.localChat.purpose.carrier = config.localChat.purpose.carrier === 'pet' ? 'pet' : 'web';
+  delete config.localChat.purpose.petFallbackToQQ;
+  if (!isPlainObject(config.localChat.biliMemory)) config.localChat.biliMemory = { enabled: true, refreshIntervalMs: 600000 };
+  if (!isPlainObject(user.admin)) {
+    config.admin = normalizeAdmin(adminFromSources({
+      unified: { admin: legacy.admin }, qq: legacy, bili: readBiliConfig().config,
+    }));
+  }
   return {
     config,
     hasUserFile: Object.keys(user).length > 0,
@@ -627,7 +707,8 @@ export function normalizeBiliConfig(input) {
   );
   cfg.fishGuard = normalizeBiliFishGuard(cfg.fishGuard ?? DEFAULT_BILI_FISH_GUARD);
   cfg.notify = isPlainObject(cfg.notify) ? cfg.notify : {};
-  cfg.notify.type = ['none', 'desktop', 'qq', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
+  if (cfg.notify.type === 'qq') cfg.notify.type = 'web';
+  cfg.notify.type = ['none', 'desktop', 'web', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
   cfg.notify.template = cfg.notify.template === 'markdown' ? 'markdown' : 'text';
   cfg.notify.args = Array.isArray(cfg.notify.args) ? cfg.notify.args.map(String) : [];
   cfg.notify.timeoutMutes = Array.isArray(cfg.notify.timeoutMutes)
@@ -691,23 +772,27 @@ export function restoreMaskedSecrets(incoming, current, prefix = '') {
   return out;
 }
 
+function unifiedConfigForUi(config) {
+  const view = redactForUi(config);
+  delete view.qqbotRoot;
+  delete view.bridge;
+  delete view.alignment;
+  delete view.admin.qq;
+  delete view.platforms.start.qq;
+  delete view.memory.qqToBili;
+  delete view.memory.biliToQq;
+  delete view.memory.qqLastContext;
+  return view;
+}
+
 export function readAll() {
-  const qq = readQqConfig();
   const bili = readBiliConfig();
   const unified = readUnified();
-  // 管理员只有一个真相入口：合体层还没写 admin 时，用旧字段（ownerQQ / owner.mid）
-  // 推导出来给 UI 看；用户下一次保存就会把它落到合体层。
-  const admin = adminFromSources({
-    unified: unified.hasAdmin ? unified.config : { ...unified.config, admin: undefined },
-    qq: qq.config,
-    bili: bili.config,
-  });
-  const unifiedWithAdmin = { ...unified.config, admin: normalizeAdmin(admin) };
   return {
-    qq: redactForUi(qq.config),
+    qq: redactForUi(localEditorConfig(unified.config)),
     bili: redactForUi(bili.config),
-    unified: unifiedWithAdmin,
-    hasUserFile: { qq: qq.hasUserFile, bili: bili.hasUserFile, unified: unified.hasUserFile },
+    unified: unifiedConfigForUi(unified.config),
+    hasUserFile: { bili: bili.hasUserFile, unified: unified.hasUserFile },
   };
 }
 
@@ -735,7 +820,12 @@ export function saveBiliConfig(incoming) {
 
 export function saveUnified(incoming) {
   const current = readUnified().config;
-  const next = deepMerge(current, clone(incoming ?? {}));
+  const next = deepMerge(current, restoreMaskedSecrets(incoming ?? {}, current));
+  if (!isPlainObject(next.localChat)) next.localChat = current.localChat;
+  if (!isPlainObject(next.localChat.purpose)) next.localChat.purpose = current.localChat.purpose;
+  if (!isPlainObject(next.localChat.biliMemory)) next.localChat.biliMemory = current.localChat.biliMemory;
+  next.localChat.purpose.carrier = next.localChat.purpose.carrier === 'pet' ? 'pet' : 'web';
+  delete next.localChat.purpose.petFallbackToQQ;
   next.version = 1;
   // 记忆卡上限必须按引擎的边界收敛：否则输入 999999 会原样落盘，界面显示 999999、
   // 实际注入/容量按 100000 算，用户会以为「改了没生效」。
@@ -748,7 +838,7 @@ export function saveUnified(incoming) {
   next.platforms = isPlainObject(next.platforms) ? next.platforms : {};
   const start = isPlainObject(next.platforms.start) ? next.platforms.start : {};
   next.platforms.start = {
-    qq: start.qq !== false,
+    qq: false,
     bili: start.bili !== false,
   };
   next.platforms.hideConsoles = next.platforms.hideConsoles === true;

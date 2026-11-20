@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { readQqConfig } from '../store.js';
+import { localEditorConfig } from '../store.js';
 import { synthesizeToFile, wavDurationMs } from '../../../../src/voice-tts.js';
 
 /** 语音语气：和 QQ 桥接的 VOICE_TONES 完全一致（8 个名字 + intensity 0~1）。 */
@@ -37,7 +37,7 @@ const clampInt = (value, fallback, min, max) => {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 };
 
-export function voiceSettings(config = readQqConfig()?.config ?? {}) {
+export function voiceSettings(config = localEditorConfig()) {
   const v = config?.socialV2?.voice ?? {};
   const t = v?.tts ?? {};
   const route = ['local', 'cloud'].includes(String(t.route)) ? String(t.route) : 'local';

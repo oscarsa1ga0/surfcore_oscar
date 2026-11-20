@@ -7,8 +7,9 @@ import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createWebChatGateway } from '../lib/web-chat/gateway.js';
+import { roomSnapshot } from '../lib/web-chat/room-data.js';
 import { openWebChatStore } from '../lib/web-chat/store.js';
-import { checkPrivateLeak, createEntry } from '../../../src/diary-store.js';
+import { checkPrivateLeak, createEntry, deleteEntry, shareEntry, writeSchedulerState } from '../../../src/diary-store.js';
 import { webSessionId } from '../lib/web-chat/dsh.js';
 import { createRoleDispatch } from '../lib/role-dispatch.js';
 import { WEB_CHAT_API } from '../lib/web-chat/port.js';
@@ -133,7 +134,14 @@ dispatch.start();
 let purposeState = {};
 const diary = path.join(dir, 'diary');
 const privateText = '这是仅用来测试的一条长日记，读过以后请留在自己的日记里，直到主人选好的摘录获得授权。';
-createEntry(diary, { content: privateText });
+const privateEntry = createEntry(diary, { content: privateText, title: '未分享的私密标题' }).entry;
+const approvedExcerpt = '直到主人选好的摘录获得授权。';
+shareEntry(diary, { id: privateEntry.id, excerpt: approvedExcerpt, reason: '内部授权说明' });
+const deletedEntry = createEntry(diary, { content: '已经删掉的日记摘录。' }).entry;
+shareEntry(diary, { id: deletedEntry.id, excerpt: '已经删掉的日记摘录。' });
+deleteEntry(diary, { id: deletedEntry.id });
+writeSchedulerState(diary, { lastReviewedDay: '2026-11-19' });
+let roomFailed = false;
 
 const gateway = createWebChatGateway({
   directory: dir, ctx: host, dispatch, identity, config: () => prefs, context: () => [],
@@ -145,6 +153,15 @@ const gateway = createWebChatGateway({
   readPurposeInputs: () => ({ ownerName: '主人', persona: '对身边的事很好奇。', ownerUin: '0',
     memoryRecords: [{ id: 'm1', source: 'manual', text: '昨天写了一篇关于鱼和水的日记，期待给主人分享。', createdAt: Date.now() }] }),
   readPurposeState: () => purposeState, writePurposeState: (state) => { purposeState = JSON.parse(JSON.stringify(state)); },
+  roomData(role) {
+    assert.equal(role.characterId, 'fish');
+    if (roomFailed) throw new Error('local file busy');
+    return roomSnapshot({
+      active: { source: 'bili', sessionId: 'private-session-id' }, diaryDir: diary,
+      mood: { mood: '兴致不错', drives: { joy: 65, curiosity: 75 }, partner: 'private-partner' },
+      watches: { items: [{ bvid: 'BV1xx411c7mD', title: '珊瑚礁', upMid: 'private-up-mid' }, { bvid: 'invalid', title: '无效视频' }] },
+    });
+  },
   focus: () => false, mood: () => null, notifyDesktop: async (count) => desktopNotices.push(count),
 });
 try {
@@ -157,6 +174,25 @@ try {
   assert.equal(pair.status, 200);
   const cookie = pair.headers['Set-Cookie'].split(';')[0];
   const headers = { cookie };
+  assert.equal((await call('/asset:/room.js')).status, 200);
+  assert.equal((await call('/room?chat=fish')).json.code, 'WEB_PAIR_REQUIRED');
+  assert.equal((await call('/room?chat=other', { headers })).json.code, 'WEB_ROLE_CHANGED');
+  const room = (await call('/room?chat=fish', { headers })).json;
+  assert.equal(room.chat, 'fish');
+  assert.equal(room.activity, 'bili');
+  assert.equal(room.mood.metrics.curiosity, 75);
+  assert.equal(room.diary.reviewedDay, '2026-11-19');
+  assert.deepEqual(room.diary.shares.map(({ excerpt }) => excerpt), [approvedExcerpt]);
+  assert.deepEqual(room.watches.map(({ title }) => title), ['珊瑚礁']);
+  assert.doesNotMatch(JSON.stringify(room), /private-|未分享的私密标题|内部授权说明|长日记|已经删掉/);
+  roomFailed = true;
+  const failedRoom = await call('/room?chat=fish', { headers });
+  assert.equal(failedRoom.status, 503);
+  assert.equal(failedRoom.json.code, 'WEB_ROOM_UNAVAILABLE');
+  assert.match(failedRoom.json.hint, /刷新/);
+  assert.doesNotMatch(JSON.stringify(failedRoom.json), /local file busy/);
+  assert.equal(logs.pop()?.[0], '读取小屋近况失败');
+  roomFailed = false;
   assert.equal((await call('/pair', { method: 'POST', data: { code } })).status, 401);
   assert.equal((await call('/messages', { method: 'POST', data: {}, headers: { cookie, origin: 'http://bad.example' } })).status, 403);
 

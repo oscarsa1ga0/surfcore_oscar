@@ -27,7 +27,6 @@ export const PLATFORM_CAPABILITIES = Object.freeze([
 ]);
 
 const BUILTIN_PLATFORMS = [
-  { id: 'qq', name: 'QQ', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'prompt.block', 'actions'] },
   { id: 'bili', name: 'B站', version: '1.0.0', status: 'active', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block', 'actions'] },
   { id: 'tieba', name: '贴吧', version: '0.0.0', status: 'planned', builtin: true, capabilities: ['identity', 'memory.read', 'memory.write', 'prompt.block'] },
 ];

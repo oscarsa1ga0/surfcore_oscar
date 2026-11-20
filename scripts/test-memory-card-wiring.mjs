@@ -14,7 +14,6 @@ const index = read('plugins/surfcore/lib/index.js');
 const client = read('plugins/surfcore/lib/client.js');
 const paths = read('plugins/surfcore/lib/paths.js');
 const store = read('plugins/surfcore/lib/store.js');
-const memoryCore = read('src/memory-card.js');
 const memoryPlugin = read('plugins/surfcore/lib/memory-card.js');
 
 // 1) 桥接：消息进来写 inbox；QQ 提示词两条路径都注入记忆卡；有容量告警私聊端点。
@@ -29,7 +28,7 @@ assert.match(bridge, /\/api\/memory-card\/notify/, '桥接缺少记忆卡容量�
 assert.match(bridge, /memoryCard: memoryMode\(\) === 'vector' \? '' : memoryCardPromptBlock\(key\)/, 'qq_get_prompt 没有按模式返回记忆卡');
 
 // 2) B站 调度器：每次醒来的统一上下文里有记忆卡（仅 B站 公开 scope）。
-assert.match(scheduler, /memoryCardPromptBlock\('bili'\)/, 'B站调度器没有注入记忆卡');
+assert.match(scheduler, /memoryCardPromptBlock\('bili'(?:, [^)]*)?\)/, 'B站调度器没有注入记忆卡');
 assert.match(scheduler, /memoryCardBlockForBili\(\)/, 'B站记忆卡块没有接进 identityContextLines');
 
 // 3) 插件：定时维护 + 控制台 API + 生命周期清理。
@@ -45,18 +44,11 @@ assert.match(client, /qbw-modal-backdrop/, '控制台缺少容量弹窗');
 assert.match(client, /记忆卡快满了/, '弹窗文案缺失');
 assert.match(client, /压缩到 80%/, '控制台缺少压缩按钮');
 
-// 4b) 主人私聊读白名单群：核心过滤、运行时白名单、设置页开关必须同源。
-assert.match(memoryCore, /privateReadsGroups/, '核心模块缺少主人私聊读群记忆开关');
-assert.match(memoryCore, /群里的近况/, '核心模块缺少群近况小节');
-assert.match(memoryCore, /ownerPrivateKey/, '核心模块缺少主人私聊身份边界');
-assert.match(memoryCore, /privateDeniedGroups/, '核心模块缺少黑名单群排除');
-assert.match(memoryPlugin, /memoryCardRuntimeSharing/, '插件缺少 QQ 白名单运行时注入');
-assert.match(memoryPlugin, /ownerPrivateKey/, '插件缺少主人私聊 key');
-assert.match(memoryPlugin, /privateAllowedGroups/, '插件缺少白名单群注入');
-assert.match(client, /主人私聊可读群记忆/, '设置页缺少主人私聊读群记忆开关');
-assert.match(client, /privateGroupLimit/, '设置页缺少群记忆条数上限');
-assert.match(client, /privateGroupChars/, '设置页缺少群记忆字数上限');
-assert.match(client, /privateGroupIds/, '设置页缺少可读群号过滤');
+// 4b) 网页预览遵循当前的注入策略，旧群记忆控制从设置页退役。
+assert.match(memoryPlugin, /excludeRecentQq: true/, '网页预览没有排除近期 QQ 记忆');
+assert.match(memoryPlugin, /ownerPrivateKey/, '旧私聊档案缺少主人身份边界');
+assert.match(client, /鱼姬之家注入预览/, '面板缺少网页注入预览');
+assert.doesNotMatch(client, /主人私聊可读群记忆/, '设置页残留旧 QQ 群记忆开关');
 
 // 5) 路径与默认配置：QQ/B站 注入块是文件契约，默认值与核心模块同源。
 assert.match(paths, /MEMORY_CARD_PROMPT_QQ/, 'paths.js 缺少 QQ 注入块路径');
